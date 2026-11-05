@@ -980,6 +980,167 @@ html[data-theme="dark"] .ref-badge {
   overflow: auto;
 }
 
+/* Must beat `.modal { width: min(480px) }` later in this file. */
+.modal.settings-shell,
+.settings-modal.settings-shell {
+  width: min(960px, 96vw);
+  max-width: 96vw;
+  max-height: min(88vh, 760px);
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.settings-shell-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 1.15rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent) 10%, transparent),
+      transparent 55%
+    ),
+    var(--panel);
+}
+
+.settings-shell-head h3 {
+  margin: 0 0 0.15rem;
+}
+
+.settings-shell-head p {
+  margin: 0;
+}
+
+.settings-close {
+  flex: none;
+}
+
+.settings-shell-body {
+  display: grid;
+  grid-template-columns: 188px 1fr;
+  min-height: 0;
+  flex: 1;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.75rem 0.65rem;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  overflow: auto;
+}
+
+.settings-nav-item {
+  display: grid;
+  gap: 0.12rem;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 10px;
+  padding: 0.65rem 0.7rem;
+  color: var(--text);
+}
+
+.settings-nav-item:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.settings-nav-item.is-active {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.settings-nav-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-nav-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.settings-nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.28rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.settings-nav-badge.is-warn {
+  background: var(--danger);
+}
+
+.settings-pane {
+  min-height: 0;
+  overflow: auto;
+  padding: 0.95rem 1.1rem 1.15rem;
+}
+
+.settings-pane-intro {
+  margin-bottom: 0.25rem;
+}
+
+.settings-pane-intro h4 {
+  margin: 0 0 0.2rem;
+  font-size: 1rem;
+}
+
+.settings-pane-intro p {
+  margin: 0;
+}
+
+.settings-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+@media (max-width: 720px) {
+  .settings-shell-body {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+  }
+
+  .settings-nav-item {
+    min-width: 9.5rem;
+  }
+
+  .settings-nav-item.is-active {
+    box-shadow: inset 0 -3px 0 var(--accent);
+  }
+}
+
 .settings-grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1074,9 +1235,141 @@ html[data-theme="dark"] .ref-badge {
 }
 
 .auth-tabs button.active {
-  background: #2f6f4e;
-  border-color: #2f6f4e;
+  background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
+}
+
+.auth-login-panel {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.auth-storage-hint,
+.auth-expired {
+  margin: 0;
+}
+
+.auth-expired {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.auth-method-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.auth-token-block {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.auth-token-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.auth-token-row {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.auth-token-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  background: var(--control-bg);
+  color: var(--text);
+}
+
+.auth-toggle-vis {
+  flex: none;
+}
+
+.auth-oauth-toggle {
+  justify-self: start;
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+.auth-oauth-fields {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--control-bg);
+}
+
+.auth-logged-in .github-user {
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.auth-chip {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.auth-chip.is-in {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  color: var(--accent);
+}
+
+.auth-chip.is-warn {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  color: var(--danger);
+}
+
+.error-banner-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+}
+
+.error-banner-text {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.error-login-btn {
+  flex: none;
+}
+
+.auth-warn-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
 }
 
 .check {
@@ -1428,6 +1721,11 @@ html[data-theme="dark"] .ref-badge {
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
+}
+
+.modal.settings-shell {
+  width: min(960px, 96vw);
+  max-width: 96vw;
 }
 
 .modal h3 {

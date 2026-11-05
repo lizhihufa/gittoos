@@ -3,19 +3,20 @@ mod webview2;
 
 use git::{
     abort_operation, amend_commit, apply_cached_patch, auth_accounts, auth_browser_begin,
-    auth_browser_finish, auth_device_poll, auth_device_start, auth_github_gcm_login,
-    auth_login_token, auth_logout, auth_save_config, checkout_branch, checkout_remote_branch,
-    cherry_pick, clone_repository, commit, commit_patch, continue_operation, create_branch,
-    create_tag, delete_branch, delete_remote_branch, delete_remote_tag, delete_tag, discard_paths,
-    ensure_git, fetch, file_diff, git_info, init_repository, is_repository, list_branches,
-    list_commits, list_remote_branches, list_remotes, list_stashes, list_tags, merge_branch, pull,
-    push, push_all_tags, push_tag, read_identity, rebase_branch, repo_status,
+    auth_browser_finish, auth_device_poll, auth_device_start, auth_login_token, auth_logout,
+    auth_manager_login as do_auth_manager_login, auth_save_config, checkout_branch,
+    checkout_remote_branch, cherry_pick,
+    clone_repository, commit, commit_patch, continue_operation, create_branch, create_tag,
+    delete_branch, delete_remote_branch, delete_remote_tag, delete_tag, discard_paths, ensure_git,
+    fetch, file_diff, git_info, init_repository, is_repository, list_branches, list_commits,
+    list_remote_branches, list_remotes, list_stashes, list_tags, merge_branch, pull, push,
+    push_all_tags, push_tag, read_identity, rebase_branch, repo_status,
     repo_status_light_nonblocking, reset_to_commit, run_shell, set_app_handle, set_remote_url,
     stage_paths, stash_drop, stash_pop, stash_push, undo_last_commit, unstage_paths, with_git_quiet,
-    write_identity, AuthAccounts,
-    BranchInfo, CommitInfo, GitBinary, GitError, GitInfo, GithubDevicePollResult,
-    GithubDeviceStart, Identity, OauthBegin, ProviderStatus, RemoteBranchInfo, RemoteInfo,
-    RepoCore, RepoExtras, RepoSnapshot, RepoStatus, StashInfo, TagInfo,
+    write_identity, AuthAccounts, BranchInfo, CommitInfo, GitBinary, GitError, GitInfo,
+    GithubDevicePollResult, GithubDeviceStart, Identity, OauthBegin, ProviderStatus,
+    RemoteBranchInfo, RemoteInfo, RepoCore, RepoExtras, RepoSnapshot, RepoStatus, StashInfo,
+    TagInfo,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -631,53 +632,70 @@ async fn run_command(
     with_git_async(&state, move |git| run_shell(git, &repo, &command)).await
 }
 
-#[tauri::command]
-fn auth_get_accounts() -> Result<AuthAccounts, String> {
-    auth_accounts().map_err(|e| e.to_string())
+fn spawn_auth<T, F>(f: F) -> impl std::future::Future<Output = Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, GitError> + Send + 'static,
+{
+    async move {
+        tauri::async_runtime::spawn_blocking(move || f().map_err(|e| e.to_string()))
+            .await
+            .map_err(|e| e.to_string())?
+    }
 }
 
 #[tauri::command]
-fn auth_save_oauth_config(
+async fn auth_get_accounts() -> Result<AuthAccounts, String> {
+    spawn_auth(auth_accounts).await
+}
+
+#[tauri::command]
+async fn auth_save_oauth_config(
     provider: String,
     client_id: String,
     client_secret: String,
 ) -> Result<ProviderStatus, String> {
-    auth_save_config(&provider, &client_id, &client_secret).map_err(|e| e.to_string())
+    spawn_auth(move || auth_save_config(&provider, &client_id, &client_secret)).await
 }
 
 #[tauri::command]
-fn auth_start_browser(provider: String) -> Result<OauthBegin, String> {
-    auth_browser_begin(&provider).map_err(|e| e.to_string())
+async fn auth_start_browser(provider: String) -> Result<OauthBegin, String> {
+    spawn_auth(move || auth_browser_begin(&provider)).await
 }
 
 #[tauri::command]
-fn auth_finish_browser(provider: String) -> Result<ProviderStatus, String> {
-    auth_browser_finish(&provider).map_err(|e| e.to_string())
+async fn auth_finish_browser(provider: String) -> Result<ProviderStatus, String> {
+    spawn_auth(move || auth_browser_finish(&provider)).await
 }
 
 #[tauri::command]
-fn auth_start_device() -> Result<GithubDeviceStart, String> {
-    auth_device_start().map_err(|e| e.to_string())
+async fn auth_start_device() -> Result<GithubDeviceStart, String> {
+    spawn_auth(auth_device_start).await
 }
 
 #[tauri::command]
-fn auth_poll_device(device_code: String) -> Result<GithubDevicePollResult, String> {
-    auth_device_poll(&device_code).map_err(|e| e.to_string())
+async fn auth_poll_device(device_code: String) -> Result<GithubDevicePollResult, String> {
+    spawn_auth(move || auth_device_poll(&device_code)).await
 }
 
 #[tauri::command]
-fn auth_github_manager_login() -> Result<ProviderStatus, String> {
-    auth_github_gcm_login().map_err(|e| e.to_string())
+async fn auth_manager_login(provider: String) -> Result<ProviderStatus, String> {
+    spawn_auth(move || do_auth_manager_login(&provider)).await
 }
 
 #[tauri::command]
-fn auth_login_with_token(provider: String, token: String) -> Result<ProviderStatus, String> {
-    auth_login_token(&provider, &token).map_err(|e| e.to_string())
+async fn auth_github_manager_login() -> Result<ProviderStatus, String> {
+    spawn_auth(|| do_auth_manager_login("github")).await
 }
 
 #[tauri::command]
-fn auth_sign_out(provider: String) -> Result<ProviderStatus, String> {
-    auth_logout(&provider).map_err(|e| e.to_string())
+async fn auth_login_with_token(provider: String, token: String) -> Result<ProviderStatus, String> {
+    spawn_auth(move || auth_login_token(&provider, &token)).await
+}
+
+#[tauri::command]
+async fn auth_sign_out(provider: String) -> Result<ProviderStatus, String> {
+    spawn_auth(move || auth_logout(&provider)).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -755,6 +773,7 @@ pub fn run() {
             auth_finish_browser,
             auth_start_device,
             auth_poll_device,
+            auth_manager_login,
             auth_github_manager_login,
             auth_login_with_token,
             auth_sign_out,

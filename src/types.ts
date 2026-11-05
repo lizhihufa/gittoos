@@ -106,6 +106,8 @@ export interface ProviderStatus {
   clientId: string;
   hasClientId: boolean;
   hasClientSecret: boolean;
+  /** Saved token existed but validation failed and was cleared. */
+  sessionExpired?: boolean;
 }
 
 export interface AuthAccounts {

@@ -10,6 +10,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
 import { confirmAction, withConfirm } from "./confirm";
 import { ChangeList } from "./components/ChangeList";
@@ -36,6 +37,7 @@ import {
 } from "./settingsStore";
 import {
   failureLine,
+  isAuthFailure,
   successLine,
   syncConflictKind,
   type SyncConflictKind,
@@ -87,6 +89,10 @@ type FileFilter = "all" | "conflict" | "untracked";
 
 type ProviderDraft = {
   token: string;
+  clientId: string;
+  clientSecret: string;
+  showToken: boolean;
+  showOauth: boolean;
 };
 
 type BootState = {
@@ -155,6 +161,9 @@ export default function App() {
   const [rebaseTarget, setRebaseTarget] = useState("");
   const [terminal, setTerminal] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<
+    "appearance" | "auth" | "identity"
+  >("appearance");
   const [showHelp, setShowHelp] = useState(false);
   const [boot, setBoot] = useState<BootState | null>(null);
   const [entering, setEntering] = useState(false);
@@ -164,9 +173,24 @@ export default function App() {
   const [accounts, setAccounts] = useState<AuthAccounts | null>(null);
   const [authTab, setAuthTab] = useState<AuthProvider>("github");
   const [drafts, setDrafts] = useState<Record<AuthProvider, ProviderDraft>>({
-    github: { token: "" },
-    gitee: { token: "" },
+    github: {
+      token: "",
+      clientId: "",
+      clientSecret: "",
+      showToken: false,
+      showOauth: false,
+    },
+    gitee: {
+      token: "",
+      clientId: "",
+      clientSecret: "",
+      showToken: false,
+      showOauth: false,
+    },
   });
+  const [authHint, setAuthHint] = useState(false);
+  const [sessionWarnings, setSessionWarnings] = useState<string[]>([]);
+  const authSectionRef = useRef<HTMLElement | null>(null);
   const [recentExists, setRecentExists] = useState<Record<string, boolean>>({});
   const [fileQuery, setFileQuery] = useState("");
   const [fileFilter, setFileFilter] = useState<FileFilter>("all");
@@ -556,7 +580,7 @@ export default function App() {
     const url = cloneUrl.trim();
     if (!url) {
       setError("请先在设置里填写克隆地址");
-      setShowSettings(true);
+      openSettings("identity");
       return;
     }
     saveCloneUrl(url);
@@ -585,7 +609,7 @@ export default function App() {
     const url = remoteUrl.trim();
     if (!url) {
       setError("请先在设置里填写远程地址");
-      setShowSettings(true);
+      openSettings("identity");
       return;
     }
     void runAction(async () => {
@@ -611,7 +635,7 @@ export default function App() {
     );
     setDrafts((prev) => ({
       ...prev,
-      [key]: { token: "" },
+      [key]: { ...prev[key], token: "" },
     }));
   }
 
@@ -625,6 +649,7 @@ export default function App() {
       clientId: "",
       hasClientId: false,
       hasClientSecret: false,
+      sessionExpired: false,
     };
   }
 
@@ -632,15 +657,43 @@ export default function App() {
     try {
       const next = await api.authAccounts();
       setAccounts(next);
+      const expired: string[] = [];
+      if (next.github.sessionExpired) expired.push("GitHub");
+      if (next.gitee.sessionExpired) expired.push("Gitee");
+      setSessionWarnings(expired);
+      setDrafts((prev) => ({
+        github: {
+          ...prev.github,
+          clientId: next.github.clientId || prev.github.clientId,
+        },
+        gitee: {
+          ...prev.gitee,
+          clientId: next.gitee.clientId || prev.gitee.clientId,
+        },
+      }));
     } catch (e) {
       setError(failureLine(e));
     }
   }, []);
 
   useEffect(() => {
+    void refreshAccounts();
+  }, [refreshAccounts]);
+
+  useEffect(() => {
     if (!showSettings) return;
     void refreshAccounts();
   }, [showSettings, refreshAccounts]);
+
+  function openSettings(page: "appearance" | "auth" | "identity" = "appearance") {
+    setSettingsPage(page);
+    setShowSettings(true);
+  }
+
+  function openSettingsAuth(provider?: AuthProvider) {
+    if (provider) setAuthTab(provider);
+    openSettings("auth");
+  }
 
   function updateDraft(
     provider: AuthProvider,
@@ -652,41 +705,91 @@ export default function App() {
     }));
   }
 
-  async function loginWithGitManager() {
+  async function loginWithGitManager(provider: AuthProvider) {
     setBusy(true);
     setError(null);
-    setNotice("正在打开 Git 凭据管理器…");
+    setAuthHint(false);
+    setNotice(
+      provider === "github"
+        ? "正在打开 Git 凭据管理器…"
+        : "正在读取 Gitee 凭据（可能弹出输入框）…",
+    );
     try {
-      const status = await api.authGithubManagerLogin();
+      const status = await api.authManagerLogin(provider);
       applyAccount(status);
+      setSessionWarnings((prev) =>
+        prev.filter((p) => p !== (provider === "github" ? "GitHub" : "Gitee")),
+      );
       setNotice(`已通过 Git 登录：${status.login}`);
     } catch (e) {
       setNotice(null);
       setError(failureLine(e));
+      setAuthHint(true);
     } finally {
       setBusy(false);
     }
   }
 
-  async function loginWithToken(provider: AuthProvider) {
+  async function loginWithBrowser(provider: AuthProvider) {
+    const draft = drafts[provider];
+    const clientId = draft.clientId.trim();
+    const clientSecret = draft.clientSecret.trim();
+    if (!clientId || !clientSecret) {
+      setError("浏览器登录需要填写 Client ID 和 Client Secret（可在下方展开填写）。");
+      updateDraft(provider, { showOauth: true });
+      return;
+    }
     setBusy(true);
     setError(null);
+    setAuthHint(false);
+    setNotice("正在打开浏览器，请完成授权…");
     try {
-      const status = await api.authLoginToken(
-        provider,
-        drafts[provider].token.trim(),
+      await api.authSaveOauthConfig(provider, clientId, clientSecret);
+      const begin = await api.authStartBrowser(provider);
+      await openUrl(begin.authUrl);
+      setNotice("请在浏览器完成授权，返回本窗口等待…");
+      const status = await api.authFinishBrowser(provider);
+      applyAccount(status);
+      setSessionWarnings((prev) =>
+        prev.filter((p) => p !== (provider === "github" ? "GitHub" : "Gitee")),
       );
+      setNotice(`已通过浏览器登录：${status.login}`);
+    } catch (e) {
+      setNotice(null);
+      setError(failureLine(e));
+      setAuthHint(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loginWithToken(provider: AuthProvider, tokenOverride?: string) {
+    const token = (tokenOverride ?? drafts[provider].token).trim();
+    if (!token) return;
+    setBusy(true);
+    setError(null);
+    setAuthHint(false);
+    try {
+      const status = await api.authLoginToken(provider, token);
       applyAccount(status);
       updateDraft(provider, { token: "" });
+      setSessionWarnings((prev) =>
+        prev.filter((p) => p !== (provider === "github" ? "GitHub" : "Gitee")),
+      );
       setNotice(`已登录 ${status.login}`);
     } catch (e) {
       setError(failureLine(e));
+      setAuthHint(true);
     } finally {
       setBusy(false);
     }
   }
 
   async function logoutProvider(provider: AuthProvider) {
+    const ok = await confirmAction(
+      `退出 ${provider === "github" ? "GitHub" : "Gitee"}？\n将清除本工具保存的登录信息，并尝试删除系统 Git 凭据中的对应条目。`,
+    );
+    if (!ok) return;
     setBusy(true);
     setError(null);
     try {
@@ -876,6 +979,7 @@ export default function App() {
     busyRef.current = true;
     setBusy(true);
     setError(null);
+    setAuthHint(false);
     setNotice(label ?? "正在执行…");
     // If a git/network call hangs, unlock the UI so Windows never shows "未响应".
     let timedOut = false;
@@ -945,6 +1049,7 @@ export default function App() {
         }
       } else {
         setError(failureLine(e));
+        setAuthHint(isAuthFailure(e));
         try {
           const core = await api.getRepoCore(path);
           if (repoPathRef.current === path) applyCore(core);
@@ -1158,73 +1263,207 @@ export default function App() {
   function renderProviderAuth(provider: AuthProvider) {
     const account = accounts?.[provider];
     const draft = drafts[provider];
-    const tokenHint =
+    const label = provider === "github" ? "GitHub" : "Gitee";
+    const tokenDocUrl =
       provider === "github"
-        ? "GitHub → Settings → Developer settings → Personal access tokens，勾选 repo。"
-        : "Gitee → 设置 → 安全设置 → 私人令牌，勾选 projects。";
+        ? "https://github.com/settings/tokens"
+        : "https://gitee.com/profile/personal_access_tokens";
+    const oauthDocUrl =
+      provider === "github"
+        ? "https://github.com/settings/developers"
+        : "https://gitee.com/oauth/applications";
+    const scopeHint =
+      provider === "github"
+        ? "权限：经典 Token 勾选 repo；细粒度 Token 需对应仓库的 Contents 读写。"
+        : "权限：私人令牌勾选 projects（以及需要的仓库权限）。";
 
     if (account?.loggedIn) {
       return (
-        <div className="github-user">
-          {account.avatarUrl ? (
-            <img src={account.avatarUrl} alt="" className="github-avatar" />
-          ) : (
-            <div className="github-avatar placeholder" />
-          )}
-          <div className="github-user-meta">
-            <strong>{account.login}</strong>
-            {account.name && <span className="muted small">{account.name}</span>}
+        <div className="auth-logged-in">
+          <div className="github-user">
+            {account.avatarUrl ? (
+              <img src={account.avatarUrl} alt="" className="github-avatar" />
+            ) : (
+              <div className="github-avatar placeholder" />
+            )}
+            <div className="github-user-meta">
+              <strong>{account.login}</strong>
+              {account.name && <span className="muted small">{account.name}</span>}
+              <span className="muted small">凭据已写入系统 Git Credential</span>
+            </div>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void logoutProvider(provider)}
+            >
+              退出
+            </button>
           </div>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void logoutProvider(provider)}
-          >
-            退出
-          </button>
         </div>
       );
     }
 
     return (
-      <>
-        {provider === "github" && (
+      <div className="auth-login-panel">
+        {account?.sessionExpired && (
+          <p className="auth-expired">
+            {label} 登录已失效，请重新登录。
+          </p>
+        )}
+        <p className="muted small auth-storage-hint">
+          登录成功后会写入本机 Git 凭据，供拉取/推送使用；退出时会尽量清除。
+        </p>
+
+        <div className="auth-method-row">
           <button
             type="button"
             className="primary"
             disabled={busy}
-            onClick={() => void loginWithGitManager()}
+            onClick={() => void loginWithGitManager(provider)}
+            title={
+              provider === "github"
+                ? "打开 Git Credential Manager 浏览器登录"
+                : "读取或填写 Gitee 凭据（密码处填私人令牌）"
+            }
           >
             用 Git 登录
           </button>
-        )}
-        <p className="muted small">{tokenHint}</p>
-        <label className="settings-field">
-          <span>Access Token</span>
-          <input
-            type="password"
-            value={draft.token}
-            onChange={(e) => updateDraft(provider, { token: e.target.value })}
-            placeholder={
-              provider === "github"
-                ? "ghp_… / github_pat_…"
-                : "Gitee 私人令牌"
-            }
+          <button
+            type="button"
             disabled={busy}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void loginWithToken(provider);
-            }}
-          />
-        </label>
+            onClick={() => void loginWithBrowser(provider)}
+            title="需先配置 OAuth Client ID / Secret"
+          >
+            浏览器登录
+          </button>
+        </div>
+
+        <div className="auth-token-block">
+          <div className="auth-token-head">
+            <span>Access Token</span>
+            <button
+              type="button"
+              className="linkish"
+              disabled={busy}
+              onClick={() => void openUrl(tokenDocUrl)}
+            >
+              如何获取
+            </button>
+          </div>
+          <p className="muted small">{scopeHint}</p>
+          <div className="auth-token-row">
+            <input
+              type={draft.showToken ? "text" : "password"}
+              value={draft.token}
+              onChange={(e) => updateDraft(provider, { token: e.target.value })}
+              onPaste={(e) => {
+                const text = e.clipboardData.getData("text").trim();
+                if (!text) return;
+                e.preventDefault();
+                updateDraft(provider, { token: text });
+                void loginWithToken(provider, text);
+              }}
+              placeholder={
+                provider === "github"
+                  ? "ghp_… / github_pat_…"
+                  : "Gitee 私人令牌"
+              }
+              disabled={busy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void loginWithToken(provider);
+              }}
+            />
+            <button
+              type="button"
+              className="auth-toggle-vis"
+              disabled={busy}
+              onClick={() =>
+                updateDraft(provider, { showToken: !draft.showToken })
+              }
+            >
+              {draft.showToken ? "隐藏" : "显示"}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || !draft.token.trim()}
+              onClick={() => void loginWithToken(provider)}
+            >
+              登录
+            </button>
+          </div>
+        </div>
+
         <button
           type="button"
-          className="primary"
-          disabled={busy || !draft.token.trim()}
-          onClick={() => void loginWithToken(provider)}
+          className="linkish auth-oauth-toggle"
+          disabled={busy}
+          onClick={() => updateDraft(provider, { showOauth: !draft.showOauth })}
         >
-          用 Token 登录
+          {draft.showOauth ? "收起 OAuth 应用配置" : "配置 OAuth 应用（浏览器登录用）"}
         </button>
-      </>
+        {draft.showOauth && (
+          <div className="auth-oauth-fields">
+            <p className="muted small">
+              在 {label} 创建 OAuth 应用，回调地址填本地端口（点「浏览器登录」时会提示）。
+              <button
+                type="button"
+                className="linkish"
+                disabled={busy}
+                onClick={() => void openUrl(oauthDocUrl)}
+              >
+                打开开发者设置
+              </button>
+            </p>
+            <label className="settings-field">
+              <span>Client ID</span>
+              <input
+                value={draft.clientId}
+                onChange={(e) =>
+                  updateDraft(provider, { clientId: e.target.value })
+                }
+                disabled={busy}
+                placeholder="OAuth Client ID"
+              />
+            </label>
+            <label className="settings-field">
+              <span>Client Secret</span>
+              <input
+                type="password"
+                value={draft.clientSecret}
+                onChange={(e) =>
+                  updateDraft(provider, { clientSecret: e.target.value })
+                }
+                disabled={busy}
+                placeholder="OAuth Client Secret"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={
+                busy || !draft.clientId.trim() || !draft.clientSecret.trim()
+              }
+              onClick={() =>
+                void (async () => {
+                  try {
+                    const status = await api.authSaveOauthConfig(
+                      provider,
+                      draft.clientId.trim(),
+                      draft.clientSecret.trim(),
+                    );
+                    applyAccount(status);
+                    setNotice(`已保存 ${label} OAuth 配置`);
+                  } catch (e) {
+                    setError(failureLine(e));
+                  }
+                })()
+              }
+            >
+              保存 OAuth 配置
+            </button>
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -1278,7 +1517,7 @@ export default function App() {
             <button type="button" className="primary" onClick={pickFolder} disabled={busy || !gitInfo}>
               打开文件夹
             </button>
-            <button type="button" onClick={() => setShowSettings(true)} disabled={busy}>
+            <button type="button" onClick={() => openSettings()} disabled={busy}>
               设置
             </button>
             <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
@@ -1425,7 +1664,7 @@ export default function App() {
             <ul>
               <li>主题、字体、最近打开、提交图、仓库缓存加速。</li>
               <li>壁纸：加载页/欢迎页图片或视频背景；可清除缓存。</li>
-              <li>GitHub / Gitee：凭据管理器登录，或粘贴 Token；可退出登录。</li>
+              <li>GitHub / Gitee：Git 登录、浏览器 OAuth、Token；工具栏可看登录状态。</li>
               <li>名字邮箱（可全局）、远程 origin、克隆地址。</li>
             </ul>
             <h4>多仓库与安全</h4>
@@ -1449,339 +1688,429 @@ export default function App() {
   }
 
   function renderSettings() {
+    const navItems: {
+      id: "appearance" | "auth" | "identity";
+      title: string;
+      desc: string;
+    }[] = [
+      { id: "appearance", title: "外观与行为", desc: "主题、壁纸与习惯" },
+      { id: "auth", title: "账号登录", desc: "GitHub / Gitee" },
+      { id: "identity", title: "身份与远程", desc: "名字、邮箱、地址" },
+    ];
+    const authLogged =
+      (accounts?.github.loggedIn ? 1 : 0) + (accounts?.gitee.loggedIn ? 1 : 0);
+
     return (
       <div className="modal-mask" onClick={() => setShowSettings(false)}>
         <div
-          className="modal settings-modal"
+          className="modal settings-modal settings-shell"
           onClick={(event) => event.stopPropagation()}
           role="dialog"
           aria-modal="true"
+          aria-label="设置"
         >
-          <h3>设置</h3>
-
-          <section className="settings-section">
-            <h4>外观与行为</h4>
-            <div className="settings-grid-2">
-              <label className="settings-field">
-                <span>主题</span>
-                <select
-                  value={prefs.theme}
-                  onChange={(e) =>
-                    updatePrefs({ theme: e.target.value as AppPrefs["theme"] })
-                  }
-                >
-                  <option value="light">浅色</option>
-                  <option value="dark">墨蓝深色</option>
-                  <option value="forest">青枝绿</option>
-                </select>
-              </label>
-              <label className="settings-field">
-                <span>字体大小</span>
-                <select
-                  value={prefs.fontSize}
-                  onChange={(e) =>
-                    updatePrefs({
-                      fontSize: e.target.value as AppPrefs["fontSize"],
-                    })
-                  }
-                >
-                  <option value="normal">标准</option>
-                  <option value="large">较大</option>
-                </select>
-              </label>
+          <header className="settings-shell-head">
+            <div>
+              <h3>设置</h3>
+              <p className="muted small">按分类管理外观、登录与仓库身份</p>
             </div>
-
-            <div className="pref-cards" role="group" aria-label="行为选项">
-              <label
-                className={`pref-card${prefs.rememberRecent ? " is-on" : ""}`}
-              >
-                <input
-                  type="checkbox"
-                  checked={prefs.rememberRecent}
-                  onChange={(e) =>
-                    updatePrefs({ rememberRecent: e.target.checked })
-                  }
-                />
-                <span className="pref-card-text">
-                  <strong>记住最近打开</strong>
-                  <span>欢迎页保留最近打开过的仓库路径</span>
-                </span>
-                <span className="pref-switch" aria-hidden />
-              </label>
-              <label
-                className={`pref-card${prefs.showCommitGraph ? " is-on" : ""}`}
-              >
-                <input
-                  type="checkbox"
-                  checked={prefs.showCommitGraph}
-                  onChange={(e) =>
-                    updatePrefs({ showCommitGraph: e.target.checked })
-                  }
-                />
-                <span className="pref-card-text">
-                  <strong>历史页提交图</strong>
-                  <span>在历史列表左侧显示分支车道图</span>
-                </span>
-                <span className="pref-switch" aria-hidden />
-              </label>
-              <label
-                className={`pref-card${prefs.useRepoCache ? " is-on" : ""}`}
-              >
-                <input
-                  type="checkbox"
-                  checked={prefs.useRepoCache}
-                  onChange={(e) =>
-                    updatePrefs({ useRepoCache: e.target.checked })
-                  }
-                />
-                <span className="pref-card-text">
-                  <strong>打开缓存加速</strong>
-                  <span>再次打开同一仓库时先用本地快照</span>
-                </span>
-                <span className="pref-switch" aria-hidden />
-              </label>
-              <button
-                type="button"
-                className="pref-cache-clear"
-                disabled={busy}
-                onClick={() => {
-                  clearRepoCache();
-                  setNotice("已清空仓库缓存");
-                }}
-              >
-                清空仓库缓存
-              </button>
-            </div>
-
-            <div className="wallpaper-panel">
-              <div className="wallpaper-panel-head">
-                <h4>欢迎页 / 加载页壁纸</h4>
-                <p className="muted small">
-                  支持图片或视频；打开仓库时的加载页也会使用。
-                </p>
-              </div>
-              <div className="wallpaper-preview-frame">
-                {prefs.wallpaperKind === "image" && wallpaperUrl ? (
-                  <img
-                    className="wallpaper-preview-media"
-                    src={wallpaperUrl}
-                    alt="当前壁纸预览"
-                  />
-                ) : prefs.wallpaperKind === "video" && wallpaperUrl ? (
-                  <video
-                    className="wallpaper-preview-media"
-                    src={wallpaperUrl}
-                    muted
-                    autoPlay
-                    loop
-                    playsInline
-                  />
-                ) : (
-                  <div className="wallpaper-preview-empty">
-                    <span>暂未设置壁纸</span>
-                    <span className="muted small">选择图片或视频作为背景</span>
-                  </div>
-                )}
-                {prefs.wallpaperKind !== "none" && (
-                  <span className="wallpaper-preview-badge">
-                    {prefs.wallpaperKind === "video" ? "视频" : "图片"}
-                  </span>
-                )}
-              </div>
-              <div className="row-actions wallpaper-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={busy}
-                  onClick={() => {
-                    void (async () => {
-                      const selected = await open({
-                        multiple: false,
-                        title: "选择壁纸图片或视频",
-                        filters: [
-                          {
-                            name: "媒体",
-                            extensions: [
-                              "png",
-                              "jpg",
-                              "jpeg",
-                              "webp",
-                              "gif",
-                              "mp4",
-                              "webm",
-                              "mov",
-                            ],
-                          },
-                        ],
-                      });
-                      if (typeof selected !== "string") return;
-                      try {
-                        const saved = await api.importWallpaper(selected);
-                        const lower = saved.toLowerCase();
-                        const kind =
-                          lower.endsWith(".mp4") ||
-                          lower.endsWith(".webm") ||
-                          lower.endsWith(".mov")
-                            ? ("video" as const)
-                            : ("image" as const);
-                        updatePrefs({
-                          wallpaperPath: saved,
-                          wallpaperKind: kind,
-                        });
-                        setNotice(
-                          kind === "video"
-                            ? "已设置动态视频壁纸"
-                            : "已设置图片壁纸",
-                        );
-                      } catch (e) {
-                        setError(failureLine(e));
-                      }
-                    })();
-                  }}
-                >
-                  选择壁纸
-                </button>
-                <button
-                  type="button"
-                  disabled={busy || prefs.wallpaperKind === "none"}
-                  onClick={() => {
-                    void (async () => {
-                      try {
-                        await api.clearWallpaper();
-                      } catch {
-                        /* ignore */
-                      }
-                      updatePrefs({
-                        wallpaperPath: "",
-                        wallpaperKind: "none",
-                      });
-                      setNotice("已清除壁纸");
-                    })();
-                  }}
-                >
-                  清除壁纸
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <hr className="settings-sep" />
-
-          <section className="settings-section">
-            <h4>远程账号登录</h4>
-            <p className="muted small">
-              不填 Token 时，拉取和推送会交给 Git 自带的凭据管理器，需要时它会打开浏览器登录。也可以在这里粘贴 Token，之后不再弹出。
-            </p>
-            <div className="auth-tabs">
-              <button
-                type="button"
-                className={authTab === "github" ? "active" : ""}
-                onClick={() => setAuthTab("github")}
-              >
-                GitHub
-                {accounts?.github.loggedIn ? " · 已登录" : ""}
-              </button>
-              <button
-                type="button"
-                className={authTab === "gitee" ? "active" : ""}
-                onClick={() => setAuthTab("gitee")}
-              >
-                Gitee
-                {accounts?.gitee.loggedIn ? " · 已登录" : ""}
-              </button>
-            </div>
-            {renderProviderAuth(authTab)}
-          </section>
-
-          <hr className="settings-sep" />
-
-          <label className="settings-field">
-            <span>名称</span>
-            <input
-              value={identity.name}
-              onChange={(e) =>
-                setIdentity((prev) => ({ ...prev, name: e.target.value }))
-              }
-              placeholder="你的名字"
-              disabled={!repoPath}
-            />
-          </label>
-          <label className="settings-field">
-            <span>邮箱</span>
-            <input
-              value={identity.email}
-              onChange={(e) =>
-                setIdentity((prev) => ({ ...prev, email: e.target.value }))
-              }
-              placeholder="you@example.com"
-              disabled={!repoPath}
-            />
-          </label>
-          {repoPath ? (
-            <>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={saveGlobally}
-                  onChange={(e) => setSaveGlobally(e.target.checked)}
-                />
-                这台电脑上的其他仓库也使用
-              </label>
-              <button
-                type="button"
-                disabled={
-                  busy || !identity.name.trim() || !identity.email.includes("@")
-                }
-                onClick={() =>
-                  void runAction(async () => {
-                    const name = identity.name.trim();
-                    const email = identity.email.trim();
-                    await api.setIdentity(repoPath, name, email, saveGlobally);
-                    setIdentity({ name, email });
-                    setIdentitySaved(true);
-                  }, "正在保存身份…")
-                }
-              >
-                保存名称和邮箱
-              </button>
-            </>
-          ) : (
-            <p className="muted small">打开仓库后可保存名称和邮箱。</p>
-          )}
-
-          <hr className="settings-sep" />
-
-          <label className="settings-field">
-            <span>远程地址（origin）</span>
-            <input
-              value={remoteUrl}
-              onChange={(e) => setRemoteUrl(e.target.value)}
-              placeholder="https://github.com/用户/仓库.git"
-              disabled={!repoPath}
-            />
-          </label>
-          <p className="muted small">
-            {repoPath
-              ? remotes.length === 0
-                ? "填写后点工具栏「保存远程」写入 origin。"
-                : "修改后点工具栏「保存远程」覆盖保存。"
-              : "打开仓库后可设置远程地址。"}
-          </p>
-
-          <label className="settings-field">
-            <span>克隆地址</span>
-            <input
-              value={cloneUrl}
-              onChange={(e) => updateCloneUrl(e.target.value)}
-              placeholder="https://github.com/用户/仓库.git"
-            />
-          </label>
-          <p className="muted small">填写后点「克隆」直接选择空文件夹并克隆。</p>
-
-          <div className="modal-actions">
-            <button type="button" className="primary" onClick={() => setShowSettings(false)}>
-              完成
+            <button
+              type="button"
+              className="settings-close"
+              onClick={() => setShowSettings(false)}
+              aria-label="关闭设置"
+            >
+              关闭
             </button>
+          </header>
+
+          <div className="settings-shell-body">
+            <nav className="settings-nav" aria-label="设置分类">
+              {navItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`settings-nav-item${
+                    settingsPage === item.id ? " is-active" : ""
+                  }`}
+                  onClick={() => setSettingsPage(item.id)}
+                >
+                  <span className="settings-nav-title">
+                    {item.title}
+                    {item.id === "auth" && authLogged > 0 && (
+                      <span className="settings-nav-badge">{authLogged}</span>
+                    )}
+                    {item.id === "auth" && sessionWarnings.length > 0 && (
+                      <span className="settings-nav-badge is-warn">!</span>
+                    )}
+                  </span>
+                  <span className="settings-nav-desc">{item.desc}</span>
+                </button>
+              ))}
+            </nav>
+
+            <div className="settings-pane">
+              {settingsPage === "appearance" && (
+                <section className="settings-section">
+                  <div className="settings-pane-intro">
+                    <h4>外观与行为</h4>
+                    <p className="muted small">调整界面观感与打开仓库时的习惯。</p>
+                  </div>
+                  <div className="settings-grid-2">
+                    <label className="settings-field">
+                      <span>主题</span>
+                      <select
+                        value={prefs.theme}
+                        onChange={(e) =>
+                          updatePrefs({
+                            theme: e.target.value as AppPrefs["theme"],
+                          })
+                        }
+                      >
+                        <option value="light">浅色</option>
+                        <option value="dark">墨蓝深色</option>
+                        <option value="forest">青枝绿</option>
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>字体大小</span>
+                      <select
+                        value={prefs.fontSize}
+                        onChange={(e) =>
+                          updatePrefs({
+                            fontSize: e.target.value as AppPrefs["fontSize"],
+                          })
+                        }
+                      >
+                        <option value="normal">标准</option>
+                        <option value="large">较大</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="pref-cards" role="group" aria-label="行为选项">
+                    <label
+                      className={`pref-card${prefs.rememberRecent ? " is-on" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={prefs.rememberRecent}
+                        onChange={(e) =>
+                          updatePrefs({ rememberRecent: e.target.checked })
+                        }
+                      />
+                      <span className="pref-card-text">
+                        <strong>记住最近打开</strong>
+                        <span>欢迎页保留最近打开过的仓库路径</span>
+                      </span>
+                      <span className="pref-switch" aria-hidden />
+                    </label>
+                    <label
+                      className={`pref-card${prefs.showCommitGraph ? " is-on" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={prefs.showCommitGraph}
+                        onChange={(e) =>
+                          updatePrefs({ showCommitGraph: e.target.checked })
+                        }
+                      />
+                      <span className="pref-card-text">
+                        <strong>历史页提交图</strong>
+                        <span>在历史列表左侧显示分支车道图</span>
+                      </span>
+                      <span className="pref-switch" aria-hidden />
+                    </label>
+                    <label
+                      className={`pref-card${prefs.useRepoCache ? " is-on" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={prefs.useRepoCache}
+                        onChange={(e) =>
+                          updatePrefs({ useRepoCache: e.target.checked })
+                        }
+                      />
+                      <span className="pref-card-text">
+                        <strong>打开缓存加速</strong>
+                        <span>再次打开同一仓库时先用本地快照</span>
+                      </span>
+                      <span className="pref-switch" aria-hidden />
+                    </label>
+                    <button
+                      type="button"
+                      className="pref-cache-clear"
+                      disabled={busy}
+                      onClick={() => {
+                        clearRepoCache();
+                        setNotice("已清空仓库缓存");
+                      }}
+                    >
+                      清空仓库缓存
+                    </button>
+                  </div>
+
+                  <div className="wallpaper-panel">
+                    <div className="wallpaper-panel-head">
+                      <h4>欢迎页 / 加载页壁纸</h4>
+                      <p className="muted small">
+                        支持图片或视频；打开仓库时的加载页也会使用。
+                      </p>
+                    </div>
+                    <div className="wallpaper-preview-frame">
+                      {prefs.wallpaperKind === "image" && wallpaperUrl ? (
+                        <img
+                          className="wallpaper-preview-media"
+                          src={wallpaperUrl}
+                          alt="当前壁纸预览"
+                        />
+                      ) : prefs.wallpaperKind === "video" && wallpaperUrl ? (
+                        <video
+                          className="wallpaper-preview-media"
+                          src={wallpaperUrl}
+                          muted
+                          autoPlay
+                          loop
+                          playsInline
+                        />
+                      ) : (
+                        <div className="wallpaper-preview-empty">
+                          <span>暂未设置壁纸</span>
+                          <span className="muted small">选择图片或视频作为背景</span>
+                        </div>
+                      )}
+                      {prefs.wallpaperKind !== "none" && (
+                        <span className="wallpaper-preview-badge">
+                          {prefs.wallpaperKind === "video" ? "视频" : "图片"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="row-actions wallpaper-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={busy}
+                        onClick={() => {
+                          void (async () => {
+                            const selected = await open({
+                              multiple: false,
+                              title: "选择壁纸图片或视频",
+                              filters: [
+                                {
+                                  name: "媒体",
+                                  extensions: [
+                                    "png",
+                                    "jpg",
+                                    "jpeg",
+                                    "webp",
+                                    "gif",
+                                    "mp4",
+                                    "webm",
+                                    "mov",
+                                  ],
+                                },
+                              ],
+                            });
+                            if (typeof selected !== "string") return;
+                            try {
+                              const saved = await api.importWallpaper(selected);
+                              const lower = saved.toLowerCase();
+                              const kind =
+                                lower.endsWith(".mp4") ||
+                                lower.endsWith(".webm") ||
+                                lower.endsWith(".mov")
+                                  ? ("video" as const)
+                                  : ("image" as const);
+                              updatePrefs({
+                                wallpaperPath: saved,
+                                wallpaperKind: kind,
+                              });
+                              setNotice(
+                                kind === "video"
+                                  ? "已设置动态视频壁纸"
+                                  : "已设置图片壁纸",
+                              );
+                            } catch (e) {
+                              setError(failureLine(e));
+                            }
+                          })();
+                        }}
+                      >
+                        选择壁纸
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy || prefs.wallpaperKind === "none"}
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await api.clearWallpaper();
+                            } catch {
+                              /* ignore */
+                            }
+                            updatePrefs({
+                              wallpaperPath: "",
+                              wallpaperKind: "none",
+                            });
+                            setNotice("已清除壁纸");
+                          })();
+                        }}
+                      >
+                        清除壁纸
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {settingsPage === "auth" && (
+                <section className="settings-section" ref={authSectionRef}>
+                  <div className="settings-pane-intro">
+                    <h4>账号登录</h4>
+                    <p className="muted small">
+                      推荐「用 Git 登录」或粘贴 Token。浏览器登录需先配置 OAuth。
+                      登录写入系统 Git 凭据，退出时会尽量清除。
+                    </p>
+                  </div>
+                  {sessionWarnings.length > 0 && (
+                    <p className="auth-expired">
+                      {sessionWarnings.join("、")} 登录已失效，请重新登录。
+                    </p>
+                  )}
+                  <div className="auth-tabs">
+                    <button
+                      type="button"
+                      className={authTab === "github" ? "active" : ""}
+                      onClick={() => setAuthTab("github")}
+                    >
+                      GitHub
+                      {accounts?.github.loggedIn ? " · 已登录" : ""}
+                      {accounts?.github.sessionExpired ? " · 已失效" : ""}
+                    </button>
+                    <button
+                      type="button"
+                      className={authTab === "gitee" ? "active" : ""}
+                      onClick={() => setAuthTab("gitee")}
+                    >
+                      Gitee
+                      {accounts?.gitee.loggedIn ? " · 已登录" : ""}
+                      {accounts?.gitee.sessionExpired ? " · 已失效" : ""}
+                    </button>
+                  </div>
+                  {renderProviderAuth(authTab)}
+                </section>
+              )}
+
+              {settingsPage === "identity" && (
+                <section className="settings-section">
+                  <div className="settings-pane-intro">
+                    <h4>身份与远程</h4>
+                    <p className="muted small">
+                      提交署名、远程 origin 与克隆地址。
+                    </p>
+                  </div>
+                  <div className="settings-card">
+                    <label className="settings-field">
+                      <span>名称</span>
+                      <input
+                        value={identity.name}
+                        onChange={(e) =>
+                          setIdentity((prev) => ({
+                            ...prev,
+                            name: e.target.value,
+                          }))
+                        }
+                        placeholder="你的名字"
+                        disabled={!repoPath}
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>邮箱</span>
+                      <input
+                        value={identity.email}
+                        onChange={(e) =>
+                          setIdentity((prev) => ({
+                            ...prev,
+                            email: e.target.value,
+                          }))
+                        }
+                        placeholder="you@example.com"
+                        disabled={!repoPath}
+                      />
+                    </label>
+                    {repoPath ? (
+                      <>
+                        <label className="check">
+                          <input
+                            type="checkbox"
+                            checked={saveGlobally}
+                            onChange={(e) => setSaveGlobally(e.target.checked)}
+                          />
+                          这台电脑上的其他仓库也使用
+                        </label>
+                        <button
+                          type="button"
+                          className="primary"
+                          disabled={
+                            busy ||
+                            !identity.name.trim() ||
+                            !identity.email.includes("@")
+                          }
+                          onClick={() =>
+                            void runAction(async () => {
+                              const name = identity.name.trim();
+                              const email = identity.email.trim();
+                              await api.setIdentity(
+                                repoPath,
+                                name,
+                                email,
+                                saveGlobally,
+                              );
+                              setIdentity({ name, email });
+                              setIdentitySaved(true);
+                            }, "正在保存身份…")
+                          }
+                        >
+                          保存名称和邮箱
+                        </button>
+                      </>
+                    ) : (
+                      <p className="muted small">打开仓库后可保存名称和邮箱。</p>
+                    )}
+                  </div>
+
+                  <div className="settings-card">
+                    <label className="settings-field">
+                      <span>远程地址（origin）</span>
+                      <input
+                        value={remoteUrl}
+                        onChange={(e) => setRemoteUrl(e.target.value)}
+                        placeholder="https://github.com/用户/仓库.git"
+                        disabled={!repoPath}
+                      />
+                    </label>
+                    <p className="muted small">
+                      {repoPath
+                        ? remotes.length === 0
+                          ? "填写后点工具栏「保存远程」写入 origin。"
+                          : "修改后点工具栏「保存远程」覆盖保存。"
+                        : "打开仓库后可设置远程地址。"}
+                    </p>
+                    <label className="settings-field">
+                      <span>克隆地址</span>
+                      <input
+                        value={cloneUrl}
+                        onChange={(e) => updateCloneUrl(e.target.value)}
+                        placeholder="https://github.com/用户/仓库.git"
+                      />
+                    </label>
+                    <p className="muted small">
+                      填写后点「克隆」直接选择空文件夹并克隆。
+                    </p>
+                  </div>
+                </section>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -1825,7 +2154,7 @@ export default function App() {
           >
             刷新
           </button>
-          <button type="button" onClick={() => setShowSettings(true)} disabled={busy}>
+          <button type="button" onClick={() => openSettings()} disabled={busy}>
             设置
           </button>
           <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
@@ -1846,6 +2175,30 @@ export default function App() {
           </div>
         </div>
         <div className="toolbar-right">
+          <button
+            type="button"
+            className={`auth-chip${
+              accounts?.github.loggedIn || accounts?.gitee.loggedIn
+                ? " is-in"
+                : sessionWarnings.length > 0
+                  ? " is-warn"
+                  : ""
+            }`}
+            disabled={busy}
+            title="远程账号登录"
+            onClick={() => openSettingsAuth()}
+          >
+            {accounts?.github.loggedIn || accounts?.gitee.loggedIn
+              ? [
+                  accounts?.github.loggedIn ? `GH:${accounts.github.login}` : null,
+                  accounts?.gitee.loggedIn ? `码云:${accounts.gitee.login}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : sessionWarnings.length > 0
+                ? "登录已失效"
+                : "未登录"}
+          </button>
           <button
             type="button"
             disabled={busy}
@@ -1904,19 +2257,41 @@ export default function App() {
         </button>
       )}
       {error && (
-        <button
-          type="button"
-          className="error-box status-dismiss"
-          title={`${error}（点击关闭）`}
-          onClick={() => setError(null)}
-        >
-          {error}
-        </button>
+        <div className="error-box error-banner-row">
+          <button
+            type="button"
+            className="status-dismiss error-banner-text"
+            title={`${error}（点击关闭）`}
+            onClick={() => {
+              setError(null);
+              setAuthHint(false);
+            }}
+          >
+            {error}
+          </button>
+          {authHint && (
+            <button
+              type="button"
+              className="primary error-login-btn"
+              onClick={() => openSettingsAuth()}
+            >
+              去登录
+            </button>
+          )}
+        </div>
+      )}
+      {sessionWarnings.length > 0 && !error && (
+        <div className="hint-box auth-warn-strip">
+          {sessionWarnings.join("、")} 登录已失效。
+          <button type="button" className="linkish" onClick={() => openSettingsAuth()}>
+            重新登录
+          </button>
+        </div>
       )}
       {!identitySaved && (
         <div className="hint-box">
           提交前请先在
-          <button type="button" className="linkish" onClick={() => setShowSettings(true)}>
+          <button type="button" className="linkish" onClick={() => openSettings("identity")}>
             设置
           </button>
           里填写名字和邮箱。
@@ -2347,7 +2722,7 @@ export default function App() {
                 <button
                   type="button"
                   className="linkish muted small"
-                  onClick={() => setShowSettings(true)}
+                  onClick={() => openSettings("identity")}
                 >
                   {identity.name} · {identity.email}
                 </button>
@@ -2355,7 +2730,7 @@ export default function App() {
                 <button
                   type="button"
                   className="linkish muted small"
-                  onClick={() => setShowSettings(true)}
+                  onClick={() => openSettings("identity")}
                 >
                   去设置里填写名字和邮箱
                 </button>

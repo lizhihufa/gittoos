@@ -5,8 +5,8 @@ mod types;
 
 pub use auth::{
     auth_accounts, auth_browser_begin, auth_browser_finish, auth_device_poll, auth_device_start,
-    auth_github_gcm_login, auth_login_token, auth_logout, auth_save_config, AuthAccounts,
-    GithubDevicePollResult, GithubDeviceStart, OauthBegin, ProviderStatus,
+    auth_login_token, auth_logout, auth_manager_login, auth_save_config,
+    AuthAccounts, GithubDevicePollResult, GithubDeviceStart, OauthBegin, ProviderStatus,
 };
 pub use runner::{
     ensure_git, git_info, run_shell, set_app_handle, with_git_quiet, GitBinary,

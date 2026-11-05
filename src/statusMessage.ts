@@ -175,9 +175,10 @@ export function translateGitMessage(raw: string): string | null {
     /authentication failed|access denied|invalid username or password|could not read username|auth fail/i.test(
       text,
     ) ||
-    /http basic:\s*access denied/i.test(text)
+    /http basic:\s*access denied/i.test(text) ||
+    /登录无效|凭据|AUTH_NEEDED/i.test(text)
   ) {
-    return "身份验证失败。请到设置中重新登录，或检查 Token / 凭据是否有效。";
+    return "身份验证失败。请点「去登录」重新登录，或检查 Token / 凭据是否有效。";
   }
   if (/permission denied \(publickey\)|could not open a connection to your authentication agent/i.test(text)) {
     return "SSH 公钥认证失败。请检查本机 SSH 密钥是否已添加到远程平台。";
@@ -253,6 +254,17 @@ export function translateGitMessage(raw: string): string | null {
   }
 
   return null;
+}
+
+/** Whether this error looks like a credentials / auth failure. */
+export function isAuthFailure(error: unknown): boolean {
+  const raw = String(error ?? "");
+  if (/protected branch|file size|GH001|pre-receive|unrelated histories|non-fast-forward/i.test(raw)) {
+    return false;
+  }
+  return /authentication failed|access denied|invalid username or password|could not read username|auth fail|http basic:\s*access denied|登录无效|身份验证失败|AUTH_NEEDED|could not access|Permission denied \(password\)|terminal prompts disabled/i.test(
+    raw,
+  );
 }
 
 export function failureLine(error: unknown): string {

@@ -83,6 +83,9 @@ pub struct ProviderStatus {
     pub client_id: String,
     pub has_client_id: bool,
     pub has_client_secret: bool,
+    /// True when a saved token existed but failed validation (cleared).
+    #[serde(default)]
+    pub session_expired: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +255,14 @@ fn provider_slot_mut(store: &mut AuthStore, provider: Provider) -> &mut Provider
 }
 
 fn status_of(provider: Provider, slot: &ProviderStore) -> ProviderStatus {
+    status_of_with_flag(provider, slot, false)
+}
+
+fn status_of_with_flag(
+    provider: Provider,
+    slot: &ProviderStore,
+    session_expired: bool,
+) -> ProviderStatus {
     ProviderStatus {
         provider: provider.as_str().to_string(),
         logged_in: !slot.token.is_empty() && !slot.login.is_empty(),
@@ -261,6 +272,7 @@ fn status_of(provider: Provider, slot: &ProviderStore) -> ProviderStatus {
         client_id: slot.client_id.clone(),
         has_client_id: !slot.client_id.trim().is_empty(),
         has_client_secret: !slot.client_secret.trim().is_empty(),
+        session_expired,
     }
 }
 
@@ -612,7 +624,11 @@ fn refresh_provider(provider: Provider) -> Result<ProviderStatus, GitError> {
             if !login.is_empty() {
                 let _ = reject_credential(provider, &login);
             }
-            Ok(status_of(provider, provider_slot(&store, provider)))
+            Ok(status_of_with_flag(
+                provider,
+                provider_slot(&store, provider),
+                true,
+            ))
         }
     }
 }
@@ -823,43 +839,60 @@ pub fn auth_device_poll(device_code: &str) -> Result<GithubDevicePollResult, Git
     }
 }
 
-pub fn auth_github_gcm_login() -> Result<ProviderStatus, GitError> {
+/// Open Git Credential Manager / fill stored credentials for GitHub or Gitee.
+pub fn auth_manager_login(provider_raw: &str) -> Result<ProviderStatus, GitError> {
+    let provider = Provider::parse(provider_raw)?;
     let git = ensure_git()?;
-    emit_terminal("info", "正在打开 Git 凭据管理器登录 GitHub…");
-    let output = Command::new(&git.path)
-        .args(["credential-manager", "github", "login"])
-        .output()
-        .map_err(|e| {
-            GitError::InvalidInput(format!(
-                "无法启动 Git 凭据管理器：{e}。请确认已安装完整版 Git for Windows。"
-            ))
-        })?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if err.is_empty() {
-            format!("退出码 {}", output.status.code().unwrap_or(1))
-        } else {
-            err
-        };
-        return Err(GitError::InvalidInput(format!(
-            "Git 凭据管理器登录未完成：{detail}"
-        )));
+    match provider {
+        Provider::Github => {
+            emit_terminal("info", "正在打开 Git 凭据管理器登录 GitHub…");
+            let output = Command::new(&git.path)
+                .args(["credential-manager", "github", "login"])
+                .output()
+                .map_err(|e| {
+                    GitError::InvalidInput(format!(
+                        "无法启动 Git 凭据管理器：{e}。请确认已安装完整版 Git for Windows。"
+                    ))
+                })?;
+            if !output.status.success() {
+                let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let detail = if err.is_empty() {
+                    format!("退出码 {}", output.status.code().unwrap_or(1))
+                } else {
+                    err
+                };
+                return Err(GitError::InvalidInput(format!(
+                    "Git 凭据管理器登录未完成：{detail}"
+                )));
+            }
+        }
+        Provider::Gitee => {
+            emit_terminal(
+                "info",
+                "正在通过 Git 凭据管理器读取 Gitee 凭据（若未保存过，会弹出输入框；密码处填私人令牌）…",
+            );
+        }
     }
 
-    let filled = fill_github_credential(&git)?;
+    let filled = fill_host_credential(&git, provider.host())?;
     let token = filled
         .password
         .filter(|p| !p.is_empty())
-        .ok_or_else(|| GitError::InvalidInput("凭据管理器没有返回 GitHub 凭据".to_string()))?;
-    let user = fetch_user(Provider::Github, &token)?;
-    persist_session(Provider::Github, &token, &user)
+        .ok_or_else(|| {
+            GitError::InvalidInput(format!(
+                "凭据管理器没有返回 {} 凭据。可改用 Token 或浏览器登录。",
+                provider.label()
+            ))
+        })?;
+    let user = fetch_user(provider, &token)?;
+    persist_session(provider, &token, &user)
 }
 
 struct FilledCredential {
     password: Option<String>,
 }
 
-fn fill_github_credential(git: &GitBinary) -> Result<FilledCredential, GitError> {
+fn fill_host_credential(git: &GitBinary, host: &str) -> Result<FilledCredential, GitError> {
     let mut child = Command::new(&git.path)
         .args(["credential", "fill"])
         .stdin(Stdio::piped())
@@ -871,7 +904,8 @@ fn fill_github_credential(git: &GitBinary) -> Result<FilledCredential, GitError>
             message: e.to_string(),
         })?;
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(b"protocol=https\nhost=github.com\n\n");
+        let payload = format!("protocol=https\nhost={host}\n\n");
+        let _ = stdin.write_all(payload.as_bytes());
     }
     let output = child.wait_with_output().map_err(|e| GitError::Io {
         path: git.path.display().to_string(),
@@ -880,7 +914,7 @@ fn fill_github_credential(git: &GitBinary) -> Result<FilledCredential, GitError>
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(GitError::InvalidInput(format!(
-            "读取 GitHub 凭据失败：{err}"
+            "读取 {host} 凭据失败：{err}"
         )));
     }
     let text = String::from_utf8_lossy(&output.stdout);

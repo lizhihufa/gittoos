@@ -111,6 +111,22 @@ export const api = {
     invoke<string>("run_command", { path, command }),
 
   authAccounts: () => invoke<AuthAccounts>("auth_get_accounts"),
+  authSaveOauthConfig: (
+    provider: AuthProvider,
+    clientId: string,
+    clientSecret: string,
+  ) =>
+    invoke<ProviderStatus>("auth_save_oauth_config", {
+      provider,
+      clientId,
+      clientSecret,
+    }),
+  authStartBrowser: (provider: AuthProvider) =>
+    invoke<import("./types").OauthBegin>("auth_start_browser", { provider }),
+  authFinishBrowser: (provider: AuthProvider) =>
+    invoke<ProviderStatus>("auth_finish_browser", { provider }),
+  authManagerLogin: (provider: AuthProvider) =>
+    invoke<ProviderStatus>("auth_manager_login", { provider }),
   authGithubManagerLogin: () =>
     invoke<ProviderStatus>("auth_github_manager_login"),
   authLoginToken: (provider: AuthProvider, token: string) =>
