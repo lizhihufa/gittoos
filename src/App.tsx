@@ -48,12 +48,14 @@ import type {
   BranchInfo,
   CommitInfo,
   FileChange,
+  GithubDeviceStart,
   GitInfo,
   Identity,
   ProviderStatus,
   RemoteBranchInfo,
   RemoteInfo,
   RepoStatus,
+  SshStatus,
   StashInfo,
   TagInfo,
 } from "./types";
@@ -190,6 +192,11 @@ export default function App() {
   });
   const [authHint, setAuthHint] = useState(false);
   const [sessionWarnings, setSessionWarnings] = useState<string[]>([]);
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [deviceFlow, setDeviceFlow] = useState<GithubDeviceStart | null>(null);
+  const [deviceStatus, setDeviceStatus] = useState("");
+  const devicePollRef = useRef<number | null>(null);
+  const [sshStatus, setSshStatus] = useState<SshStatus | null>(null);
   const authSectionRef = useRef<HTMLElement | null>(null);
   const [recentExists, setRecentExists] = useState<Record<string, boolean>>({});
   const [fileQuery, setFileQuery] = useState("");
@@ -653,6 +660,13 @@ export default function App() {
     };
   }
 
+  const stopDevicePoll = useCallback(() => {
+    if (devicePollRef.current !== null) {
+      window.clearTimeout(devicePollRef.current);
+      devicePollRef.current = null;
+    }
+  }, []);
+
   const refreshAccounts = useCallback(async () => {
     try {
       const next = await api.authAccounts();
@@ -671,19 +685,40 @@ export default function App() {
           clientId: next.gitee.clientId || prev.gitee.clientId,
         },
       }));
+      if (next.github.loggedIn || next.gitee.loggedIn) {
+        setAddingAccount(false);
+      }
     } catch (e) {
       setError(failureLine(e));
     }
   }, []);
 
+  const refreshSsh = useCallback(async () => {
+    try {
+      setSshStatus(await api.authSshStatus());
+    } catch {
+      /* SSH optional */
+    }
+  }, []);
+
   useEffect(() => {
-    void refreshAccounts();
+    void (async () => {
+      try {
+        await api.authEnsureCredentials();
+      } catch {
+        /* ignore */
+      }
+      await refreshAccounts();
+    })();
   }, [refreshAccounts]);
 
   useEffect(() => {
     if (!showSettings) return;
     void refreshAccounts();
-  }, [showSettings, refreshAccounts]);
+    if (settingsPage === "auth") void refreshSsh();
+  }, [showSettings, settingsPage, refreshAccounts, refreshSsh]);
+
+  useEffect(() => () => stopDevicePoll(), [stopDevicePoll]);
 
   function openSettings(page: "appearance" | "auth" | "identity" = "appearance") {
     setSettingsPage(page);
@@ -717,6 +752,7 @@ export default function App() {
     try {
       const status = await api.authManagerLogin(provider);
       applyAccount(status);
+      setAddingAccount(false);
       setSessionWarnings((prev) =>
         prev.filter((p) => p !== (provider === "github" ? "GitHub" : "Gitee")),
       );
@@ -734,8 +770,13 @@ export default function App() {
     const draft = drafts[provider];
     const clientId = draft.clientId.trim();
     const clientSecret = draft.clientSecret.trim();
-    if (!clientId || !clientSecret) {
-      setError("浏览器登录需要填写 Client ID 和 Client Secret（可在下方展开填写）。");
+    const ready =
+      accounts?.[provider]?.oauthReady &&
+      accounts[provider].hasClientSecret;
+    if ((!clientId || !clientSecret) && !ready) {
+      setError(
+        "浏览器登录需要 Client ID 和 Client Secret（可在下方配置一次并保存）。设备码登录只需 Client ID。",
+      );
       updateDraft(provider, { showOauth: true });
       return;
     }
@@ -744,12 +785,15 @@ export default function App() {
     setAuthHint(false);
     setNotice("正在打开浏览器，请完成授权…");
     try {
-      await api.authSaveOauthConfig(provider, clientId, clientSecret);
+      if (clientId && clientSecret) {
+        await api.authSaveOauthConfig(provider, clientId, clientSecret);
+      }
       const begin = await api.authStartBrowser(provider);
       await openUrl(begin.authUrl);
       setNotice("请在浏览器完成授权，返回本窗口等待…");
       const status = await api.authFinishBrowser(provider);
       applyAccount(status);
+      setAddingAccount(false);
       setSessionWarnings((prev) =>
         prev.filter((p) => p !== (provider === "github" ? "GitHub" : "Gitee")),
       );
@@ -758,6 +802,84 @@ export default function App() {
       setNotice(null);
       setError(failureLine(e));
       setAuthHint(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loginWithDevice() {
+    stopDevicePoll();
+    setBusy(true);
+    setError(null);
+    setAuthHint(false);
+    setDeviceStatus("");
+    setNotice("正在申请 GitHub 设备码…");
+    try {
+      const draft = drafts.github;
+      if (draft.clientId.trim()) {
+        await api.authSaveOauthConfig(
+          "github",
+          draft.clientId.trim(),
+          draft.clientSecret.trim(),
+        );
+      }
+      const start = await api.authStartDevice();
+      setDeviceFlow(start);
+      setNotice(`请在浏览器打开 ${start.verificationUri}，输入代码 ${start.userCode}`);
+      setDeviceStatus("等待授权…");
+      setBusy(false);
+      const poll = async (intervalSec: number) => {
+        devicePollRef.current = window.setTimeout(async () => {
+          try {
+            const result = await api.authPollDevice(start.deviceCode);
+            if (result.status === "success" && result.account) {
+              stopDevicePoll();
+              setDeviceFlow(null);
+              setDeviceStatus("");
+              applyAccount(result.account);
+              setAddingAccount(false);
+              setSessionWarnings((prev) => prev.filter((p) => p !== "GitHub"));
+              setNotice(`已通过设备码登录：${result.account.login}`);
+              return;
+            }
+            const nextInterval =
+              result.status === "slow_down"
+                ? intervalSec + 5
+                : Math.max(intervalSec, start.interval);
+            setDeviceStatus(result.message || "等待授权…");
+            void poll(nextInterval);
+          } catch (e) {
+            stopDevicePoll();
+            setDeviceFlow(null);
+            setDeviceStatus("");
+            setError(failureLine(e));
+            setAuthHint(true);
+          }
+        }, intervalSec * 1000);
+      };
+      void poll(start.interval);
+    } catch (e) {
+      setNotice(null);
+      setDeviceFlow(null);
+      setError(failureLine(e));
+      if (/Client ID/i.test(String(e))) {
+        updateDraft("github", { showOauth: true });
+      }
+      setAuthHint(true);
+      setBusy(false);
+    }
+  }
+
+  async function switchAccount(provider: AuthProvider, accountId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const status = await api.authSwitchAccount(provider, accountId);
+      applyAccount(status);
+      setAddingAccount(false);
+      setNotice(`已切换到 ${status.login}`);
+    } catch (e) {
+      setError(failureLine(e));
     } finally {
       setBusy(false);
     }
@@ -773,6 +895,7 @@ export default function App() {
       const status = await api.authLoginToken(provider, token);
       applyAccount(status);
       updateDraft(provider, { token: "" });
+      setAddingAccount(false);
       setSessionWarnings((prev) =>
         prev.filter((p) => p !== (provider === "github" ? "GitHub" : "Gitee")),
       );
@@ -786,8 +909,12 @@ export default function App() {
   }
 
   async function logoutProvider(provider: AuthProvider) {
+    const label = provider === "github" ? "GitHub" : "Gitee";
+    const multi = (accounts?.[provider]?.accounts?.length ?? 0) > 1;
     const ok = await confirmAction(
-      `退出 ${provider === "github" ? "GitHub" : "Gitee"}？\n将清除本工具保存的登录信息，并尝试删除系统 Git 凭据中的对应条目。`,
+      multi
+        ? `退出当前 ${label} 账号「${accounts?.[provider]?.login}」？\n将清除该账号登录信息，并尝试删除系统 Git 凭据。其他已保存账号仍保留。`
+        : `退出 ${label}？\n将清除本工具保存的登录信息，并尝试删除系统 Git 凭据中的对应条目。`,
     );
     if (!ok) return;
     setBusy(true);
@@ -795,7 +922,12 @@ export default function App() {
     try {
       const status = await api.authLogout(provider);
       applyAccount(status);
-      setNotice(`已退出 ${provider === "github" ? "GitHub" : "Gitee"}`);
+      setAddingAccount(false);
+      setNotice(
+        status.loggedIn
+          ? `已退出，当前账号：${status.login}`
+          : `已退出 ${label}`,
+      );
     } catch (e) {
       setError(failureLine(e));
     } finally {
@@ -995,7 +1127,20 @@ export default function App() {
     }, ACTION_WATCHDOG_MS);
     try {
       await yieldToUi();
-      const result = await action();
+      let result: unknown;
+      try {
+        result = await action();
+      } catch (firstErr) {
+        if (!isAuthFailure(firstErr)) throw firstErr;
+        setNotice("认证失败，正在同步本地凭据并重试…");
+        try {
+          await api.authEnsureCredentials();
+        } catch {
+          /* still retry once */
+        }
+        await yieldToUi();
+        result = await action();
+      }
       await yieldToUi();
       window.clearTimeout(watchdog);
       if (timedOut) {

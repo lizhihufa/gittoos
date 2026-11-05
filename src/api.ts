@@ -133,4 +133,19 @@ export const api = {
     invoke<ProviderStatus>("auth_login_with_token", { provider, token }),
   authLogout: (provider: AuthProvider) =>
     invoke<ProviderStatus>("auth_sign_out", { provider }),
+  authStartDevice: () =>
+    invoke<import("./types").GithubDeviceStart>("auth_start_device"),
+  authPollDevice: (deviceCode: string) =>
+    invoke<import("./types").GithubDevicePollResult>("auth_poll_device", {
+      deviceCode,
+    }),
+  authEnsureCredentials: () =>
+    invoke<AuthAccounts>("auth_ensure_creds"),
+  authSwitchAccount: (provider: AuthProvider, accountId: string) =>
+    invoke<ProviderStatus>("auth_switch_account_cmd", { provider, accountId }),
+  authSshStatus: () => invoke<import("./types").SshStatus>("auth_get_ssh_status"),
+  authSshGenerate: () =>
+    invoke<import("./types").SshStatus>("auth_generate_ssh_key"),
+  authSshTest: (provider: AuthProvider) =>
+    invoke<import("./types").SshTestResult>("auth_test_ssh", { provider }),
 };
