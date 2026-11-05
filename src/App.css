@@ -82,6 +82,93 @@ body,
 #root {
   margin: 0;
   height: 100%;
+  overflow: hidden;
+}
+
+:root {
+  --chrome-h: 36px;
+}
+
+/* Frameless window chrome — wallpaper can show through in overlay mode. */
+.window-chrome {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--chrome-h);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 0.75rem;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  user-select: none;
+}
+
+.window-chrome.is-overlay {
+  background: linear-gradient(
+    180deg,
+    rgba(10, 12, 14, 0.42) 0%,
+    rgba(10, 12, 14, 0.12) 70%,
+    transparent 100%
+  );
+  border-bottom: none;
+  color: #f5f7f6;
+}
+
+.window-chrome-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.88;
+  pointer-events: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.window-chrome.is-overlay .window-chrome-title {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.window-chrome-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  flex: none;
+}
+
+.window-chrome-btn {
+  width: 46px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+.window-chrome-btn:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.window-chrome.is-overlay .window-chrome-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.window-chrome-btn.is-close:hover:not(:disabled) {
+  background: #e81123 !important;
+  color: #fff;
 }
 
 button,
@@ -140,11 +227,17 @@ button.danger {
   display: grid;
   place-items: center;
   padding: 2rem;
+  padding-top: calc(2rem + var(--chrome-h));
   overflow: hidden;
   background:
     radial-gradient(circle at 20% 20%, #e7efe8, transparent 40%),
     radial-gradient(circle at 80% 0%, #efe6d8, transparent 35%),
     var(--bg);
+}
+
+.welcome.has-wallpaper {
+  /* Wallpaper is full-bleed under the frameless chrome. */
+  padding-top: 2rem;
 }
 
 .welcome-wallpaper {
@@ -311,6 +404,8 @@ button.danger {
   height: 100%;
   display: flex;
   flex-direction: column;
+  padding-top: var(--chrome-h);
+  box-sizing: border-box;
 }
 
 .repo-tabs {
@@ -1222,10 +1317,118 @@ html[data-theme="dark"] .ref-badge {
 
 .device-code {
   margin: 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--line);
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-align: center;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.auth-device-panel {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.auth-account-list {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.auth-account-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  text-align: left;
+  padding: 0.35rem 0.55rem;
+}
+
+.auth-account-item img,
+.auth-account-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+
+.auth-account-dot {
+  background: var(--line);
+}
+
+.auth-account-item.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+.auth-account-item em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.auth-ssh-block {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.auth-ssh-keys {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.auth-ssh-keys li {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.auth-ssh-path {
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.auth-ssh-feedback {
+  margin: 0.15rem 0 0;
   padding: 0.45rem 0.55rem;
-  border-radius: 6px;
-  background: #f3eee6;
-  font-size: 13px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.auth-ssh-feedback.is-pending {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--text);
+}
+
+.auth-ssh-feedback.is-ok {
+  background: color-mix(in srgb, #2f7d4a 14%, var(--surface));
+  color: #1f6b3a;
+}
+
+.auth-ssh-feedback.is-bad {
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  color: var(--danger);
+}
+
+html[data-theme="dark"] .auth-ssh-feedback.is-ok {
+  color: #8fd4a8;
 }
 
 .auth-tabs {

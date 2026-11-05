@@ -17,6 +17,7 @@ import { ChangeList } from "./components/ChangeList";
 import { ExtraPane, type Pane } from "./components/ExtraPane";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { Terminal } from "./components/Terminal";
+import { WindowChrome } from "./components/WindowChrome";
 import {
   clearRecent,
   loadRecent,
@@ -197,6 +198,10 @@ export default function App() {
   const [deviceStatus, setDeviceStatus] = useState("");
   const devicePollRef = useRef<number | null>(null);
   const [sshStatus, setSshStatus] = useState<SshStatus | null>(null);
+  const [sshFeedback, setSshFeedback] = useState<{
+    ok: boolean | null;
+    text: string;
+  } | null>(null);
   const authSectionRef = useRef<HTMLElement | null>(null);
   const [recentExists, setRecentExists] = useState<Record<string, boolean>>({});
   const [fileQuery, setFileQuery] = useState("");
@@ -657,6 +662,9 @@ export default function App() {
       hasClientId: false,
       hasClientSecret: false,
       sessionExpired: false,
+      accounts: [],
+      oauthReady: false,
+      usingBuiltinOauth: false,
     };
   }
 
@@ -1405,6 +1413,133 @@ export default function App() {
     );
   }
 
+  function renderSshPanel(provider: AuthProvider) {
+    if (provider !== "github" && provider !== "gitee") return null;
+    const label = provider === "github" ? "GitHub" : "Gitee";
+    const keysUrl =
+      provider === "github"
+        ? "https://github.com/settings/keys"
+        : "https://gitee.com/profile/sshkeys";
+    return (
+      <div className="auth-ssh-block">
+        <div className="auth-token-head">
+          <span>SSH 密钥（设一次即可）</span>
+          <button
+            type="button"
+            className="linkish"
+            disabled={busy}
+            onClick={() => void refreshSsh()}
+          >
+            刷新
+          </button>
+        </div>
+        <p className="muted small">
+          {sshStatus?.tip ??
+            "检测本机 ~/.ssh 公钥；添加到平台后可用 git@ 地址推拉。"}
+        </p>
+        {sshStatus?.keys?.length ? (
+          <ul className="auth-ssh-keys">
+            {sshStatus.keys.map((k) => (
+              <li key={k.path}>
+                <code className="auth-ssh-path">{k.path}</code>
+                <span className="muted small">{k.fingerprint}</span>
+                <div className="auth-method-row">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      void navigator.clipboard.writeText(k.publicKey);
+                      setNotice("已复制公钥");
+                    }}
+                  >
+                    复制公钥
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted small">未找到 id_ed25519 / id_rsa 公钥。</p>
+        )}
+        <div className="auth-method-row">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void (async () => {
+                setBusy(true);
+                setError(null);
+                try {
+                  const next = await api.authSshGenerate();
+                  setSshStatus(next);
+                  setNotice("已生成 ed25519 密钥，请复制公钥添加到平台");
+                } catch (e) {
+                  setError(failureLine(e));
+                } finally {
+                  setBusy(false);
+                }
+              })()
+            }
+          >
+            生成 ed25519 密钥
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void openUrl(keysUrl)}
+          >
+            打开 {label} SSH 设置
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void (async () => {
+                setBusy(true);
+                setError(null);
+                setSshFeedback({
+                  ok: null,
+                  text: `正在测试 ${label} SSH（最多约 20 秒）…`,
+                });
+                try {
+                  const result = await api.authSshTest(provider);
+                  const text =
+                    result.message.trim() ||
+                    (result.ok ? "SSH 认证成功" : "SSH 未通过");
+                  setSshFeedback({ ok: result.ok, text });
+                  if (result.ok) setNotice(text);
+                  else setError(text);
+                } catch (e) {
+                  const text = failureLine(e);
+                  setSshFeedback({ ok: false, text });
+                  setError(text);
+                } finally {
+                  setBusy(false);
+                }
+              })()
+            }
+          >
+            测试 SSH
+          </button>
+        </div>
+        {sshFeedback && (
+          <p
+            className={
+              sshFeedback.ok === null
+                ? "auth-ssh-feedback is-pending"
+                : sshFeedback.ok
+                  ? "auth-ssh-feedback is-ok"
+                  : "auth-ssh-feedback is-bad"
+            }
+            role="status"
+          >
+            {sshFeedback.text}
+          </p>
+        )}
+      </div>
+    );
+  }
+
   function renderProviderAuth(provider: AuthProvider) {
     const account = accounts?.[provider];
     const draft = drafts[provider];
@@ -1421,192 +1556,312 @@ export default function App() {
       provider === "github"
         ? "权限：经典 Token 勾选 repo；细粒度 Token 需对应仓库的 Contents 读写。"
         : "权限：私人令牌勾选 projects（以及需要的仓库权限）。";
-
-    if (account?.loggedIn) {
-      return (
-        <div className="auth-logged-in">
-          <div className="github-user">
-            {account.avatarUrl ? (
-              <img src={account.avatarUrl} alt="" className="github-avatar" />
-            ) : (
-              <div className="github-avatar placeholder" />
-            )}
-            <div className="github-user-meta">
-              <strong>{account.login}</strong>
-              {account.name && <span className="muted small">{account.name}</span>}
-              <span className="muted small">凭据已写入系统 Git Credential</span>
-            </div>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void logoutProvider(provider)}
-            >
-              退出
-            </button>
-          </div>
-        </div>
-      );
-    }
+    const showLogin = !account?.loggedIn || addingAccount;
+    const savedAccounts = account?.accounts ?? [];
 
     return (
       <div className="auth-login-panel">
-        {account?.sessionExpired && (
-          <p className="auth-expired">
-            {label} 登录已失效，请重新登录。
-          </p>
-        )}
-        <p className="muted small auth-storage-hint">
-          登录成功后会写入本机 Git 凭据，供拉取/推送使用；退出时会尽量清除。
-        </p>
-
-        <div className="auth-method-row">
-          <button
-            type="button"
-            className="primary"
-            disabled={busy}
-            onClick={() => void loginWithGitManager(provider)}
-            title={
-              provider === "github"
-                ? "打开 Git Credential Manager 浏览器登录"
-                : "读取或填写 Gitee 凭据（密码处填私人令牌）"
-            }
-          >
-            用 Git 登录
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void loginWithBrowser(provider)}
-            title="需先配置 OAuth Client ID / Secret"
-          >
-            浏览器登录
-          </button>
-        </div>
-
-        <div className="auth-token-block">
-          <div className="auth-token-head">
-            <span>Access Token</span>
-            <button
-              type="button"
-              className="linkish"
-              disabled={busy}
-              onClick={() => void openUrl(tokenDocUrl)}
-            >
-              如何获取
-            </button>
-          </div>
-          <p className="muted small">{scopeHint}</p>
-          <div className="auth-token-row">
-            <input
-              type={draft.showToken ? "text" : "password"}
-              value={draft.token}
-              onChange={(e) => updateDraft(provider, { token: e.target.value })}
-              onPaste={(e) => {
-                const text = e.clipboardData.getData("text").trim();
-                if (!text) return;
-                e.preventDefault();
-                updateDraft(provider, { token: text });
-                void loginWithToken(provider, text);
-              }}
-              placeholder={
-                provider === "github"
-                  ? "ghp_… / github_pat_…"
-                  : "Gitee 私人令牌"
-              }
-              disabled={busy}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void loginWithToken(provider);
-              }}
-            />
-            <button
-              type="button"
-              className="auth-toggle-vis"
-              disabled={busy}
-              onClick={() =>
-                updateDraft(provider, { showToken: !draft.showToken })
-              }
-            >
-              {draft.showToken ? "隐藏" : "显示"}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || !draft.token.trim()}
-              onClick={() => void loginWithToken(provider)}
-            >
-              登录
-            </button>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          className="linkish auth-oauth-toggle"
-          disabled={busy}
-          onClick={() => updateDraft(provider, { showOauth: !draft.showOauth })}
-        >
-          {draft.showOauth ? "收起 OAuth 应用配置" : "配置 OAuth 应用（浏览器登录用）"}
-        </button>
-        {draft.showOauth && (
-          <div className="auth-oauth-fields">
-            <p className="muted small">
-              在 {label} 创建 OAuth 应用，回调地址填本地端口（点「浏览器登录」时会提示）。
+        {account?.loggedIn && !addingAccount && (
+          <div className="auth-logged-in">
+            <div className="github-user">
+              {account.avatarUrl ? (
+                <img src={account.avatarUrl} alt="" className="github-avatar" />
+              ) : (
+                <div className="github-avatar placeholder" />
+              )}
+              <div className="github-user-meta">
+                <strong>{account.login}</strong>
+                {account.name && (
+                  <span className="muted small">{account.name}</span>
+                )}
+                <span className="muted small">凭据已写入系统 Git Credential</span>
+              </div>
               <button
                 type="button"
-                className="linkish"
                 disabled={busy}
-                onClick={() => void openUrl(oauthDocUrl)}
+                onClick={() => void logoutProvider(provider)}
               >
-                打开开发者设置
+                退出
               </button>
+            </div>
+            {savedAccounts.length > 1 && (
+              <div className="auth-account-list">
+                <span className="muted small">已保存账号</span>
+                {savedAccounts.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    className={a.active ? "auth-account-item active" : "auth-account-item"}
+                    disabled={busy || a.active}
+                    onClick={() => void switchAccount(provider, a.id)}
+                  >
+                    {a.avatarUrl ? (
+                      <img src={a.avatarUrl} alt="" />
+                    ) : (
+                      <span className="auth-account-dot" />
+                    )}
+                    <span>{a.login}</span>
+                    {a.active && <em>当前</em>}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="auth-method-row">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setAddingAccount(true);
+                  setError(null);
+                }}
+              >
+                添加账号
+              </button>
+            </div>
+            {renderSshPanel(provider)}
+          </div>
+        )}
+
+        {showLogin && (
+          <>
+            {addingAccount && account?.loggedIn && (
+              <div className="auth-method-row">
+                <button
+                  type="button"
+                  className="linkish"
+                  disabled={busy}
+                  onClick={() => {
+                    stopDevicePoll();
+                    setDeviceFlow(null);
+                    setAddingAccount(false);
+                  }}
+                >
+                  取消添加，返回当前账号
+                </button>
+              </div>
+            )}
+            {account?.sessionExpired && (
+              <p className="auth-expired">{label} 登录已失效，请重新登录。</p>
+            )}
+            <p className="muted small auth-storage-hint">
+              登录成功后会写入本机 Git 凭据；启动时与推拉失败时会自动同步。OAuth Client
+              配置保存一次即可复用
+              {account?.usingBuiltinOauth ? "（当前可用内置 Client）" : ""}。
             </p>
-            <label className="settings-field">
-              <span>Client ID</span>
-              <input
-                value={draft.clientId}
-                onChange={(e) =>
-                  updateDraft(provider, { clientId: e.target.value })
-                }
+
+            <div className="auth-method-row">
+              <button
+                type="button"
+                className="primary"
                 disabled={busy}
-                placeholder="OAuth Client ID"
-              />
-            </label>
-            <label className="settings-field">
-              <span>Client Secret</span>
-              <input
-                type="password"
-                value={draft.clientSecret}
-                onChange={(e) =>
-                  updateDraft(provider, { clientSecret: e.target.value })
+                onClick={() => void loginWithGitManager(provider)}
+                title={
+                  provider === "github"
+                    ? "打开 Git Credential Manager 浏览器登录"
+                    : "读取或填写 Gitee 凭据（密码处填私人令牌）"
                 }
+              >
+                用 Git 登录
+              </button>
+              <button
+                type="button"
                 disabled={busy}
-                placeholder="OAuth Client Secret"
-              />
-            </label>
+                onClick={() => void loginWithBrowser(provider)}
+                title="需 Client ID + Secret（可配置一次）"
+              >
+                浏览器登录
+              </button>
+              {provider === "github" && (
+                <button
+                  type="button"
+                  disabled={busy || !!deviceFlow}
+                  onClick={() => void loginWithDevice()}
+                  title="只需 Client ID；在另一设备浏览器输入代码"
+                >
+                  设备码登录
+                </button>
+              )}
+            </div>
+
+            {provider === "github" && deviceFlow && (
+              <div className="auth-device-panel">
+                <p className="muted small">
+                  打开{" "}
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => void openUrl(deviceFlow.verificationUri)}
+                  >
+                    {deviceFlow.verificationUri}
+                  </button>
+                  ，输入下方代码完成授权。
+                </p>
+                <p className="device-code">{deviceFlow.userCode}</p>
+                <div className="auth-method-row">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      void navigator.clipboard.writeText(deviceFlow.userCode);
+                      setNotice("已复制设备码");
+                    }}
+                  >
+                    复制代码
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      stopDevicePoll();
+                      setDeviceFlow(null);
+                      setDeviceStatus("");
+                      setNotice(null);
+                    }}
+                  >
+                    取消
+                  </button>
+                </div>
+                {deviceStatus && (
+                  <p className="muted small">{deviceStatus}</p>
+                )}
+              </div>
+            )}
+
+            <div className="auth-token-block">
+              <div className="auth-token-head">
+                <span>Access Token</span>
+                <button
+                  type="button"
+                  className="linkish"
+                  disabled={busy}
+                  onClick={() => void openUrl(tokenDocUrl)}
+                >
+                  如何获取
+                </button>
+              </div>
+              <p className="muted small">{scopeHint}</p>
+              <div className="auth-token-row">
+                <input
+                  type={draft.showToken ? "text" : "password"}
+                  value={draft.token}
+                  onChange={(e) =>
+                    updateDraft(provider, { token: e.target.value })
+                  }
+                  onPaste={(e) => {
+                    const text = e.clipboardData.getData("text").trim();
+                    if (!text) return;
+                    e.preventDefault();
+                    updateDraft(provider, { token: text });
+                    void loginWithToken(provider, text);
+                  }}
+                  placeholder={
+                    provider === "github"
+                      ? "ghp_… / github_pat_…"
+                      : "Gitee 私人令牌"
+                  }
+                  disabled={busy}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void loginWithToken(provider);
+                  }}
+                />
+                <button
+                  type="button"
+                  className="auth-toggle-vis"
+                  disabled={busy}
+                  onClick={() =>
+                    updateDraft(provider, { showToken: !draft.showToken })
+                  }
+                >
+                  {draft.showToken ? "隐藏" : "显示"}
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || !draft.token.trim()}
+                  onClick={() => void loginWithToken(provider)}
+                >
+                  登录
+                </button>
+              </div>
+            </div>
+
             <button
               type="button"
-              disabled={
-                busy || !draft.clientId.trim() || !draft.clientSecret.trim()
-              }
+              className="linkish auth-oauth-toggle"
+              disabled={busy}
               onClick={() =>
-                void (async () => {
-                  try {
-                    const status = await api.authSaveOauthConfig(
-                      provider,
-                      draft.clientId.trim(),
-                      draft.clientSecret.trim(),
-                    );
-                    applyAccount(status);
-                    setNotice(`已保存 ${label} OAuth 配置`);
-                  } catch (e) {
-                    setError(failureLine(e));
-                  }
-                })()
+                updateDraft(provider, { showOauth: !draft.showOauth })
               }
             >
-              保存 OAuth 配置
+              {draft.showOauth
+                ? "收起 OAuth 应用配置"
+                : account?.oauthReady
+                  ? "OAuth 已就绪（可改配置）"
+                  : "配置 OAuth（设备码只需 Client ID，浏览器还需 Secret）"}
             </button>
-          </div>
+            {draft.showOauth && (
+              <div className="auth-oauth-fields">
+                <p className="muted small">
+                  在 {label} 创建 OAuth 应用并保存一次即可。设备码登录只需 Client
+                  ID；浏览器登录还需 Secret。回调地址在点「浏览器登录」时由本机端口自动生成。
+                  <button
+                    type="button"
+                    className="linkish"
+                    disabled={busy}
+                    onClick={() => void openUrl(oauthDocUrl)}
+                  >
+                    打开开发者设置
+                  </button>
+                </p>
+                <label className="settings-field">
+                  <span>Client ID</span>
+                  <input
+                    value={draft.clientId}
+                    onChange={(e) =>
+                      updateDraft(provider, { clientId: e.target.value })
+                    }
+                    disabled={busy}
+                    placeholder="OAuth Client ID"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Client Secret</span>
+                  <input
+                    type="password"
+                    value={draft.clientSecret}
+                    onChange={(e) =>
+                      updateDraft(provider, { clientSecret: e.target.value })
+                    }
+                    disabled={busy}
+                    placeholder="浏览器登录需要；设备码可留空"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={busy || !draft.clientId.trim()}
+                  onClick={() =>
+                    void (async () => {
+                      try {
+                        const status = await api.authSaveOauthConfig(
+                          provider,
+                          draft.clientId.trim(),
+                          draft.clientSecret.trim(),
+                        );
+                        applyAccount(status);
+                        setNotice(`已保存 ${label} OAuth 配置`);
+                      } catch (e) {
+                        setError(failureLine(e));
+                      }
+                    })()
+                  }
+                >
+                  保存 OAuth 配置
+                </button>
+              </div>
+            )}
+
+            {!account?.loggedIn && renderSshPanel(provider)}
+          </>
         )}
       </div>
     );
@@ -1615,6 +1870,7 @@ export default function App() {
   if (!repoPath) {
     return (
       <>
+        <WindowChrome overlay={Boolean(wallpaperUrl) || Boolean(boot)} />
         {boot && (
           <LoadingScreen
             folderName={folderName(boot.path)}
@@ -2264,6 +2520,10 @@ export default function App() {
 
   return (
     <>
+      <WindowChrome
+        overlay={Boolean(boot && wallpaperUrl)}
+        title={repoPath ? `${folderName(repoPath)} — 青枝` : "青枝"}
+      />
       {boot && (
         <LoadingScreen
           folderName={folderName(boot.path)}

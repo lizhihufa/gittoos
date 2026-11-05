@@ -547,15 +547,15 @@ fn fetch_user_detailed(
                 } else {
                     ApiFailKind::Other
                 };
+                let tag = match kind {
+                    ApiFailKind::Auth => "auth",
+                    ApiFailKind::Network => "network",
+                    ApiFailKind::Other => "other",
+                };
                 return Err(GitError::InvalidInput(format!(
-                    "{} 登录无效（HTTP {}）|kind={:?}",
+                    "{} 登录无效（HTTP {}）|kind={tag}",
                     provider.label(),
                     resp.status(),
-                    match kind {
-                        ApiFailKind::Auth => "auth",
-                        ApiFailKind::Network => "network",
-                        ApiFailKind::Other => "other",
-                    }
                 )));
             }
             let user = resp
@@ -1656,49 +1656,115 @@ fn whoami_simple() -> String {
 }
 
 pub fn auth_ssh_test(provider_raw: &str) -> Result<SshTestResult, GitError> {
+    use std::sync::mpsc;
+    use std::thread;
+
     let provider = Provider::parse(provider_raw)?;
     let target = provider.ssh_host();
     emit_terminal("info", &format!("正在测试 SSH：ssh -T {target} …"));
-    let output = Command::new("ssh")
+
+    let child = Command::new("ssh")
         .args([
             "-o",
             "BatchMode=yes",
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
-            "ConnectTimeout=15",
+            "ConnectTimeout=12",
+            "-o",
+            "ConnectionAttempts=1",
+            "-o",
+            "PreferredAuthentications=publickey",
             "-T",
             target,
         ])
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| {
-            GitError::InvalidInput(format!("无法运行 ssh：{e}。请确认已安装 OpenSSH 客户端。"))
+            GitError::InvalidInput(format!(
+                "无法运行 ssh：{e}。请确认已安装 OpenSSH 客户端（Windows 可选功能）。"
+            ))
         })?;
+
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    // Move child into worker so pipes are drained via wait_with_output.
+    thread::spawn(move || {
+        let result = child.wait_with_output();
+        let _ = tx.send(result);
+    });
+
+    let output = match rx.recv_timeout(Duration::from_secs(20)) {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            return Err(GitError::InvalidInput(format!("等待 ssh 结束失败：{e}")));
+        }
+        Err(_) => {
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F", "/T"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            let message = format!(
+                "SSH 测试超时（20 秒）。请检查网络，或确认已把本机公钥添加到 {}。",
+                provider.label()
+            );
+            emit_terminal("err", &message);
+            return Ok(SshTestResult {
+                ok: false,
+                message,
+            });
+        }
+    };
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
-    // GitHub returns exit 1 even on success with "Hi <user>! You've successfully authenticated".
-    let ok = combined.to_ascii_lowercase().contains("successfully authenticated")
+    let lower = combined.to_ascii_lowercase();
+    // GitHub/Gitee return non-zero even on success, with a greeting line.
+    let ok = lower.contains("successfully authenticated")
         || combined.contains("认证成功")
+        || lower.contains("you've successfully authenticated")
+        || (combined.contains("Hi ") && lower.contains("authenticated"))
         || (provider == Provider::Gitee && combined.contains("Hi "));
+
     let message = if ok {
         let brief = combined
             .lines()
-            .find(|l| !l.trim().is_empty())
+            .map(str::trim)
+            .find(|l| !l.is_empty())
             .unwrap_or("SSH 认证成功")
-            .trim()
             .to_string();
         emit_terminal("info", &brief);
         brief
     } else {
         let brief = if combined.trim().is_empty() {
             format!(
-                "SSH 未通过（退出码 {}）。请确认公钥已添加到 {}。",
+                "SSH 未通过（退出码 {}）。请先生成/复制公钥，并添加到 {}。",
                 output.status.code().unwrap_or(-1),
                 provider.label()
             )
         } else {
-            combined.trim().lines().take(3).collect::<Vec<_>>().join(" ")
+            combined
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(" ")
         };
         emit_terminal("err", &brief);
         brief
