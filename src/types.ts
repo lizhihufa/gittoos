@@ -97,6 +97,14 @@ export interface RepoSnapshot {
 
 export type AuthProvider = "github" | "gitee";
 
+export interface AccountSummary {
+  id: string;
+  login: string;
+  name: string;
+  avatarUrl: string;
+  active: boolean;
+}
+
 export interface ProviderStatus {
   provider: AuthProvider | string;
   loggedIn: boolean;
@@ -108,6 +116,28 @@ export interface ProviderStatus {
   hasClientSecret: boolean;
   /** Saved token existed but validation failed and was cleared. */
   sessionExpired?: boolean;
+  accounts?: AccountSummary[];
+  /** Effective Client ID available (saved or built-in). */
+  oauthReady?: boolean;
+  usingBuiltinOauth?: boolean;
+}
+
+export interface SshKeyInfo {
+  path: string;
+  publicKey: string;
+  fingerprint: string;
+}
+
+export interface SshStatus {
+  sshDir: string;
+  keys: SshKeyInfo[];
+  hasAgent: boolean;
+  tip: string;
+}
+
+export interface SshTestResult {
+  ok: boolean;
+  message: string;
 }
 
 export interface AuthAccounts {

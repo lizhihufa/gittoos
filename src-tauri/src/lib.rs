@@ -3,20 +3,20 @@ mod webview2;
 
 use git::{
     abort_operation, amend_commit, apply_cached_patch, auth_accounts, auth_browser_begin,
-    auth_browser_finish, auth_device_poll, auth_device_start, auth_login_token, auth_logout,
-    auth_manager_login as do_auth_manager_login, auth_save_config, checkout_branch,
-    checkout_remote_branch, cherry_pick,
-    clone_repository, commit, commit_patch, continue_operation, create_branch, create_tag,
-    delete_branch, delete_remote_branch, delete_remote_tag, delete_tag, discard_paths, ensure_git,
-    fetch, file_diff, git_info, init_repository, is_repository, list_branches, list_commits,
-    list_remote_branches, list_remotes, list_stashes, list_tags, merge_branch, pull, push,
-    push_all_tags, push_tag, read_identity, rebase_branch, repo_status,
+    auth_browser_finish, auth_device_poll, auth_device_start, auth_ensure_credentials,
+    auth_login_token, auth_logout, auth_manager_login as do_auth_manager_login, auth_save_config,
+    auth_ssh_generate, auth_ssh_status, auth_ssh_test, auth_switch_account, checkout_branch,
+    checkout_remote_branch, cherry_pick, clone_repository, commit, commit_patch, continue_operation,
+    create_branch, create_tag, delete_branch, delete_remote_branch, delete_remote_tag, delete_tag,
+    discard_paths, ensure_git, fetch, file_diff, git_info, init_repository, is_repository,
+    list_branches, list_commits, list_remote_branches, list_remotes, list_stashes, list_tags,
+    merge_branch, pull, push, push_all_tags, push_tag, read_identity, rebase_branch, repo_status,
     repo_status_light_nonblocking, reset_to_commit, run_shell, set_app_handle, set_remote_url,
     stage_paths, stash_drop, stash_pop, stash_push, undo_last_commit, unstage_paths, with_git_quiet,
     write_identity, AuthAccounts, BranchInfo, CommitInfo, GitBinary, GitError, GitInfo,
     GithubDevicePollResult, GithubDeviceStart, Identity, OauthBegin, ProviderStatus,
-    RemoteBranchInfo, RemoteInfo, RepoCore, RepoExtras, RepoSnapshot, RepoStatus, StashInfo,
-    TagInfo,
+    RemoteBranchInfo, RemoteInfo, RepoCore, RepoExtras, RepoSnapshot, RepoStatus, SshStatus,
+    SshTestResult, StashInfo, TagInfo,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -698,6 +698,34 @@ async fn auth_sign_out(provider: String) -> Result<ProviderStatus, String> {
     spawn_auth(move || auth_logout(&provider)).await
 }
 
+#[tauri::command]
+async fn auth_ensure_creds() -> Result<AuthAccounts, String> {
+    spawn_auth(auth_ensure_credentials).await
+}
+
+#[tauri::command]
+async fn auth_switch_account_cmd(
+    provider: String,
+    account_id: String,
+) -> Result<ProviderStatus, String> {
+    spawn_auth(move || auth_switch_account(&provider, &account_id)).await
+}
+
+#[tauri::command]
+async fn auth_get_ssh_status() -> Result<SshStatus, String> {
+    spawn_auth(auth_ssh_status).await
+}
+
+#[tauri::command]
+async fn auth_generate_ssh_key() -> Result<SshStatus, String> {
+    spawn_auth(auth_ssh_generate).await
+}
+
+#[tauri::command]
+async fn auth_test_ssh(provider: String) -> Result<SshTestResult, String> {
+    spawn_auth(move || auth_ssh_test(&provider)).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(windows)]
@@ -777,6 +805,11 @@ pub fn run() {
             auth_github_manager_login,
             auth_login_with_token,
             auth_sign_out,
+            auth_ensure_creds,
+            auth_switch_account_cmd,
+            auth_get_ssh_status,
+            auth_generate_ssh_key,
+            auth_test_ssh,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

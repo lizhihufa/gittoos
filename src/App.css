@@ -976,8 +976,7 @@ html[data-theme="dark"] .ref-badge {
 }
 
 .settings-modal {
-  max-height: min(90vh, 720px);
-  overflow: auto;
+  overflow: hidden;
 }
 
 /* Must beat `.modal { width: min(480px) }` later in this file. */
@@ -985,7 +984,9 @@ html[data-theme="dark"] .ref-badge {
 .settings-modal.settings-shell {
   width: min(960px, 96vw);
   max-width: 96vw;
-  max-height: min(88vh, 760px);
+  /* Fixed dialog height; never taller than the main window. */
+  height: 680px;
+  max-height: calc(100vh - 2rem);
   padding: 0;
   overflow: hidden;
   display: flex;
@@ -1026,6 +1027,8 @@ html[data-theme="dark"] .ref-badge {
   grid-template-columns: 188px 1fr;
   min-height: 0;
   flex: 1;
+  height: 0; /* force flex child to fill remaining fixed height */
+  overflow: hidden;
 }
 
 .settings-nav {
@@ -1726,6 +1729,8 @@ html[data-theme="dark"] .ref-badge {
 .modal.settings-shell {
   width: min(960px, 96vw);
   max-width: 96vw;
+  height: 680px;
+  max-height: calc(100vh - 2rem);
 }
 
 .modal h3 {
