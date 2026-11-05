@@ -118,6 +118,14 @@ body,
   color: #f5f7f6;
 }
 
+.window-chrome-drag {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
 .window-chrome-title {
   font-size: 12px;
   font-weight: 600;
@@ -128,7 +136,6 @@ body,
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  flex: 1;
 }
 
 .window-chrome.is-overlay .window-chrome-title {

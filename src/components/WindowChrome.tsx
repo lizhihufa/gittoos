@@ -44,15 +44,18 @@ export function WindowChrome({ overlay = false, title = "青枝" }: Props) {
   }, [refreshMaximized]);
 
   return (
-    <div
-      className={`window-chrome${overlay ? " is-overlay" : ""}`}
-      data-tauri-drag-region
-      onDoubleClick={() => {
-        void getCurrentWindow().toggleMaximize();
-      }}
-    >
-      <div className="window-chrome-title" data-tauri-drag-region>
-        {title}
+    <div className={`window-chrome${overlay ? " is-overlay" : ""}`}>
+      <div
+        className="window-chrome-drag"
+        data-tauri-drag-region
+        onDoubleClick={() => {
+          void (async () => {
+            await getCurrentWindow().toggleMaximize();
+            await refreshMaximized();
+          })();
+        }}
+      >
+        <span className="window-chrome-title">{title}</span>
       </div>
       <div className="window-chrome-controls">
         <button
@@ -69,7 +72,12 @@ export function WindowChrome({ overlay = false, title = "青枝" }: Props) {
           className="window-chrome-btn"
           aria-label={maximized ? "还原" : "最大化"}
           title={maximized ? "还原" : "最大化"}
-          onClick={() => void getCurrentWindow().toggleMaximize()}
+          onClick={() =>
+            void (async () => {
+              await getCurrentWindow().toggleMaximize();
+              await refreshMaximized();
+            })()
+          }
         >
           <span aria-hidden>{maximized ? "❐" : "□"}</span>
         </button>
