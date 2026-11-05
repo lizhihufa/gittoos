@@ -30,7 +30,8 @@ pub fn is_repository(git: &GitBinary, repo: &Path) -> Result<bool, GitError> {
 }
 
 pub fn init_repository(git: &GitBinary, repo: &Path) -> Result<(), GitError> {
-    run_git(git, repo, &["init"])?;
+    // Match GitHub default: new repos start on `main` (not `master`).
+    run_git(git, repo, &["init", "-b", "main"])?;
     Ok(())
 }
 

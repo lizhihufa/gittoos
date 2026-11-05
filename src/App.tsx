@@ -396,7 +396,7 @@ export default function App() {
         const isRepo = await api.checkRepository(path);
         if (!isRepo) {
           const ok = await confirmAction(
-            `「${path}」还不是 Git 仓库。\n是否在此目录执行 git init？`,
+            `「${path}」还不是 Git 仓库。\n是否在此目录初始化？默认分支为 main。`,
           );
           if (!ok) {
             setBoot(null);
@@ -1384,7 +1384,7 @@ export default function App() {
           <div className="help-body">
             <h4>欢迎页</h4>
             <ul>
-              <li>打开文件夹：打开本地项目；非仓库时可 git init。</li>
+              <li>打开文件夹：打开本地项目；非仓库时可初始化（默认分支 main）。</li>
               <li>克隆：用设置中的克隆地址，选空文件夹克隆并打开。</li>
               <li>最近打开：再开仓库；× 移除单项；可清空 / 清理失效路径。</li>
             </ul>
