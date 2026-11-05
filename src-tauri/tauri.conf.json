@@ -1,0 +1,67 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "qingzhi",
+  "mainBinaryName": "qingzhi",
+  "version": "1.0.1",
+  "identifier": "com.qingzhi.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "青枝",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 860,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/**",
+          "$APPDATA/**/*",
+          "$APPLOCALDATA/**",
+          "$APPLOCALDATA/**/*"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "shortDescription": "青枝 — 本地 Git 桌面工具",
+    "longDescription": "选一个项目文件夹，在图形界面里完成日常 Git 操作。",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+    ],
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": false
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "startMenuFolder": "青枝",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

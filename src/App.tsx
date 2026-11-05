@@ -1,0 +1,2551 @@
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
+import { api } from "./api";
+import { confirmAction, withConfirm } from "./confirm";
+import { ChangeList } from "./components/ChangeList";
+import { ExtraPane, type Pane } from "./components/ExtraPane";
+import { LoadingScreen } from "./components/LoadingScreen";
+import { Terminal } from "./components/Terminal";
+import {
+  clearRecent,
+  loadRecent,
+  pruneRecent,
+  rememberRecent,
+  removeRecent,
+} from "./recent";
+import { clearRepoCache, loadRepoCache, saveRepoCache } from "./repoCache";
+import {
+  applyPrefsToDocument,
+  loadCloneUrl,
+  loadOpenRepos,
+  loadPrefs,
+  saveCloneUrl,
+  saveOpenRepos,
+  savePrefs,
+  type AppPrefs,
+} from "./settingsStore";
+import {
+  failureLine,
+  successLine,
+  syncConflictKind,
+  type SyncConflictKind,
+} from "./statusMessage";
+import type {
+  AuthAccounts,
+  AuthProvider,
+  BranchInfo,
+  CommitInfo,
+  FileChange,
+  GitInfo,
+  Identity,
+  ProviderStatus,
+  RemoteBranchInfo,
+  RemoteInfo,
+  RepoStatus,
+  StashInfo,
+  TagInfo,
+} from "./types";
+import "./App.css";
+
+function folderName(path: string): string {
+  const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+function statusFingerprint(s: RepoStatus): string {
+  return JSON.stringify({
+    branch: s.branch,
+    ahead: s.ahead,
+    behind: s.behind,
+    operation: s.operation,
+    changes: s.changes,
+  });
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    target.isContentEditable
+  );
+}
+
+type FileFilter = "all" | "conflict" | "untracked";
+
+type ProviderDraft = {
+  token: string;
+};
+
+type BootState = {
+  path: string;
+  progress: number;
+  label: string;
+  fromCache: boolean;
+};
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** Let the browser paint / handle input between heavy steps. */
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      window.setTimeout(resolve, 0);
+    });
+  });
+}
+
+const ACTION_WATCHDOG_MS = 90_000;
+
+export default function App() {
+  const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
+  const [repoPath, setRepoPath] = useState<string | null>(null);
+  const [openRepos, setOpenRepos] = useState<string[]>(() => loadOpenRepos());
+  const [status, setStatus] = useState<RepoStatus | null>(null);
+  const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [remoteBranches, setRemoteBranches] = useState<RemoteBranchInfo[]>([]);
+  const [recent, setRecent] = useState<string[]>(() => loadRecent());
+  const [prefs, setPrefs] = useState<AppPrefs>(() => {
+    const initial = loadPrefs();
+    applyPrefsToDocument(initial);
+    return initial;
+  });
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [selected, setSelected] = useState<{ path: string; staged: boolean } | null>(
+    null,
+  );
+  const [diff, setDiff] = useState("");
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [newBranch, setNewBranch] = useState("");
+  const [pane, setPane] = useState<Pane>("diff");
+  const [commits, setCommits] = useState<CommitInfo[]>([]);
+  const [selectedHash, setSelectedHash] = useState<string | null>(null);
+  const [commitPatch, setCommitPatch] = useState("");
+  const [patchLoading, setPatchLoading] = useState(false);
+  const [stashes, setStashes] = useState<StashInfo[]>([]);
+  const [stashMessage, setStashMessage] = useState("");
+  const [stashIncludeUntracked, setStashIncludeUntracked] = useState(true);
+  const [tags, setTags] = useState<TagInfo[]>([]);
+  const [tagName, setTagName] = useState("");
+  const [identity, setIdentity] = useState<Identity>({ name: "", email: "" });
+  const [identitySaved, setIdentitySaved] = useState(false);
+  const [saveGlobally, setSaveGlobally] = useState(true);
+  const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [cloneUrl, setCloneUrl] = useState(() => loadCloneUrl());
+  const [mergeTarget, setMergeTarget] = useState("");
+  const [rebaseTarget, setRebaseTarget] = useState("");
+  const [terminal, setTerminal] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [boot, setBoot] = useState<BootState | null>(null);
+  const [entering, setEntering] = useState(false);
+  const [syncingCache, setSyncingCache] = useState(false);
+  const [syncDialog, setSyncDialog] = useState<SyncConflictKind | null>(null);
+  const [resetTarget, setResetTarget] = useState<CommitInfo | null>(null);
+  const [accounts, setAccounts] = useState<AuthAccounts | null>(null);
+  const [authTab, setAuthTab] = useState<AuthProvider>("github");
+  const [drafts, setDrafts] = useState<Record<AuthProvider, ProviderDraft>>({
+    github: { token: "" },
+    gitee: { token: "" },
+  });
+  const [recentExists, setRecentExists] = useState<Record<string, boolean>>({});
+  const [fileQuery, setFileQuery] = useState("");
+  const [fileFilter, setFileFilter] = useState<FileFilter>("all");
+  const messageRef = useRef(message);
+  messageRef.current = message;
+
+  useEffect(() => {
+    let pending = "";
+    let flushTimer: number | undefined;
+    const flush = () => {
+      flushTimer = undefined;
+      if (!pending) return;
+      const chunk = pending;
+      pending = "";
+      setTerminal((prev) => {
+        const next = `${prev}${chunk}`;
+        // Keep terminal from growing forever and slowing the UI.
+        return next.length > 120_000 ? next.slice(-80_000) : next;
+      });
+    };
+    const unlisten = listen<{ kind: string; text: string }>("git-terminal", (event) => {
+      const prefix =
+        event.payload.kind === "cmd"
+          ? ""
+          : event.payload.kind === "err"
+            ? ""
+            : event.payload.kind === "info"
+              ? "# "
+              : "";
+      pending += `${prefix}${event.payload.text}\n`;
+      if (flushTimer === undefined) {
+        flushTimer = window.setTimeout(flush, 80);
+      }
+    });
+    return () => {
+      if (flushTimer !== undefined) window.clearTimeout(flushTimer);
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    setTerminal((prev) => `${prev}# 正在准备 Git…\n`);
+    api
+      .getGitInfo()
+      .then((info) => {
+        setGitInfo(info);
+        setTerminal((prev) => `${prev}# ${info.version}\n# ${info.path}\n`);
+      })
+      .catch((e) => setError(failureLine(e)));
+  }, []);
+
+  useEffect(() => {
+    const title = repoPath
+      ? `${folderName(repoPath)} — 青枝`
+      : "青枝";
+    void getCurrentWindow().setTitle(title);
+  }, [repoPath]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const repoPathRef = useRef<string | null>(null);
+  repoPathRef.current = repoPath;
+
+  const applyCore = useCallback((core: Awaited<ReturnType<typeof api.getRepoCore>>) => {
+    setStatus(core.status);
+    setBranches(core.branches);
+    setRemoteBranches(core.remoteBranches);
+    setIdentity(core.identity);
+    setIdentitySaved(
+      Boolean(core.identity.name.trim() && core.identity.email.includes("@")),
+    );
+    setRemotes(core.remotes);
+    const origin =
+      core.remotes.find((remote) => remote.name === "origin") ?? core.remotes[0];
+    setRemoteUrl(origin?.url ?? "");
+  }, []);
+
+  const refresh = useCallback(
+    async (path: string, opts?: { background?: boolean }) => {
+      const background = opts?.background === true;
+      if (!background) {
+        busyRef.current = true;
+        setBusy(true);
+      }
+      setError(null);
+      try {
+        const core = await api.getRepoCore(path);
+        if (repoPathRef.current === path || !background) {
+          applyCore(core);
+        }
+        if (!background) {
+          busyRef.current = false;
+          setBusy(false);
+        }
+        try {
+          const extras = await api.getRepoExtras(path);
+          if (repoPathRef.current === path) {
+            setCommits(extras.commits);
+            setStashes(extras.stashes);
+            setTags(extras.tags);
+            saveRepoCache(path, core, extras);
+          }
+        } catch (e) {
+          if (repoPathRef.current === path) {
+            saveRepoCache(path, core);
+            if (!background) setError(failureLine(e));
+          }
+        }
+      } catch (e) {
+        if (!background) {
+          setError(failureLine(e));
+          busyRef.current = false;
+          setBusy(false);
+        }
+        throw e;
+      }
+    },
+    [applyCore],
+  );
+
+  const wallpaperUrl = useMemo(() => {
+    if (prefs.wallpaperKind === "none" || !prefs.wallpaperPath) return null;
+    try {
+      const src = convertFileSrc(prefs.wallpaperPath);
+      // Bust webview cache after re-importing the same filename.
+      const sep = src.includes("?") ? "&" : "?";
+      return `${src}${sep}t=${encodeURIComponent(prefs.wallpaperPath)}`;
+    } catch {
+      return null;
+    }
+  }, [prefs.wallpaperKind, prefs.wallpaperPath]);
+
+  const refreshStatusQuiet = useCallback(async (path: string) => {
+    if (busyRef.current) return;
+    try {
+      // Light poll skips untracked scan; backend skips if git lock is busy.
+      const next = await api.getStatusLight(path);
+      setStatus((prev) => {
+        if (!prev) return next;
+        // Keep previously known untracked entries so the list doesn't flicker away.
+        const lightPaths = new Set(next.changes.map((c) => c.path));
+        const keptUntracked = prev.changes.filter(
+          (c) => c.untracked && !lightPaths.has(c.path),
+        );
+        const merged = {
+          ...next,
+          changes: keptUntracked.length
+            ? [...next.changes, ...keptUntracked]
+            : next.changes,
+        };
+        if (statusFingerprint(prev) === statusFingerprint(merged)) {
+          return prev;
+        }
+        return merged;
+      });
+    } catch (e) {
+      // GIT_BUSY or transient errors — keep previous UI, never block.
+      const msg = String(e);
+      if (!msg.includes("GIT_BUSY")) {
+        /* ignore */
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!repoPath) return;
+    const tick = () => {
+      if (document.visibilityState === "visible" && !busyRef.current) {
+        void refreshStatusQuiet(repoPath);
+      }
+    };
+    const timer = window.setInterval(tick, 8000);
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", tick);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [repoPath, refreshStatusQuiet]);
+
+  useEffect(() => {
+    if (recent.length === 0) {
+      setRecentExists({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      recent.map(async (path) => {
+        try {
+          return [path, await api.pathExists(path)] as const;
+        } catch {
+          return [path, false] as const;
+        }
+      }),
+    ).then((pairs) => {
+      if (!cancelled) setRecentExists(Object.fromEntries(pairs));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [recent]);
+
+  const openFolder = useCallback(
+    async (path: string) => {
+      setError(null);
+      setEntering(false);
+      setBoot({
+        path,
+        progress: 6,
+        label: "正在准备打开仓库…",
+        fromCache: false,
+      });
+      busyRef.current = true;
+      setBusy(true);
+      try {
+        setBoot({
+          path,
+          progress: 14,
+          label: "正在检查是否为 Git 仓库…",
+          fromCache: false,
+        });
+        const isRepo = await api.checkRepository(path);
+        if (!isRepo) {
+          const ok = await confirmAction(
+            `「${path}」还不是 Git 仓库。\n是否在此目录执行 git init？`,
+          );
+          if (!ok) {
+            setBoot(null);
+            busyRef.current = false;
+            setBusy(false);
+            return;
+          }
+          setBoot({
+            path,
+            progress: 22,
+            label: "正在初始化仓库…",
+            fromCache: false,
+          });
+          await api.initRepo(path);
+        }
+
+        setSelected(null);
+        setDiff("");
+        setMessage("");
+        setOpenRepos((prev) => {
+          const next = prev.includes(path) ? prev : [...prev, path].slice(-12);
+          saveOpenRepos(next);
+          return next;
+        });
+        if (prefs.rememberRecent) {
+          setRecent(rememberRecent(path));
+        }
+
+        const cached =
+          prefs.useRepoCache ? loadRepoCache(path) : null;
+        if (cached) {
+          setBoot({
+            path,
+            progress: 62,
+            label: "正在从缓存恢复界面…",
+            fromCache: true,
+          });
+          applyCore(cached.core);
+          if (cached.extras) {
+            setCommits(cached.extras.commits);
+            setStashes(cached.extras.stashes);
+            setTags(cached.extras.tags);
+          }
+          setRepoPath(path);
+          setBoot({
+            path,
+            progress: 100,
+            label: "即将进入…",
+            fromCache: true,
+          });
+          await sleep(320);
+          setBoot(null);
+          setEntering(true);
+          busyRef.current = false;
+          setBusy(false);
+          setSyncingCache(true);
+          try {
+            await refresh(path, { background: true });
+          } catch {
+            /* keep cached view; quiet errors */
+          } finally {
+            setSyncingCache(false);
+          }
+          return;
+        }
+
+        setBoot({
+          path,
+          progress: 38,
+          label: "正在读取工作区与分支…",
+          fromCache: false,
+        });
+        const core = await api.getRepoCore(path);
+        applyCore(core);
+        setBoot({
+          path,
+          progress: 68,
+          label: "正在加载历史与标签…",
+          fromCache: false,
+        });
+        let extras = undefined;
+        try {
+          extras = await api.getRepoExtras(path);
+          setCommits(extras.commits);
+          setStashes(extras.stashes);
+          setTags(extras.tags);
+          saveRepoCache(path, core, extras);
+        } catch {
+          saveRepoCache(path, core);
+        }
+        setBoot({
+          path,
+          progress: 92,
+          label: "正在整理界面…",
+          fromCache: false,
+        });
+        setRepoPath(path);
+        setBoot({
+          path,
+          progress: 100,
+          label: "完成",
+          fromCache: false,
+        });
+        await sleep(280);
+        setBoot(null);
+        setEntering(true);
+        busyRef.current = false;
+        setBusy(false);
+      } catch (e) {
+        setBoot(null);
+        setError(failureLine(e));
+        busyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [applyCore, prefs.rememberRecent, prefs.useRepoCache, refresh],
+  );
+
+  const closeRepoTab = useCallback(
+    (path: string) => {
+      const next = openRepos.filter((p) => p !== path);
+      saveOpenRepos(next);
+      setOpenRepos(next);
+      if (repoPath !== path) return;
+      const fallback = next[next.length - 1] ?? null;
+      if (fallback) {
+        void openFolder(fallback);
+      } else {
+        setRepoPath(null);
+        setStatus(null);
+      }
+    },
+    [openFolder, openRepos, repoPath],
+  );
+
+  const updatePrefs = useCallback((patch: Partial<AppPrefs>) => {
+    setPrefs((prev) => {
+      const next = { ...prev, ...patch };
+      savePrefs(next);
+      applyPrefsToDocument(next);
+      return next;
+    });
+  }, []);
+
+  const pickFolder = useCallback(async () => {
+    const selectedPath = await open({
+      directory: true,
+      multiple: false,
+      title: "选择项目文件夹",
+    });
+    if (typeof selectedPath === "string") {
+      await openFolder(selectedPath);
+    }
+  }, [openFolder]);
+
+  const cloneRepo = useCallback(async () => {
+    const url = cloneUrl.trim();
+    if (!url) {
+      setError("请先在设置里填写克隆地址");
+      setShowSettings(true);
+      return;
+    }
+    saveCloneUrl(url);
+    const selectedPath = await open({
+      directory: true,
+      multiple: false,
+      title: "选择空文件夹作为克隆目标",
+    });
+    if (typeof selectedPath !== "string") return;
+    setBusy(true);
+    setError(null);
+    setNotice("正在克隆…");
+    try {
+      const dest = await api.cloneRepo(url, selectedPath);
+      setNotice("克隆完成");
+      setShowSettings(false);
+      await openFolder(dest);
+    } catch (e) {
+      setNotice(null);
+      setError(failureLine(e));
+      setBusy(false);
+    }
+  }, [cloneUrl, openFolder]);
+
+  function applyRemote() {
+    const url = remoteUrl.trim();
+    if (!url) {
+      setError("请先在设置里填写远程地址");
+      setShowSettings(true);
+      return;
+    }
+    void runAction(async () => {
+      await api.saveRemote(repoPath!, "origin", url);
+      setRemoteUrl(url);
+    }, "正在保存远程…");
+  }
+
+  function updateCloneUrl(value: string) {
+    setCloneUrl(value);
+    saveCloneUrl(value);
+  }
+
+  function applyAccount(status: ProviderStatus) {
+    const key = (status.provider === "gitee" ? "gitee" : "github") as AuthProvider;
+    setAccounts((prev) =>
+      prev
+        ? { ...prev, [key]: status }
+        : {
+            github: key === "github" ? status : emptyProvider("github"),
+            gitee: key === "gitee" ? status : emptyProvider("gitee"),
+          },
+    );
+    setDrafts((prev) => ({
+      ...prev,
+      [key]: { token: "" },
+    }));
+  }
+
+  function emptyProvider(provider: AuthProvider): ProviderStatus {
+    return {
+      provider,
+      loggedIn: false,
+      login: "",
+      name: "",
+      avatarUrl: "",
+      clientId: "",
+      hasClientId: false,
+      hasClientSecret: false,
+    };
+  }
+
+  const refreshAccounts = useCallback(async () => {
+    try {
+      const next = await api.authAccounts();
+      setAccounts(next);
+    } catch (e) {
+      setError(failureLine(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showSettings) return;
+    void refreshAccounts();
+  }, [showSettings, refreshAccounts]);
+
+  function updateDraft(
+    provider: AuthProvider,
+    patch: Partial<ProviderDraft>,
+  ) {
+    setDrafts((prev) => ({
+      ...prev,
+      [provider]: { ...prev[provider], ...patch },
+    }));
+  }
+
+  async function loginWithGitManager() {
+    setBusy(true);
+    setError(null);
+    setNotice("正在打开 Git 凭据管理器…");
+    try {
+      const status = await api.authGithubManagerLogin();
+      applyAccount(status);
+      setNotice(`已通过 Git 登录：${status.login}`);
+    } catch (e) {
+      setNotice(null);
+      setError(failureLine(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loginWithToken(provider: AuthProvider) {
+    setBusy(true);
+    setError(null);
+    try {
+      const status = await api.authLoginToken(
+        provider,
+        drafts[provider].token.trim(),
+      );
+      applyAccount(status);
+      updateDraft(provider, { token: "" });
+      setNotice(`已登录 ${status.login}`);
+    } catch (e) {
+      setError(failureLine(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function logoutProvider(provider: AuthProvider) {
+    setBusy(true);
+    setError(null);
+    try {
+      const status = await api.authLogout(provider);
+      applyAccount(status);
+      setNotice(`已退出 ${provider === "github" ? "GitHub" : "Gitee"}`);
+    } catch (e) {
+      setError(failureLine(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!repoPath || !selected) {
+      setDiff("");
+      return;
+    }
+    let cancelled = false;
+    setDiffLoading(true);
+    api
+      .getDiff(repoPath, selected.path, selected.staged)
+      .then((text) => {
+        if (!cancelled) setDiff(text);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setDiff("");
+          setError(failureLine(e));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDiffLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath, selected]);
+
+  useEffect(() => {
+    if (!repoPath || !selectedHash || pane !== "history") {
+      return;
+    }
+    let cancelled = false;
+    setPatchLoading(true);
+    api
+      .getCommitPatch(repoPath, selectedHash)
+      .then((text) => {
+        if (!cancelled) setCommitPatch(text);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setCommitPatch("");
+          setError(failureLine(e));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPatchLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath, selectedHash, pane]);
+
+  const staged = useMemo(
+    () => status?.changes.filter((c) => c.staged && !c.untracked) ?? [],
+    [status],
+  );
+  const unstaged = useMemo(
+    () =>
+      status?.changes.filter((c) => c.unstaged || c.untracked || c.conflicted) ??
+      [],
+    [status],
+  );
+  const conflictFiles = useMemo(
+    () => status?.changes.filter((c) => c.conflicted) ?? [],
+    [status],
+  );
+  const filterChanges = useCallback(
+    (files: FileChange[]) => {
+      let list = files;
+      if (fileFilter === "conflict") {
+        list = list.filter((f) => f.conflicted);
+      } else if (fileFilter === "untracked") {
+        list = list.filter((f) => f.untracked);
+      }
+      const q = fileQuery.trim().toLowerCase();
+      if (q) {
+        list = list.filter((f) => f.path.toLowerCase().includes(q));
+      }
+      return list;
+    },
+    [fileFilter, fileQuery],
+  );
+  const filteredUnstaged = useMemo(
+    () => filterChanges(unstaged),
+    [filterChanges, unstaged],
+  );
+  const filteredStaged = useMemo(
+    () => filterChanges(staged),
+    [filterChanges, staged],
+  );
+  const hasChanges = staged.length + unstaged.length > 0;
+  const ahead = status?.ahead ?? 0;
+  const behind = status?.behind ?? 0;
+
+  useEffect(() => {
+    if (!status) return;
+    if (
+      status.operation !== "merge" &&
+      status.operation !== "cherry-pick" &&
+      status.operation !== "rebase"
+    ) {
+      return;
+    }
+    if (conflictFiles.length === 0) return;
+    setPane("diff");
+    setSelected((cur) => {
+      if (cur && conflictFiles.some((f) => f.path === cur.path)) return cur;
+      return { path: conflictFiles[0].path, staged: false };
+    });
+  }, [status?.operation, conflictFiles]);
+
+  useEffect(() => {
+    if (!repoPath) return;
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const typing = isEditableTarget(e.target);
+
+      if (e.key === "F5") {
+        e.preventDefault();
+        void refresh(repoPath);
+        return;
+      }
+
+      if (!mod) return;
+
+      if (e.key === "Enter" && !e.shiftKey) {
+        const msg = messageRef.current.trim();
+        if (
+          busyRef.current ||
+          !msg ||
+          staged.length === 0 ||
+          !identitySaved
+        ) {
+          return;
+        }
+        e.preventDefault();
+        void runAction(async () => {
+          await api.createCommit(repoPath, msg);
+          setMessage("");
+          setSelected(null);
+        }, "正在提交…");
+        return;
+      }
+
+      if (typing) return;
+
+      if ((e.key === "r" || e.key === "R") && !e.shiftKey) {
+        e.preventDefault();
+        void refresh(repoPath);
+      } else if ((e.key === "s" || e.key === "S") && !e.shiftKey) {
+        if (unstaged.length === 0 || busyRef.current) return;
+        e.preventDefault();
+        void runAction(
+          () => api.stageFiles(
+            repoPath,
+            unstaged.map((f) => f.path),
+          ),
+          "正在暂存…",
+        );
+      } else if ((e.key === "l" || e.key === "L") && e.shiftKey) {
+        e.preventDefault();
+        void runAction(() => api.pull(repoPath), "正在拉取…");
+      } else if ((e.key === "p" || e.key === "P") && e.shiftKey) {
+        e.preventDefault();
+        void runAction(() => api.push(repoPath), "正在推送…");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [repoPath, refresh, staged.length, unstaged, identitySaved]);
+
+  async function runAction(action: () => Promise<unknown>, label?: string) {
+    if (!repoPath || busyRef.current) return;
+    const path = repoPath;
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    setNotice(label ?? "正在执行…");
+    // If a git/network call hangs, unlock the UI so Windows never shows "未响应".
+    let timedOut = false;
+    const watchdog = window.setTimeout(() => {
+      if (!busyRef.current) return;
+      timedOut = true;
+      busyRef.current = false;
+      setBusy(false);
+      setNotice(null);
+      setError(
+        "操作时间过长，界面已恢复可操作。后台命令可能仍在运行，请查看终端；必要时点「刷新」。",
+      );
+    }, ACTION_WATCHDOG_MS);
+    try {
+      await yieldToUi();
+      const result = await action();
+      await yieldToUi();
+      window.clearTimeout(watchdog);
+      if (timedOut) {
+        void refresh(path, { background: true }).catch(() => {});
+        return;
+      }
+      setSyncDialog(null);
+      setNotice(successLine(label, result));
+      // Fast path: unlock UI after a light refresh; history loads in background.
+      let coreForCache: Awaited<ReturnType<typeof api.getRepoCore>> | null = null;
+      try {
+        const core = await api.getRepoCore(path);
+        coreForCache = core;
+        if (repoPathRef.current === path) applyCore(core);
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+      await yieldToUi();
+      void api
+        .getRepoExtras(path)
+        .then((extras) => {
+          if (repoPathRef.current !== path) return;
+          startTransition(() => {
+            setCommits(extras.commits);
+            setStashes(extras.stashes);
+            setTags(extras.tags);
+          });
+          if (coreForCache) saveRepoCache(path, coreForCache, extras);
+        })
+        .catch(() => {
+          if (coreForCache) saveRepoCache(path, coreForCache);
+        });
+    } catch (e) {
+      window.clearTimeout(watchdog);
+      if (timedOut) {
+        void refresh(path, { background: true }).catch(() => {});
+        return;
+      }
+      setNotice(null);
+      const kind = syncConflictKind(e);
+      if (kind) {
+        setError(null);
+        setSyncDialog(kind);
+        busyRef.current = false;
+        setBusy(false);
+        try {
+          await refresh(path, { background: true });
+        } catch {
+          /* keep dialog error state */
+        }
+      } else {
+        setError(failureLine(e));
+        try {
+          const core = await api.getRepoCore(path);
+          if (repoPathRef.current === path) applyCore(core);
+        } catch {
+          /* keep original error */
+        } finally {
+          busyRef.current = false;
+          setBusy(false);
+        }
+        void api
+          .getRepoExtras(path)
+          .then((extras) => {
+            if (repoPathRef.current !== path) return;
+            startTransition(() => {
+              setCommits(extras.commits);
+              setStashes(extras.stashes);
+              setTags(extras.tags);
+            });
+          })
+          .catch(() => {});
+      }
+    }
+  }
+
+  function renderResetDialog() {
+    if (!resetTarget || !repoPath) return null;
+    const short = resetTarget.shortHash;
+    const subject = resetTarget.subject;
+    const runReset = (mode: "soft" | "mixed" | "hard") => {
+      void (async () => {
+        if (mode === "hard") {
+          const ok = await confirmAction(
+            `硬重置到 ${short}？\n工作区和暂存区都会回到该提交，未提交改动将丢失，且无法用本工具恢复。`,
+          );
+          if (!ok) return;
+        }
+        setResetTarget(null);
+        void runAction(
+          () => api.resetCommit(repoPath, resetTarget.hash, mode),
+          mode === "hard"
+            ? "正在硬重置…"
+            : mode === "soft"
+              ? "正在软重置…"
+              : "正在混合重置…",
+        );
+      })();
+    };
+    return (
+      <div className="modal-mask" onClick={() => setResetTarget(null)}>
+        <div
+          className="modal sync-modal"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+        >
+          <h3>重置到提交 {short}</h3>
+          <p className="muted">{subject}</p>
+          <p className="muted small">当前分支会指到该提交。请选择重置方式：</p>
+          <div className="sync-choices">
+            <button
+              type="button"
+              className="primary sync-choice"
+              disabled={busy}
+              onClick={() => runReset("soft")}
+            >
+              <strong>软重置</strong>
+              <span className="muted small">提交回退，改动仍在暂存区（最安全）</span>
+            </button>
+            <button
+              type="button"
+              className="sync-choice"
+              disabled={busy}
+              onClick={() => runReset("mixed")}
+            >
+              <strong>混合重置</strong>
+              <span className="muted small">提交回退，改动回到未暂存（默认 git reset）</span>
+            </button>
+            <button
+              type="button"
+              className="danger sync-choice"
+              disabled={busy}
+              onClick={() => runReset("hard")}
+            >
+              <strong>硬重置</strong>
+              <span className="muted small">提交与文件都回到该版本，未提交改动会丢弃</span>
+            </button>
+          </div>
+          <div className="modal-actions">
+            <button type="button" disabled={busy} onClick={() => setResetTarget(null)}>
+              取消
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSyncDialog() {
+    if (!syncDialog || !repoPath) return null;
+    const unrelated = syncDialog === "unrelated";
+    return (
+      <div className="modal-mask" onClick={() => setSyncDialog(null)}>
+        <div
+          className="modal sync-modal"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+        >
+          <h3>{unrelated ? "本地与远程历史不一致" : "推送被拒绝"}</h3>
+          <p className="muted">
+            {unrelated
+              ? "两边没有共同祖先（常见于本地 init 过，GitHub 上也单独建过仓库）。请选择如何处理："
+              : "远程有本地还没有的提交。请选择如何处理："}
+          </p>
+          <div className="sync-choices">
+            {unrelated ? (
+              <>
+                <button
+                  type="button"
+                  className="primary sync-choice"
+                  disabled={busy}
+                  onClick={() => {
+                    setSyncDialog(null);
+                    void runAction(async () => {
+                      const merged = await api.pull(repoPath, true);
+                      try {
+                        const pushed = await api.push(repoPath, false);
+                        return `${merged}\n${pushed}`;
+                      } catch {
+                        return `${merged}\n合并完成。若有冲突请先处理，然后再点「推送」。`;
+                      }
+                    }, "正在合并两边历史…");
+                  }}
+                >
+                  <strong>保留两边内容</strong>
+                  <span className="muted small">
+                    合并互不相关的历史并尝试推送；若有冲突，可在界面里继续或放弃
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="danger sync-choice"
+                  disabled={busy}
+                  onClick={() =>
+                    withConfirm(
+                      "将用本地提交覆盖远程，远程多出来的提交会丢失。确定继续？",
+                      () => {
+                        setSyncDialog(null);
+                        void runAction(
+                          () => api.push(repoPath, true),
+                          "正在强制推送…",
+                        );
+                      },
+                    )
+                  }
+                >
+                  <strong>只用本地，覆盖远程</strong>
+                  <span className="muted small">强制推送，远程旧内容会被替换</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="primary sync-choice"
+                  disabled={busy}
+                  onClick={() => {
+                    setSyncDialog(null);
+                    void runAction(async () => {
+                      await api.pull(repoPath);
+                      return api.push(repoPath, false);
+                    }, "正在拉取并推送…");
+                  }}
+                >
+                  <strong>先拉取再推送</strong>
+                  <span className="muted small">把远程改动合进来，然后再推送（推荐）</span>
+                </button>
+                <button
+                  type="button"
+                  className="danger sync-choice"
+                  disabled={busy}
+                  onClick={() =>
+                    withConfirm(
+                      "将用本地提交覆盖远程，远程多出来的提交会丢失。确定继续？",
+                      () => {
+                        setSyncDialog(null);
+                        void runAction(
+                          () => api.push(repoPath, true),
+                          "正在强制推送…",
+                        );
+                      },
+                    )
+                  }
+                >
+                  <strong>强制推送，覆盖远程</strong>
+                  <span className="muted small">仅在确定不需要远程提交时使用</span>
+                </button>
+              </>
+            )}
+          </div>
+          <div className="modal-actions">
+            <button type="button" disabled={busy} onClick={() => setSyncDialog(null)}>
+              取消
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderProviderAuth(provider: AuthProvider) {
+    const account = accounts?.[provider];
+    const draft = drafts[provider];
+    const tokenHint =
+      provider === "github"
+        ? "GitHub → Settings → Developer settings → Personal access tokens，勾选 repo。"
+        : "Gitee → 设置 → 安全设置 → 私人令牌，勾选 projects。";
+
+    if (account?.loggedIn) {
+      return (
+        <div className="github-user">
+          {account.avatarUrl ? (
+            <img src={account.avatarUrl} alt="" className="github-avatar" />
+          ) : (
+            <div className="github-avatar placeholder" />
+          )}
+          <div className="github-user-meta">
+            <strong>{account.login}</strong>
+            {account.name && <span className="muted small">{account.name}</span>}
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void logoutProvider(provider)}
+          >
+            退出
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <>
+        {provider === "github" && (
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => void loginWithGitManager()}
+          >
+            用 Git 登录
+          </button>
+        )}
+        <p className="muted small">{tokenHint}</p>
+        <label className="settings-field">
+          <span>Access Token</span>
+          <input
+            type="password"
+            value={draft.token}
+            onChange={(e) => updateDraft(provider, { token: e.target.value })}
+            placeholder={
+              provider === "github"
+                ? "ghp_… / github_pat_…"
+                : "Gitee 私人令牌"
+            }
+            disabled={busy}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void loginWithToken(provider);
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !draft.token.trim()}
+          onClick={() => void loginWithToken(provider)}
+        >
+          用 Token 登录
+        </button>
+      </>
+    );
+  }
+
+  if (!repoPath) {
+    return (
+      <>
+        {boot && (
+          <LoadingScreen
+            folderName={folderName(boot.path)}
+            progress={boot.progress}
+            label={boot.label}
+            fromCache={boot.fromCache}
+            wallpaperUrl={wallpaperUrl}
+            wallpaperKind={prefs.wallpaperKind}
+          />
+        )}
+        <div className={`welcome ${wallpaperUrl ? "has-wallpaper" : ""}`}>
+          {wallpaperUrl && (
+            <div className="welcome-wallpaper" aria-hidden>
+              {prefs.wallpaperKind === "video" ? (
+                <video
+                  className="welcome-media"
+                  src={wallpaperUrl}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                />
+              ) : (
+                <img className="welcome-media" src={wallpaperUrl} alt="" />
+              )}
+              <div className="welcome-scrim" />
+            </div>
+          )}
+          <div className="welcome-card">
+          <img className="brand-mark" src="/app-icon.png" alt="" width={72} height={72} />
+          <h1>青枝</h1>
+          <p className="muted">
+            打开本地项目，用图形界面完成日常 Git：改动、提交、分支与推拉。
+          </p>
+          {gitInfo ? (
+            <p className="git-meta">
+              {gitInfo.version}
+              <br />
+              <span className="muted small">{gitInfo.path}</span>
+            </p>
+          ) : (
+            <p className="muted">正在检测 Git。如果没有安装，会自动安装完整版 Git for Windows。</p>
+          )}
+          <div className="welcome-actions">
+            <button type="button" className="primary" onClick={pickFolder} disabled={busy || !gitInfo}>
+              打开文件夹
+            </button>
+            <button type="button" onClick={() => setShowSettings(true)} disabled={busy}>
+              设置
+            </button>
+            <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
+              说明书
+            </button>
+            <button type="button" onClick={() => void cloneRepo()} disabled={busy || !gitInfo}>
+              克隆
+            </button>
+          </div>
+          {recent.length > 0 && (
+            <div className="recent">
+              <div className="recent-header">
+                <h2>最近打开</h2>
+                <div className="row-actions">
+                  {Object.values(recentExists).some((ok) => ok === false) && (
+                    <button
+                      type="button"
+                      className="linkish"
+                      disabled={busy}
+                      onClick={() => {
+                        const keep = recent.filter((p) => recentExists[p] !== false);
+                        setRecent(pruneRecent(keep));
+                      }}
+                    >
+                      清理失效
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="linkish"
+                    disabled={busy}
+                    onClick={() =>
+                      withConfirm("清空全部最近打开记录？", () => {
+                        setRecent(clearRecent());
+                      })
+                    }
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
+              <ul>
+                {recent.map((p) => {
+                  const missing = recentExists[p] === false;
+                  return (
+                    <li key={p} className={missing ? "missing" : undefined}>
+                      <button
+                        type="button"
+                        className="recent-open"
+                        onClick={() => {
+                          if (missing) {
+                            setError(`路径不存在：${p}`);
+                            return;
+                          }
+                          void openFolder(p);
+                        }}
+                        disabled={busy}
+                        title={missing ? "路径已失效" : p}
+                      >
+                        <span className="recent-path">{p}</span>
+                        {missing ? (
+                          <span className="recent-badge">失效</span>
+                        ) : null}
+                      </button>
+                      <button
+                        type="button"
+                        className="recent-remove"
+                        disabled={busy}
+                        title="从列表移除"
+                        aria-label="从列表移除"
+                        onClick={() => setRecent(removeRecent(p))}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          {error && <div className="error-box" title={error}>{error}</div>}
+          <div className="welcome-terminal">
+            <Terminal text={terminal} onClear={() => setTerminal("")} />
+          </div>
+        </div>
+        {showSettings && renderSettings()}
+        {showHelp && renderHelp()}
+      </div>
+      </>
+    );
+  }
+
+  function renderHelp() {
+    return (
+      <div className="modal-mask" onClick={() => setShowHelp(false)}>
+        <div
+          className="modal help-modal"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+        >
+          <h3>青枝 · 全部操作说明</h3>
+          <div className="help-body">
+            <h4>欢迎页</h4>
+            <ul>
+              <li>打开文件夹：打开本地项目；非仓库时可 git init。</li>
+              <li>克隆：用设置中的克隆地址，选空文件夹克隆并打开。</li>
+              <li>最近打开：再开仓库；× 移除单项；可清空 / 清理失效路径。</li>
+            </ul>
+            <h4>工具栏</h4>
+            <ul>
+              <li>打开 / 刷新：换项目或重新读取状态（F5、Ctrl+R）。</li>
+              <li>保存远程：把设置里的地址写成 origin。</li>
+              <li>获取：只下载远程，不改本地文件。</li>
+              <li>拉取：下载并合并到当前分支（Ctrl+Shift+L）。</li>
+              <li>推送：上传本地提交（Ctrl+Shift+P）。</li>
+              <li>↑↓ 数字：相对远程超前 / 落后的提交数。</li>
+            </ul>
+            <h4>改动与提交</h4>
+            <ul>
+              <li>筛选：按路径、冲突、未跟踪过滤。</li>
+              <li>暂存 / 全部暂存（Ctrl+S）：放入暂存区；取消：移出暂存区。</li>
+              <li>放弃：丢弃工作区修改或删除未跟踪文件（需确认）。</li>
+              <li>差异页「暂存此块 / 取消此块」：按改动块局部暂存。</li>
+              <li>提交（Ctrl+Enter）：用已暂存文件创建提交（需名字邮箱）。</li>
+              <li>修改上次：改写最近未推送提交；撤销上次：去掉该提交，改动回暂存区。</li>
+            </ul>
+            <h4>分支</h4>
+            <ul>
+              <li>点击分支：切换；新建：创建并切过去。</li>
+              <li>删除：删本地分支；未合并时会询问是否强制删除。</li>
+              <li>合并：把所选分支并入当前；变基：把当前接到所选分支之后（改写历史）。</li>
+              <li>远程检出 / 删除：基于远程建本地分支，或删除远程分支。</li>
+              <li>冲突时：编辑并暂存冲突文件 →「继续」；或「放弃」中止。</li>
+            </ul>
+            <h4>历史 / 储藏 / 标签 / 终端</h4>
+            <ul>
+              <li>历史：点提交看补丁；拣选到当前分支；重置（软/混合/硬）。</li>
+              <li>储藏：收起未完成改动；可选含未跟踪文件；弹出或丢弃。</li>
+              <li>标签：创建、推送、推送全部、删本地、删远程。</li>
+              <li>终端：显示界面对应的 git 输出，也可手输命令。</li>
+            </ul>
+            <h4>设置</h4>
+            <ul>
+              <li>主题、字体、最近打开、提交图、仓库缓存加速。</li>
+              <li>壁纸：加载页/欢迎页图片或视频背景；可清除缓存。</li>
+              <li>GitHub / Gitee：凭据管理器登录，或粘贴 Token；可退出登录。</li>
+              <li>名字邮箱（可全局）、远程 origin、克隆地址。</li>
+            </ul>
+            <h4>多仓库与安全</h4>
+            <ul>
+              <li>顶部标签切换多个仓库；× 关闭标签（不删磁盘）。</li>
+              <li>硬重置、强制推送、删远程分支/标签会有确认，请谨慎。</li>
+              <li>操作过久时界面会自动恢复，可看终端或点刷新。</li>
+            </ul>
+            <p className="muted small">
+              更完整的表格说明见安装目录中的《使用说明书.md》。
+            </p>
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="primary" onClick={() => setShowHelp(false)}>
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSettings() {
+    return (
+      <div className="modal-mask" onClick={() => setShowSettings(false)}>
+        <div
+          className="modal settings-modal"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+        >
+          <h3>设置</h3>
+
+          <section className="settings-section">
+            <h4>外观与行为</h4>
+            <div className="settings-grid-2">
+              <label className="settings-field">
+                <span>主题</span>
+                <select
+                  value={prefs.theme}
+                  onChange={(e) =>
+                    updatePrefs({ theme: e.target.value as AppPrefs["theme"] })
+                  }
+                >
+                  <option value="light">浅色</option>
+                  <option value="dark">墨蓝深色</option>
+                  <option value="forest">青枝绿</option>
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>字体大小</span>
+                <select
+                  value={prefs.fontSize}
+                  onChange={(e) =>
+                    updatePrefs({
+                      fontSize: e.target.value as AppPrefs["fontSize"],
+                    })
+                  }
+                >
+                  <option value="normal">标准</option>
+                  <option value="large">较大</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="pref-cards" role="group" aria-label="行为选项">
+              <label
+                className={`pref-card${prefs.rememberRecent ? " is-on" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={prefs.rememberRecent}
+                  onChange={(e) =>
+                    updatePrefs({ rememberRecent: e.target.checked })
+                  }
+                />
+                <span className="pref-card-text">
+                  <strong>记住最近打开</strong>
+                  <span>欢迎页保留最近打开过的仓库路径</span>
+                </span>
+                <span className="pref-switch" aria-hidden />
+              </label>
+              <label
+                className={`pref-card${prefs.showCommitGraph ? " is-on" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={prefs.showCommitGraph}
+                  onChange={(e) =>
+                    updatePrefs({ showCommitGraph: e.target.checked })
+                  }
+                />
+                <span className="pref-card-text">
+                  <strong>历史页提交图</strong>
+                  <span>在历史列表左侧显示分支车道图</span>
+                </span>
+                <span className="pref-switch" aria-hidden />
+              </label>
+              <label
+                className={`pref-card${prefs.useRepoCache ? " is-on" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={prefs.useRepoCache}
+                  onChange={(e) =>
+                    updatePrefs({ useRepoCache: e.target.checked })
+                  }
+                />
+                <span className="pref-card-text">
+                  <strong>打开缓存加速</strong>
+                  <span>再次打开同一仓库时先用本地快照</span>
+                </span>
+                <span className="pref-switch" aria-hidden />
+              </label>
+              <button
+                type="button"
+                className="pref-cache-clear"
+                disabled={busy}
+                onClick={() => {
+                  clearRepoCache();
+                  setNotice("已清空仓库缓存");
+                }}
+              >
+                清空仓库缓存
+              </button>
+            </div>
+
+            <div className="wallpaper-panel">
+              <div className="wallpaper-panel-head">
+                <h4>欢迎页 / 加载页壁纸</h4>
+                <p className="muted small">
+                  支持图片或视频；打开仓库时的加载页也会使用。
+                </p>
+              </div>
+              <div className="wallpaper-preview-frame">
+                {prefs.wallpaperKind === "image" && wallpaperUrl ? (
+                  <img
+                    className="wallpaper-preview-media"
+                    src={wallpaperUrl}
+                    alt="当前壁纸预览"
+                  />
+                ) : prefs.wallpaperKind === "video" && wallpaperUrl ? (
+                  <video
+                    className="wallpaper-preview-media"
+                    src={wallpaperUrl}
+                    muted
+                    autoPlay
+                    loop
+                    playsInline
+                  />
+                ) : (
+                  <div className="wallpaper-preview-empty">
+                    <span>暂未设置壁纸</span>
+                    <span className="muted small">选择图片或视频作为背景</span>
+                  </div>
+                )}
+                {prefs.wallpaperKind !== "none" && (
+                  <span className="wallpaper-preview-badge">
+                    {prefs.wallpaperKind === "video" ? "视频" : "图片"}
+                  </span>
+                )}
+              </div>
+              <div className="row-actions wallpaper-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => {
+                    void (async () => {
+                      const selected = await open({
+                        multiple: false,
+                        title: "选择壁纸图片或视频",
+                        filters: [
+                          {
+                            name: "媒体",
+                            extensions: [
+                              "png",
+                              "jpg",
+                              "jpeg",
+                              "webp",
+                              "gif",
+                              "mp4",
+                              "webm",
+                              "mov",
+                            ],
+                          },
+                        ],
+                      });
+                      if (typeof selected !== "string") return;
+                      try {
+                        const saved = await api.importWallpaper(selected);
+                        const lower = saved.toLowerCase();
+                        const kind =
+                          lower.endsWith(".mp4") ||
+                          lower.endsWith(".webm") ||
+                          lower.endsWith(".mov")
+                            ? ("video" as const)
+                            : ("image" as const);
+                        updatePrefs({
+                          wallpaperPath: saved,
+                          wallpaperKind: kind,
+                        });
+                        setNotice(
+                          kind === "video"
+                            ? "已设置动态视频壁纸"
+                            : "已设置图片壁纸",
+                        );
+                      } catch (e) {
+                        setError(failureLine(e));
+                      }
+                    })();
+                  }}
+                >
+                  选择壁纸
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || prefs.wallpaperKind === "none"}
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        await api.clearWallpaper();
+                      } catch {
+                        /* ignore */
+                      }
+                      updatePrefs({
+                        wallpaperPath: "",
+                        wallpaperKind: "none",
+                      });
+                      setNotice("已清除壁纸");
+                    })();
+                  }}
+                >
+                  清除壁纸
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <hr className="settings-sep" />
+
+          <section className="settings-section">
+            <h4>远程账号登录</h4>
+            <p className="muted small">
+              不填 Token 时，拉取和推送会交给 Git 自带的凭据管理器，需要时它会打开浏览器登录。也可以在这里粘贴 Token，之后不再弹出。
+            </p>
+            <div className="auth-tabs">
+              <button
+                type="button"
+                className={authTab === "github" ? "active" : ""}
+                onClick={() => setAuthTab("github")}
+              >
+                GitHub
+                {accounts?.github.loggedIn ? " · 已登录" : ""}
+              </button>
+              <button
+                type="button"
+                className={authTab === "gitee" ? "active" : ""}
+                onClick={() => setAuthTab("gitee")}
+              >
+                Gitee
+                {accounts?.gitee.loggedIn ? " · 已登录" : ""}
+              </button>
+            </div>
+            {renderProviderAuth(authTab)}
+          </section>
+
+          <hr className="settings-sep" />
+
+          <label className="settings-field">
+            <span>名称</span>
+            <input
+              value={identity.name}
+              onChange={(e) =>
+                setIdentity((prev) => ({ ...prev, name: e.target.value }))
+              }
+              placeholder="你的名字"
+              disabled={!repoPath}
+            />
+          </label>
+          <label className="settings-field">
+            <span>邮箱</span>
+            <input
+              value={identity.email}
+              onChange={(e) =>
+                setIdentity((prev) => ({ ...prev, email: e.target.value }))
+              }
+              placeholder="you@example.com"
+              disabled={!repoPath}
+            />
+          </label>
+          {repoPath ? (
+            <>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={saveGlobally}
+                  onChange={(e) => setSaveGlobally(e.target.checked)}
+                />
+                这台电脑上的其他仓库也使用
+              </label>
+              <button
+                type="button"
+                disabled={
+                  busy || !identity.name.trim() || !identity.email.includes("@")
+                }
+                onClick={() =>
+                  void runAction(async () => {
+                    const name = identity.name.trim();
+                    const email = identity.email.trim();
+                    await api.setIdentity(repoPath, name, email, saveGlobally);
+                    setIdentity({ name, email });
+                    setIdentitySaved(true);
+                  }, "正在保存身份…")
+                }
+              >
+                保存名称和邮箱
+              </button>
+            </>
+          ) : (
+            <p className="muted small">打开仓库后可保存名称和邮箱。</p>
+          )}
+
+          <hr className="settings-sep" />
+
+          <label className="settings-field">
+            <span>远程地址（origin）</span>
+            <input
+              value={remoteUrl}
+              onChange={(e) => setRemoteUrl(e.target.value)}
+              placeholder="https://github.com/用户/仓库.git"
+              disabled={!repoPath}
+            />
+          </label>
+          <p className="muted small">
+            {repoPath
+              ? remotes.length === 0
+                ? "填写后点工具栏「保存远程」写入 origin。"
+                : "修改后点工具栏「保存远程」覆盖保存。"
+              : "打开仓库后可设置远程地址。"}
+          </p>
+
+          <label className="settings-field">
+            <span>克隆地址</span>
+            <input
+              value={cloneUrl}
+              onChange={(e) => updateCloneUrl(e.target.value)}
+              placeholder="https://github.com/用户/仓库.git"
+            />
+          </label>
+          <p className="muted small">填写后点「克隆」直接选择空文件夹并克隆。</p>
+
+          <div className="modal-actions">
+            <button type="button" className="primary" onClick={() => setShowSettings(false)}>
+              完成
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {boot && (
+        <LoadingScreen
+          folderName={folderName(boot.path)}
+          progress={boot.progress}
+          label={boot.label}
+          fromCache={boot.fromCache}
+          wallpaperUrl={wallpaperUrl}
+          wallpaperKind={prefs.wallpaperKind}
+        />
+      )}
+      <div className={`app ${entering ? "app-enter" : ""}`}>
+      {busy && (
+        <div className="busy-pulse" aria-hidden>
+          <div className="busy-pulse-bar" />
+        </div>
+      )}
+      {syncingCache && (
+        <div className="sync-strip" role="status">
+          <div className="sync-strip-bar" />
+          <span>正在后台同步最新状态…</span>
+        </div>
+      )}
+      <header className="toolbar">
+        <div className="toolbar-left">
+          <button type="button" onClick={pickFolder} disabled={busy} title="打开其他项目文件夹">
+            打开…
+          </button>
+          <button
+            type="button"
+            onClick={() => refresh(repoPath)}
+            disabled={busy}
+            title="重新读取仓库状态（F5 / Ctrl+R）"
+          >
+            刷新
+          </button>
+          <button type="button" onClick={() => setShowSettings(true)} disabled={busy}>
+            设置
+          </button>
+          <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
+            说明书
+          </button>
+          <div className="repo-title">
+            <strong title={repoPath ?? undefined}>{status?.branch ?? "…"}</strong>
+            <span className="muted small repo-path" title={repoPath ?? undefined}>
+              {folderName(repoPath)}
+            </span>
+            {status && (ahead > 0 || behind > 0) && (
+              <span className="sync-badge" title="相对远程：本地超前 / 落后">
+                {ahead > 0 ? `↑${ahead}` : ""}
+                {ahead > 0 && behind > 0 ? " " : ""}
+                {behind > 0 ? `↓${behind}` : ""}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="toolbar-right">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={applyRemote}
+            title="把设置里的远程地址保存为 origin"
+          >
+            保存远程
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void cloneRepo()}
+            title="克隆到空文件夹"
+          >
+            克隆
+          </button>
+          <div className="sync-group" role="group" aria-label="同步">
+            <button
+              type="button"
+              disabled={busy}
+              title="只下载远程更新，不改本地文件"
+              onClick={() => runAction(() => api.fetch(repoPath), "正在获取…")}
+            >
+              获取
+            </button>
+            <button
+              type="button"
+              className={behind > 0 ? "primary" : undefined}
+              disabled={busy}
+              title="下载并合并到当前分支（Ctrl+Shift+L）"
+              onClick={() => runAction(() => api.pull(repoPath), "正在拉取…")}
+            >
+              {busy ? "…" : behind > 0 ? `拉取 ↓${behind}` : "拉取"}
+            </button>
+            <button
+              type="button"
+              className={ahead > 0 && behind === 0 ? "primary" : undefined}
+              disabled={busy}
+              title="把本地提交上传到远程（Ctrl+Shift+P）"
+              onClick={() => runAction(() => api.push(repoPath), "正在推送…")}
+            >
+              {busy ? "…" : ahead > 0 ? `推送 ↑${ahead}` : "推送"}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {notice && (
+        <button
+          type="button"
+          className="notice-box status-dismiss"
+          title={`${notice}（点击关闭）`}
+          onClick={() => setNotice(null)}
+        >
+          {notice}
+        </button>
+      )}
+      {error && (
+        <button
+          type="button"
+          className="error-box status-dismiss"
+          title={`${error}（点击关闭）`}
+          onClick={() => setError(null)}
+        >
+          {error}
+        </button>
+      )}
+      {!identitySaved && (
+        <div className="hint-box">
+          提交前请先在
+          <button type="button" className="linkish" onClick={() => setShowSettings(true)}>
+            设置
+          </button>
+          里填写名字和邮箱。
+        </div>
+      )}
+      {identitySaved && remotes.length === 0 && (
+        <div className="hint-box">
+          还没有远程地址。可在设置里填写，再点「保存远程」，然后才能拉取/推送。
+        </div>
+      )}
+      {status?.operation === "merge" ||
+      status?.operation === "cherry-pick" ||
+      status?.operation === "rebase" ? (
+        <div className="conflict-box">
+          <div className="conflict-copy">
+            <strong>
+              {status.operation === "merge"
+                ? "合并冲突"
+                : status.operation === "rebase"
+                  ? "变基冲突"
+                  : "拣选冲突"}
+              {conflictFiles.length > 0
+                ? ` · ${conflictFiles.length} 个文件`
+                : " · 可继续"}
+            </strong>
+            <span>
+              {conflictFiles.length > 0
+                ? "请打开冲突文件手动解决，暂存后再点「继续」。"
+                : "冲突已全部暂存，可以继续完成操作。"}
+            </span>
+            {conflictFiles.length > 0 && (
+              <div className="conflict-files">
+                {conflictFiles.slice(0, 6).map((f) => (
+                  <button
+                    key={f.path}
+                    type="button"
+                    className="conflict-jump"
+                    disabled={busy}
+                    title={f.path}
+                    onClick={() => {
+                      setFileFilter("conflict");
+                      setPane("diff");
+                      setSelected({ path: f.path, staged: false });
+                    }}
+                  >
+                    {f.path}
+                  </button>
+                ))}
+                {conflictFiles.length > 6 ? (
+                  <span className="muted small">等 {conflictFiles.length} 个</span>
+                ) : null}
+              </div>
+            )}
+          </div>
+          <span className="row-actions conflict-actions">
+            {conflictFiles.length > 0 && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setFileFilter("conflict");
+                  setPane("diff");
+                  const curIdx = conflictFiles.findIndex(
+                    (f) => f.path === selected?.path,
+                  );
+                  const next =
+                    conflictFiles[(curIdx + 1) % conflictFiles.length] ??
+                    conflictFiles[0];
+                  setSelected({ path: next.path, staged: false });
+                }}
+              >
+                下一处冲突
+              </button>
+            )}
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || conflictFiles.length > 0}
+              title={
+                conflictFiles.length > 0
+                  ? "还有未解决冲突，暂存全部冲突文件后可继续"
+                  : undefined
+              }
+              onClick={() =>
+                void runAction(
+                  () => api.continueOperation(repoPath),
+                  status.operation === "merge"
+                    ? "正在完成合并…"
+                    : status.operation === "rebase"
+                      ? "正在继续变基…"
+                      : "正在完成拣选…",
+                )
+              }
+            >
+              继续
+            </button>
+            <button
+              type="button"
+              className="danger"
+              disabled={busy}
+              onClick={() => {
+                const label =
+                  status.operation === "merge"
+                    ? "放弃这次合并？"
+                    : status.operation === "rebase"
+                      ? "放弃这次变基？"
+                      : "放弃这次拣选？";
+                withConfirm(label, () => {
+                  void runAction(
+                    () => api.abortOperation(repoPath),
+                    status.operation === "merge"
+                      ? "正在放弃合并…"
+                      : status.operation === "rebase"
+                        ? "正在放弃变基…"
+                        : "正在放弃拣选…",
+                  );
+                });
+              }}
+            >
+              放弃
+            </button>
+          </span>
+        </div>
+      ) : null}
+      {showSettings && renderSettings()}
+      {showHelp && renderHelp()}
+      {renderSyncDialog()}
+      {renderResetDialog()}
+
+      {openRepos.length > 0 && (
+        <div className="repo-tabs" role="tablist" aria-label="已打开仓库">
+          {openRepos.map((path) => (
+            <div
+              key={path}
+              className={`repo-tab ${path === repoPath ? "active" : ""}`}
+              role="tab"
+              aria-selected={path === repoPath}
+            >
+              <button
+                type="button"
+                className="repo-tab-open"
+                disabled={busy}
+                title={path}
+                onClick={() => {
+                  if (path !== repoPath) void openFolder(path);
+                }}
+              >
+                {folderName(path)}
+              </button>
+              <button
+                type="button"
+                className="repo-tab-close"
+                disabled={busy}
+                title="关闭标签"
+                aria-label={`关闭 ${folderName(path)}`}
+                onClick={() => closeRepoTab(path)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="main">
+        <aside className="sidebar">
+          <div className="sidebar-scroll">
+          <div className="changes-filter">
+            <input
+              value={fileQuery}
+              onChange={(e) => setFileQuery(e.target.value)}
+              placeholder="筛选文件路径…"
+              aria-label="筛选文件路径"
+            />
+            <div className="filter-chips" role="group" aria-label="改动筛选">
+              {(
+                [
+                  ["all", "全部"],
+                  ["conflict", "冲突"],
+                  ["untracked", "未跟踪"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={fileFilter === id ? "active" : undefined}
+                  onClick={() => setFileFilter(id)}
+                >
+                  {label}
+                  {id === "conflict" && conflictFiles.length > 0
+                    ? ` ${conflictFiles.length}`
+                    : ""}
+                </button>
+              ))}
+            </div>
+          </div>
+          <ChangeList
+            title="未暂存"
+            sectionId="unstaged"
+            stickyTop="0"
+            files={filteredUnstaged}
+            selected={selected && !selected.staged ? selected.path : null}
+            stagedSection={false}
+            busy={busy}
+            onSelect={(path) => setSelected({ path, staged: false })}
+            onStage={(paths) => runAction(() => api.stageFiles(repoPath, paths))}
+            onDiscard={(paths) => runAction(() => api.discardFiles(repoPath, paths))}
+          />
+          <ChangeList
+            title="已暂存"
+            sectionId="staged"
+            stickyTop="2.35rem"
+            files={filteredStaged}
+            selected={selected && selected.staged ? selected.path : null}
+            stagedSection
+            busy={busy}
+            onSelect={(path) => setSelected({ path, staged: true })}
+            onUnstage={(paths) => runAction(() => api.unstageFiles(repoPath, paths))}
+          />
+
+          <div className="panel branch-panel">
+            <div className="panel-header">
+              <strong>分支</strong>
+            </div>
+            <ul className="branch-list">
+              {branches.map((b) => (
+                <li key={b.name} className={b.isCurrent ? "current" : ""}>
+                  <button
+                    type="button"
+                    disabled={busy || b.isCurrent}
+                    onClick={() =>
+                      runAction(() => api.branchCheckout(repoPath, b.name))
+                    }
+                  >
+                    {b.isCurrent ? "● " : "○ "}
+                    {b.name}
+                    {b.upstream ? (
+                      <span className="muted small"> → {b.upstream}</span>
+                    ) : null}
+                  </button>
+                  {!b.isCurrent && (
+                    <span className="row-actions">
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() =>
+                          withConfirm(`删除本地分支「${b.name}」？`, () => {
+                            void runAction(async () => {
+                              try {
+                                return await api.branchDelete(
+                                  repoPath,
+                                  b.name,
+                                  false,
+                                );
+                              } catch (e) {
+                                const raw = String(e);
+                                if (
+                                  raw.includes("BRANCH_NOT_MERGED:") ||
+                                  /not fully merged/i.test(raw)
+                                ) {
+                                  const force = await confirmAction(
+                                    `分支「${b.name}」尚未完全合并到当前分支。强制删除？未合并的提交可能丢失。`,
+                                  );
+                                  if (!force) return "已取消删除";
+                                  return api.branchDelete(repoPath, b.name, true);
+                                }
+                                throw e;
+                              }
+                            }, "正在删除分支…");
+                          })
+                        }
+                      >
+                        删除
+                      </button>
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div className="new-branch">
+              <input
+                value={newBranch}
+                onChange={(e) => setNewBranch(e.target.value)}
+                placeholder="新分支名"
+              />
+              <button
+                type="button"
+                disabled={busy || !newBranch.trim()}
+                onClick={() =>
+                  runAction(async () => {
+                    await api.branchCreate(repoPath, newBranch.trim());
+                    setNewBranch("");
+                  })
+                }
+              >
+                新建
+              </button>
+            </div>
+            <div className="new-branch">
+              <select
+                value={mergeTarget}
+                onChange={(e) => setMergeTarget(e.target.value)}
+                disabled={busy}
+              >
+                <option value="">合并其他分支到当前…</option>
+                {branches
+                  .filter((b) => !b.isCurrent)
+                  .map((b) => (
+                    <option key={b.name} value={b.name}>
+                      {b.name}
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                disabled={busy || !mergeTarget}
+                onClick={() =>
+                  withConfirm(`把「${mergeTarget}」合并进当前分支？`, () => {
+                    void runAction(
+                      () => api.branchMerge(repoPath, mergeTarget),
+                      "正在合并…",
+                    );
+                  })
+                }
+              >
+                合并
+              </button>
+            </div>
+            <div className="new-branch">
+              <select
+                value={rebaseTarget}
+                onChange={(e) => setRebaseTarget(e.target.value)}
+                disabled={busy}
+              >
+                <option value="">把当前分支变基到…</option>
+                {branches
+                  .filter((b) => !b.isCurrent)
+                  .map((b) => (
+                    <option key={`rebase-${b.name}`} value={b.name}>
+                      {b.name}
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                disabled={busy || !rebaseTarget}
+                title="把当前分支的提交接到所选分支最新提交之后"
+                onClick={() =>
+                  withConfirm(
+                    `把当前分支变基到「${rebaseTarget}」？\n历史可能被改写；若已推送，之后可能需要强制推送。`,
+                    () => {
+                      void runAction(
+                        () => api.branchRebase(repoPath, rebaseTarget),
+                        "正在变基…",
+                      );
+                    },
+                  )
+                }
+              >
+                变基
+              </button>
+            </div>
+            <div className="panel-header remote-branch-header">
+              <strong>远程分支</strong>
+              <span className="muted small">
+                {remoteBranches.length === 0
+                  ? "先点「获取」下载远程分支列表"
+                  : "检出可创建/切换本地跟踪分支"}
+              </span>
+            </div>
+            {remoteBranches.length === 0 ? (
+              <p className="muted small pad">暂无远程分支记录</p>
+            ) : (
+              <ul className="branch-list remote-branch-list">
+                {remoteBranches.map((rb) => (
+                  <li key={rb.name}>
+                    <span className="remote-branch-name">
+                      {rb.name}
+                      <span className="muted small"> {rb.tip}</span>
+                      {rb.hasLocal ? (
+                        <span className="muted small"> · 已有本地</span>
+                      ) : null}
+                    </span>
+                    <span className="row-actions">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          void runAction(
+                            () => api.remoteBranchCheckout(repoPath, rb.name),
+                            "正在检出远程分支…",
+                          )
+                        }
+                      >
+                        检出
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() =>
+                          withConfirm(
+                            `删除远程分支「${rb.name}」？\n这会从 GitHub/Gitee 上删掉该分支，本地同名分支仍保留。`,
+                            () => {
+                              void runAction(
+                                () => api.remoteBranchDelete(repoPath, rb.name),
+                                "正在删除远程分支…",
+                              );
+                            },
+                          )
+                        }
+                      >
+                        删除
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          </div>
+
+          <div className="panel commit-panel">
+            <div className="panel-header">
+              <strong>提交</strong>
+              {identitySaved ? (
+                <button
+                  type="button"
+                  className="linkish muted small"
+                  onClick={() => setShowSettings(true)}
+                >
+                  {identity.name} · {identity.email}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="linkish muted small"
+                  onClick={() => setShowSettings(true)}
+                >
+                  去设置里填写名字和邮箱
+                </button>
+              )}
+            </div>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="提交说明"
+              rows={3}
+            />
+            <div className="commit-actions">
+              <button
+                type="button"
+                className="primary"
+                disabled={
+                  busy ||
+                  !message.trim() ||
+                  staged.length === 0 ||
+                  !identitySaved
+                }
+                title="提交（Ctrl+Enter）"
+                onClick={() =>
+                  runAction(async () => {
+                    await api.createCommit(repoPath, message);
+                    setMessage("");
+                    setSelected(null);
+                  })
+                }
+              >
+                提交 {staged.length > 0 ? `(${staged.length})` : ""}
+              </button>
+              <button
+                type="button"
+                disabled={busy || !identitySaved || commits.length === 0}
+                title="修改最近一次未推送的提交"
+                onClick={() =>
+                  withConfirm(
+                    message.trim()
+                      ? "用当前说明修改最近一次提交？"
+                      : "保留原说明，把已暂存改动并入最近一次提交？",
+                    () => {
+                      void runAction(async () => {
+                        await api.amendCommit(repoPath, message);
+                        setMessage("");
+                        setSelected(null);
+                      }, "正在修改上次提交…");
+                    },
+                  )
+                }
+              >
+                修改上次
+              </button>
+              <button
+                type="button"
+                disabled={busy || commits.length === 0}
+                title="撤销最近一次未推送的提交，改动回到暂存区"
+                onClick={() =>
+                  withConfirm(
+                    "撤销最近一次提交？说明会去掉，文件改动仍留在暂存区。已推送的提交不能撤销。",
+                    () => {
+                      void runAction(
+                        () => api.undoCommit(repoPath),
+                        "正在撤销上次提交…",
+                      );
+                    },
+                  )
+                }
+              >
+                撤销上次
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <ExtraPane
+          pane={pane}
+          onPane={setPane}
+          diffPath={selected?.path ?? null}
+          diffStaged={selected?.staged ?? false}
+          diffText={diff}
+          diffLoading={diffLoading}
+          hasChanges={hasChanges}
+          allowHunks={
+            Boolean(selected) &&
+            !status?.changes.find((c) => c.path === selected?.path)?.untracked
+          }
+          onApplyHunk={(patch, reverse) =>
+            void runAction(
+              () => api.applyPatch(repoPath, patch, reverse),
+              reverse ? "正在取消暂存此块…" : "正在暂存此块…",
+            )
+          }
+          showCommitGraph={prefs.showCommitGraph}
+          commits={commits}
+          selectedHash={selectedHash}
+          commitPatch={commitPatch}
+          patchLoading={patchLoading}
+          onSelectCommit={setSelectedHash}
+          onCherryPick={(hash) => {
+            withConfirm(`把提交 ${hash.slice(0, 7)} 拣选到当前分支？`, () => {
+              void runAction(() => api.cherryPick(repoPath, hash), "正在拣选…");
+            });
+          }}
+          onResetCommit={(commit) => setResetTarget(commit)}
+          stashes={stashes}
+          stashMessage={stashMessage}
+          onStashMessage={setStashMessage}
+          stashIncludeUntracked={stashIncludeUntracked}
+          onStashIncludeUntracked={setStashIncludeUntracked}
+          onStash={() =>
+            runAction(async () => {
+              await api.createStash(
+                repoPath,
+                stashMessage,
+                stashIncludeUntracked,
+              );
+              setStashMessage("");
+            })
+          }
+          onPopStash={(index) => runAction(() => api.popStash(repoPath, index))}
+          onDropStash={(index) => {
+            withConfirm(`丢弃 stash@{${index}}？`, () => {
+              void runAction(() => api.dropStash(repoPath, index));
+            });
+          }}
+          tags={tags}
+          tagName={tagName}
+          onTagName={setTagName}
+          onCreateTag={() =>
+            runAction(async () => {
+              await api.tagCreate(repoPath, tagName.trim());
+              setTagName("");
+            })
+          }
+          onPushTag={(name) =>
+            void runAction(() => api.tagPush(repoPath, name), "正在推送标签…")
+          }
+          onPushAllTags={() => {
+            withConfirm("把全部本地标签推送到远程？", () => {
+              void runAction(() => api.tagPushAll(repoPath), "正在推送全部标签…");
+            });
+          }}
+          onDeleteTag={(name) => {
+            withConfirm(`删除本地标签「${name}」？`, () => {
+              void runAction(() => api.tagDelete(repoPath, name), "正在删除标签…");
+            });
+          }}
+          onDeleteRemoteTag={(name) => {
+            withConfirm(
+              `删除远程标签「${name}」？\n会从 GitHub/Gitee 上移除该标签，本地标签仍保留。`,
+              () => {
+                void runAction(
+                  () => api.tagDeleteRemote(repoPath, name),
+                  "正在删除远程标签…",
+                );
+              },
+            );
+          }}
+          terminalText={terminal}
+          onClearTerminal={() => setTerminal("")}
+          onRunCommand={(line) => {
+            if (busyRef.current) return;
+            setTerminal((prev) => `${prev}$ ${line}\n`);
+            busyRef.current = true;
+            setBusy(true);
+            setNotice("正在执行命令…");
+            setError(null);
+            void api
+              .runCommand(repoPath, line)
+              .then(async (output) => {
+                if (output.trim()) {
+                  setTerminal((prev) => `${prev}${output.trimEnd()}\n`);
+                }
+                setNotice("命令已执行");
+                await refresh(repoPath);
+              })
+              .catch((e) => {
+                const message = String(e);
+                setTerminal((prev) => `${prev}${message}\n`);
+                setNotice(null);
+                setError(failureLine(e));
+                busyRef.current = false;
+                setBusy(false);
+              });
+          }}
+          busy={busy}
+        />
+      </div>
+    </div>
+    </>
+  );
+}
