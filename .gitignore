@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Release installers (too large for GitHub; keep local only)
+*-setup.exe
+*.msi
+历史版本/
+/qingzhi_*.exe

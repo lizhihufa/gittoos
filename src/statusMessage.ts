@@ -237,6 +237,20 @@ export function translateGitMessage(raw: string): string | null {
   if (/refusing to merge unrelated histories/i.test(text)) {
     return "拒绝合并互不相关的历史。请在弹窗中选择是否允许。";
   }
+  if (
+    /GH001|file size limit|exceeds GitHub's file size|large files detected/i.test(
+      text,
+    )
+  ) {
+    const sizeHit = text.match(/([\w./\\-]+\.(?:exe|zip|msi|dmg|iso|7z|rar))\s+is\s+([\d.]+)\s*MB/i);
+    const tip = sizeHit
+      ? `「${sizeHit[1].replace(/\\/g, "/")}」约 ${sizeHit[2]} MB，超过 GitHub 单文件 100 MB 限制。`
+      : "提交里包含超过 GitHub 单文件 100 MB 限制的大文件。";
+    return `${tip}请从仓库中移除安装包等大文件后再推送（勿把安装包提交进 Git）。`;
+  }
+  if (/pre-receive hook declined/i.test(text)) {
+    return "远程拒绝了推送（服务器钩子未通过）。常见原因是提交了过大文件或违反了仓库规则。请查看终端详情。";
+  }
 
   return null;
 }

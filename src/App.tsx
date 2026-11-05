@@ -135,7 +135,7 @@ export default function App() {
   const [diff, setDiff] = useState("");
   const [diffLoading, setDiffLoading] = useState(false);
   const [newBranch, setNewBranch] = useState("");
-  const [pane, setPane] = useState<Pane>("diff");
+  const [pane, setPane] = useState<Pane>("terminal");
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [commitPatch, setCommitPatch] = useState("");
@@ -1419,7 +1419,7 @@ export default function App() {
               <li>历史：点提交看补丁；拣选到当前分支；重置（软/混合/硬）。</li>
               <li>储藏：收起未完成改动；可选含未跟踪文件；弹出或丢弃。</li>
               <li>标签：创建、推送、推送全部、删本地、删远程。</li>
-              <li>终端：显示界面对应的 git 输出，也可手输命令。</li>
+              <li>终端（默认页）：显示界面对应的 git 输出，也可手输命令。</li>
             </ul>
             <h4>设置</h4>
             <ul>
