@@ -2218,6 +2218,23 @@ html[data-theme="dark"] .modal {
   border-bottom-color: #b7d7c8;
 }
 
+.notice-box.is-sticky {
+  font-weight: 600;
+}
+
+.notice-box.is-sticky::after {
+  content: " · 点击关闭";
+  font-weight: 500;
+  opacity: 0.72;
+  font-size: 12px;
+}
+
+html[data-theme="dark"] .notice-box {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--text);
+  border-bottom-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
 .error-box {
   background: #fdecea;
   color: var(--danger);

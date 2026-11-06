@@ -138,9 +138,13 @@ export default function App() {
   });
   const [message, setMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  /** Push success stays until click or another notice replaces it. */
-  const noticeStickyRef = useRef(false);
+  const [notice, setNoticeState] = useState<string | null>(null);
+  /** When true, notice does not auto-dismiss (e.g. push completed). */
+  const [noticeSticky, setNoticeSticky] = useState(false);
+  const setNotice = useCallback((text: string | null, sticky = false) => {
+    setNoticeSticky(Boolean(text && sticky));
+    setNoticeState(text);
+  }, []);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [selected, setSelected] = useState<{ path: string; staged: boolean } | null>(
@@ -300,12 +304,14 @@ export default function App() {
   }, [repoPath]);
 
   useEffect(() => {
-    if (!notice || noticeStickyRef.current) return;
+    if (!notice || noticeSticky) return;
+    const current = notice;
     const timer = window.setTimeout(() => {
-      if (!noticeStickyRef.current) setNotice(null);
+      setNoticeState((prev) => (prev === current ? null : prev));
+      setNoticeSticky(false);
     }, 4500);
     return () => window.clearTimeout(timer);
-  }, [notice]);
+  }, [notice, noticeSticky]);
 
   const repoPathRef = useRef<string | null>(null);
   repoPathRef.current = repoPath;
@@ -1166,7 +1172,6 @@ export default function App() {
     setBusy(true);
     setError(null);
     setAuthHint(false);
-    noticeStickyRef.current = false;
     setNotice(label ?? "正在执行…");
     if (network) {
       syncProgressActive.current = true;
@@ -1218,9 +1223,11 @@ export default function App() {
       setSyncDialog(null);
       {
         const text = successLine(label, result);
+        const stickyPush =
+          Boolean(label && /推送/.test(label)) ||
+          /推送完成|已强制推送|已推送/.test(text);
         // 推送完成提示需手动点掉，或被后续操作覆盖。
-        noticeStickyRef.current = Boolean(label && /推送/.test(label));
-        setNotice(text);
+        setNotice(text, stickyPush);
       }
       if (network) {
         setSyncProgress((prev) =>
@@ -2908,12 +2915,9 @@ export default function App() {
       {notice && (
         <button
           type="button"
-          className="notice-box status-dismiss"
-          title={`${notice}（点击关闭）`}
-          onClick={() => {
-            noticeStickyRef.current = false;
-            setNotice(null);
-          }}
+          className={`notice-box status-dismiss${noticeSticky ? " is-sticky" : ""}`}
+          title={noticeSticky ? `${notice}（点击关闭，不会自动消失）` : `${notice}（点击关闭）`}
+          onClick={() => setNotice(null)}
         >
           {notice}
         </button>
