@@ -139,6 +139,8 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Push success stays until click or another notice replaces it. */
+  const noticeStickyRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [selected, setSelected] = useState<{ path: string; staged: boolean } | null>(
@@ -298,8 +300,10 @@ export default function App() {
   }, [repoPath]);
 
   useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), 4500);
+    if (!notice || noticeStickyRef.current) return;
+    const timer = window.setTimeout(() => {
+      if (!noticeStickyRef.current) setNotice(null);
+    }, 4500);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
@@ -1162,6 +1166,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     setAuthHint(false);
+    noticeStickyRef.current = false;
     setNotice(label ?? "正在执行…");
     if (network) {
       syncProgressActive.current = true;
@@ -1211,7 +1216,12 @@ export default function App() {
         return;
       }
       setSyncDialog(null);
-      setNotice(successLine(label, result));
+      {
+        const text = successLine(label, result);
+        // 推送完成提示需手动点掉，或被后续操作覆盖。
+        noticeStickyRef.current = Boolean(label && /推送/.test(label));
+        setNotice(text);
+      }
       if (network) {
         setSyncProgress((prev) =>
           prev ? { ...prev, percent: 100, detail: "完成" } : prev,
@@ -2900,7 +2910,10 @@ export default function App() {
           type="button"
           className="notice-box status-dismiss"
           title={`${notice}（点击关闭）`}
-          onClick={() => setNotice(null)}
+          onClick={() => {
+            noticeStickyRef.current = false;
+            setNotice(null);
+          }}
         >
           {notice}
         </button>
