@@ -2021,6 +2021,78 @@ html[data-theme="dark"] .auth-ssh-feedback.is-ok {
   padding: 1rem;
 }
 
+.confirm-mask {
+  z-index: 120;
+  background: rgba(16, 18, 22, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.confirm-dialog {
+  width: min(420px, 100%);
+  animation: confirm-rise 0.18s ease both;
+}
+
+.confirm-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.confirm-dialog-icon {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
+.confirm-dialog.is-danger .confirm-dialog-icon {
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
+}
+
+.confirm-dialog-body {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.confirm-dialog-body p {
+  margin: 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+button.confirm-danger-btn,
+.confirm-danger-btn {
+  background: var(--danger) !important;
+  border-color: var(--danger) !important;
+  color: #fff !important;
+}
+
+button.confirm-danger-btn:hover:not(:disabled),
+.confirm-danger-btn:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+@keyframes confirm-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .modal {
   width: min(480px, 100%);
   background: var(--panel);

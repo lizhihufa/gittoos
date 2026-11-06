@@ -158,6 +158,11 @@ export function ChangeList({
                             ? `删除未跟踪文件 ${file.path}？`
                             : `放弃对 ${file.path} 的修改？`,
                           () => onDiscard([file.path]),
+                          {
+                            title: "放弃改动",
+                            danger: true,
+                            confirmLabel: "放弃",
+                          },
                         )
                       }
                     >

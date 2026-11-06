@@ -956,6 +956,7 @@ export default function App() {
     const label = provider === "github" ? "GitHub" : "Gitee";
     const ok = await confirmAction(
       `退出 ${label}${accounts?.[provider]?.login ? `（${accounts[provider].login}）` : ""}？\n将清除本工具保存的全部 ${label} 登录信息，并尽量删除系统 Git / 凭据管理器中的对应条目。`,
+      { title: "退出登录", danger: true, confirmLabel: "退出" },
     );
     if (!ok) return;
     setBusy(true);
@@ -1455,6 +1456,7 @@ export default function App() {
         if (mode === "hard") {
           const ok = await confirmAction(
             `硬重置到 ${short}？\n工作区和暂存区都会回到该提交，未提交改动将丢失，且无法用本工具恢复。`,
+            { title: "硬重置", danger: true, confirmLabel: "硬重置" },
           );
           if (!ok) return;
         }
@@ -3203,6 +3205,7 @@ export default function App() {
                                 ) {
                                   const force = await confirmAction(
                                     `分支「${b.name}」尚未完全合并到当前分支。强制删除？未合并的提交可能丢失。`,
+                                    { title: "强制删除分支", danger: true, confirmLabel: "强制删除" },
                                   );
                                   if (!force) return "已取消删除";
                                   return api.branchDelete(repoPath, b.name, true);
