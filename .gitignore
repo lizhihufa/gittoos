@@ -23,8 +23,14 @@ dist-ssr
 *.sln
 *.sw?
 
-# Release installers (too large for GitHub; keep local only)
-*-setup.exe
+# Release installers / bundles (too large for GitHub; keep local only)
 *.msi
-历史版本/
+*-setup.exe
+*_x64-setup.exe
+*_x86-setup.exe
 /qingzhi_*.exe
+/qingzhi_*.msi
+历史版本/
+src-tauri/target/release/bundle/
+src-tauri/target/release/*.exe
+src-tauri/target/debug/*.exe
