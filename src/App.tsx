@@ -215,6 +215,12 @@ export default function App() {
   const [recentExists, setRecentExists] = useState<Record<string, boolean>>({});
   const [fileQuery, setFileQuery] = useState("");
   const [fileFilter, setFileFilter] = useState<FileFilter>("all");
+  const [syncProgress, setSyncProgress] = useState<{
+    label: string;
+    percent: number;
+    detail: string;
+  } | null>(null);
+  const syncProgressActive = useRef(false);
   const messageRef = useRef(message);
   messageRef.current = message;
 
@@ -246,9 +252,30 @@ export default function App() {
         flushTimer = window.setTimeout(flush, 80);
       }
     });
+    const unlistenProgress = listen<{ percent: number; label: string }>(
+      "git-progress",
+      (event) => {
+        if (!syncProgressActive.current) return;
+        const percent = Math.max(0, Math.min(100, event.payload.percent));
+        setSyncProgress((prev) =>
+          prev
+            ? {
+                ...prev,
+                percent: Math.max(prev.percent, percent),
+                detail: event.payload.label || prev.detail,
+              }
+            : {
+                label: "同步中",
+                percent,
+                detail: event.payload.label,
+              },
+        );
+      },
+    );
     return () => {
       if (flushTimer !== undefined) window.clearTimeout(flushTimer);
       void unlisten.then((fn) => fn());
+      void unlistenProgress.then((fn) => fn());
     };
   }, []);
 
@@ -1118,14 +1145,30 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [repoPath, refresh, staged.length, unstaged, identitySaved]);
 
+  function isNetworkLabel(label?: string) {
+    return /拉取|推送|获取|克隆|同步/.test(label ?? "");
+  }
+
   async function runAction(action: () => Promise<unknown>, label?: string) {
     if (!repoPath || busyRef.current) return;
     const path = repoPath;
+    const network = isNetworkLabel(label);
     busyRef.current = true;
     setBusy(true);
     setError(null);
     setAuthHint(false);
     setNotice(label ?? "正在执行…");
+    if (network) {
+      syncProgressActive.current = true;
+      setSyncProgress({
+        label: label ?? "同步中",
+        percent: 3,
+        detail: "准备中",
+      });
+    } else {
+      syncProgressActive.current = false;
+      setSyncProgress(null);
+    }
     // If a git/network call hangs, unlock the UI so Windows never shows "未响应".
     let timedOut = false;
     const watchdog = window.setTimeout(() => {
@@ -1133,6 +1176,8 @@ export default function App() {
       timedOut = true;
       busyRef.current = false;
       setBusy(false);
+      syncProgressActive.current = false;
+      setSyncProgress(null);
       setNotice(null);
       setError(
         "操作时间过长，界面已恢复可操作。后台命令可能仍在运行，请查看终端；必要时点「刷新」。",
@@ -1162,6 +1207,11 @@ export default function App() {
       }
       setSyncDialog(null);
       setNotice(successLine(label, result));
+      if (network) {
+        setSyncProgress((prev) =>
+          prev ? { ...prev, percent: 100, detail: "完成" } : prev,
+        );
+      }
       // Fast path: unlock UI after a light refresh; history loads in background.
       let coreForCache: Awaited<ReturnType<typeof api.getRepoCore>> | null = null;
       try {
@@ -1171,6 +1221,8 @@ export default function App() {
       } finally {
         busyRef.current = false;
         setBusy(false);
+        syncProgressActive.current = false;
+        setSyncProgress(null);
       }
       await yieldToUi();
       void api
@@ -1200,6 +1252,8 @@ export default function App() {
         setSyncDialog(kind);
         busyRef.current = false;
         setBusy(false);
+        syncProgressActive.current = false;
+        setSyncProgress(null);
         try {
           await refresh(path, { background: true });
         } catch {
@@ -1216,6 +1270,8 @@ export default function App() {
         } finally {
           busyRef.current = false;
           setBusy(false);
+          syncProgressActive.current = false;
+          setSyncProgress(null);
         }
         void api
           .getRepoExtras(path)
@@ -2694,11 +2750,6 @@ export default function App() {
         />
       )}
       <div className={`app ${entering ? "app-enter" : ""}`}>
-      {busy && (
-        <div className="busy-pulse" aria-hidden>
-          <div className="busy-pulse-bar" />
-        </div>
-      )}
       {syncingCache && (
         <div className="sync-strip" role="status">
           <div className="sync-strip-bar" />
@@ -2809,6 +2860,34 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {(busy || syncProgress) && (
+        <div
+          className={`sync-progress${syncProgress ? "" : " is-indeterminate"}`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="sync-progress-track">
+            <div
+              className="sync-progress-fill"
+              style={
+                syncProgress
+                  ? { width: `${Math.max(2, syncProgress.percent)}%` }
+                  : undefined
+              }
+            />
+          </div>
+          {syncProgress && (
+            <div className="sync-progress-meta">
+              <span>
+                {syncProgress.label}
+                {syncProgress.detail ? ` · ${syncProgress.detail}` : ""}
+              </span>
+              <span>{syncProgress.percent}%</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {notice && (
         <button

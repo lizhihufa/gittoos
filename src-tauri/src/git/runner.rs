@@ -1,4 +1,4 @@
-use super::types::{GitError, GitInfo, GitTerminalEvent};
+use super::types::{GitError, GitInfo, GitProgressEvent, GitTerminalEvent};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -57,6 +57,110 @@ pub fn emit_terminal(kind: &str, text: &str) {
             },
         );
     }
+}
+
+fn emit_progress(percent: u32, label: &str) {
+    if is_git_quiet() {
+        return;
+    }
+    let percent = percent.min(100);
+    if let Some(app) = APP_HANDLE.get() {
+        let _ = app.emit(
+            "git-progress",
+            GitProgressEvent {
+                percent,
+                label: label.to_string(),
+            },
+        );
+    }
+}
+
+fn progress_label_for_line(line: &str) -> &'static str {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("receiving objects") {
+        "接收对象"
+    } else if lower.contains("writing objects") {
+        "写入对象"
+    } else if lower.contains("counting objects") {
+        "统计对象"
+    } else if lower.contains("compressing objects") {
+        "压缩对象"
+    } else if lower.contains("resolving deltas") {
+        "解析增量"
+    } else if lower.contains("remote:") {
+        "远程处理"
+    } else if lower.contains("unpacking") {
+        "解包"
+    } else {
+        "传输中"
+    }
+}
+
+fn parse_progress_percent(line: &str) -> Option<u32> {
+    for (idx, _) in line.match_indices('%') {
+        let before = &line[..idx];
+        let mut digits = String::new();
+        for ch in before.chars().rev() {
+            if ch.is_ascii_digit() {
+                digits.push(ch);
+            } else if !digits.is_empty() {
+                break;
+            }
+        }
+        if digits.is_empty() {
+            continue;
+        }
+        let digits: String = digits.chars().rev().collect();
+        if let Ok(n) = digits.parse::<u32>() {
+            if n <= 100 {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+fn maybe_emit_progress_line(line: &str) {
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    if let Some(percent) = parse_progress_percent(line) {
+        emit_progress(percent, progress_label_for_line(line));
+    }
+}
+
+/// Read stderr while surfacing git `--progress` updates (often delimited by `\r`).
+fn read_stderr_with_progress(mut pipe: impl Read) -> Vec<u8> {
+    let mut acc = Vec::new();
+    let mut pending = Vec::new();
+    let mut buf = [0_u8; 1024];
+    loop {
+        let n = match pipe.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        for &b in &buf[..n] {
+            if b == b'\n' || b == b'\r' {
+                if !pending.is_empty() {
+                    let line = decode_bytes(&pending);
+                    maybe_emit_progress_line(&line);
+                    acc.extend_from_slice(&pending);
+                    acc.push(b'\n');
+                    pending.clear();
+                }
+            } else {
+                pending.push(b);
+            }
+        }
+    }
+    if !pending.is_empty() {
+        let line = decode_bytes(&pending);
+        maybe_emit_progress_line(&line);
+        acc.extend_from_slice(&pending);
+    }
+    acc
 }
 
 pub fn resolve_git() -> Result<GitBinary, GitError> {
@@ -226,19 +330,24 @@ fn run_git_timeout_locked(
         path: git.path.display().to_string(),
         message: e.to_string(),
     })?;
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
-    let (tx, rx) = mpsc::channel();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let (tx_out, rx_out) = mpsc::channel();
+    let (tx_err, rx_err) = mpsc::channel();
     std::thread::spawn(move || {
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        if let Some(pipe) = stdout_pipe.as_mut() {
+        if let Some(mut pipe) = stdout_pipe {
             let _ = pipe.read_to_end(&mut stdout);
         }
-        if let Some(pipe) = stderr_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut stderr);
-        }
-        let _ = tx.send((stdout, stderr));
+        let _ = tx_out.send(stdout);
+    });
+    std::thread::spawn(move || {
+        let stderr = if let Some(pipe) = stderr_pipe {
+            read_stderr_with_progress(pipe)
+        } else {
+            Vec::new()
+        };
+        let _ = tx_err.send(stderr);
     });
 
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
@@ -262,7 +371,8 @@ fn run_git_timeout_locked(
         }
     };
 
-    let (stdout_bytes, stderr_bytes) = rx.recv().unwrap_or_default();
+    let stdout_bytes = rx_out.recv().unwrap_or_default();
+    let stderr_bytes = rx_err.recv().unwrap_or_default();
     let stdout = decode_bytes(&stdout_bytes);
     let stderr = decode_bytes(&stderr_bytes);
     if !stdout.trim().is_empty() {

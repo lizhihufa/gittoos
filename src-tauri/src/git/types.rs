@@ -52,6 +52,14 @@ pub struct GitTerminalEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitProgressEvent {
+    /// 0–100
+    pub percent: u32,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteInfo {
     pub name: String,
     pub url: String,

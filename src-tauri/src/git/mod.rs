@@ -899,7 +899,12 @@ fn default_remote(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
 
 pub fn fetch(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
     let remote = default_remote(git, repo)?;
-    let output = run_git_timeout(git, repo, &["fetch", "--prune", &remote], 180)?;
+    let output = run_git_timeout(
+        git,
+        repo,
+        &["fetch", "--prune", "--progress", &remote],
+        180,
+    )?;
     Ok(combine_output(&output))
 }
 
@@ -974,7 +979,12 @@ fn resolve_pull_branch(git: &GitBinary, repo: &Path, remote: &str) -> Result<Str
 
 pub fn pull(git: &GitBinary, repo: &Path, allow_unrelated: bool) -> Result<String, GitError> {
     let remote = default_remote(git, repo)?;
-    let fetch_out = run_git_timeout(git, repo, &["fetch", "--prune", &remote], 180)?;
+    let fetch_out = run_git_timeout(
+        git,
+        repo,
+        &["fetch", "--prune", "--progress", &remote],
+        180,
+    )?;
     // Populate refs/remotes/<remote>/HEAD so we know default branch (often main).
     let _ = run_git(git, repo, &["remote", "set-head", &remote, "-a"]);
 
@@ -1181,13 +1191,25 @@ pub fn push(git: &GitBinary, repo: &Path, force: bool) -> Result<String, GitErro
         run_git_timeout(
             git,
             repo,
-            &["push", "--force-with-lease", "-u", &remote, &branch],
+            &[
+                "push",
+                "--progress",
+                "--force-with-lease",
+                "-u",
+                &remote,
+                &branch,
+            ],
             180,
         )
     } else if upstream_of_head(git, repo)?.is_some() {
-        run_git_timeout(git, repo, &["push"], 180)
+        run_git_timeout(git, repo, &["push", "--progress"], 180)
     } else {
-        run_git_timeout(git, repo, &["push", "-u", &remote, &branch], 180)
+        run_git_timeout(
+            git,
+            repo,
+            &["push", "--progress", "-u", &remote, &branch],
+            180,
+        )
     };
 
     match result {
