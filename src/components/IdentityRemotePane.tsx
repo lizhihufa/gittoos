@@ -92,13 +92,19 @@ export function IdentityRemotePane({
           />
         </label>
         {repoPath ? (
-          <label className="check">
+          <label
+            className={`pref-card identity-global-pref${saveGlobally ? " is-on" : ""}`}
+          >
             <input
               type="checkbox"
               checked={saveGlobally}
               onChange={(e) => onSaveGloballyChange(e.target.checked)}
             />
-            这台电脑上的其他仓库也使用
+            <span className="pref-card-text">
+              <strong>应用到本机其他仓库</strong>
+              <span>勾选后名称和邮箱写入全局 Git 配置</span>
+            </span>
+            <span className="pref-switch" aria-hidden />
           </label>
         ) : (
           <p className="muted small">打开仓库后可保存名称和邮箱。</p>

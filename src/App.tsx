@@ -1828,7 +1828,7 @@ export default function App() {
       <div className="auth-login-panel">
         {account?.loggedIn && !addingAccount && (
           <div className="auth-logged-in">
-            <div className="github-user">
+            <div className="github-user auth-user-card">
               {account.avatarUrl ? (
                 <img src={account.avatarUrl} alt="" className="github-avatar" />
               ) : (
@@ -1843,6 +1843,7 @@ export default function App() {
               </div>
               <button
                 type="button"
+                className="auth-logout-btn"
                 disabled={busy}
                 onClick={() => void logoutProvider(provider)}
               >
@@ -1871,18 +1872,17 @@ export default function App() {
                 ))}
               </div>
             )}
-            <div className="auth-method-row">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setAddingAccount(true);
-                  setError(null);
-                }}
-              >
-                添加账号
-              </button>
-            </div>
+            <button
+              type="button"
+              className="auth-add-account"
+              disabled={busy}
+              onClick={() => {
+                setAddingAccount(true);
+                setError(null);
+              }}
+            >
+              添加账号
+            </button>
             {renderSshPanel(provider)}
           </div>
         )}
@@ -1890,20 +1890,18 @@ export default function App() {
         {showLogin && (
           <>
             {addingAccount && account?.loggedIn && (
-              <div className="auth-method-row">
-                <button
-                  type="button"
-                  className="linkish"
-                  disabled={busy}
-                  onClick={() => {
-                    stopDevicePoll();
-                    setDeviceFlow(null);
-                    setAddingAccount(false);
-                  }}
-                >
-                  取消添加，返回当前账号
-                </button>
-              </div>
+              <button
+                type="button"
+                className="linkish auth-cancel-add"
+                disabled={busy}
+                onClick={() => {
+                  stopDevicePoll();
+                  setDeviceFlow(null);
+                  setAddingAccount(false);
+                }}
+              >
+                取消添加，返回当前账号
+              </button>
             )}
             {account?.sessionExpired && (
               <p className="auth-expired">{label} 登录已失效，请重新登录。</p>
@@ -1914,36 +1912,56 @@ export default function App() {
               {account?.usingBuiltinOauth ? "（当前可用内置 Client）" : ""}。
             </p>
 
-            <div className="auth-method-row">
+            <div className="auth-method-list" role="group" aria-label="登录方式">
               <button
                 type="button"
-                className="primary"
+                className="auth-method-card is-recommend"
                 disabled={busy}
                 onClick={() => void loginWithGitManager(provider)}
-                title={
-                  provider === "github"
-                    ? "打开 Git Credential Manager 浏览器登录"
-                    : "读取或填写 Gitee 凭据（密码处填私人令牌）"
-                }
               >
-                用 Git 登录
+                <span className="auth-method-mark" aria-hidden>
+                  Git
+                </span>
+                <span className="auth-method-text">
+                  <strong>
+                    用 Git 登录
+                    <em>推荐</em>
+                  </strong>
+                  <span>
+                    {provider === "github"
+                      ? "打开系统凭据管理器，用浏览器完成授权"
+                      : "读取或填写 Gitee 凭据（密码处填私人令牌）"}
+                  </span>
+                </span>
               </button>
               <button
                 type="button"
+                className="auth-method-card"
                 disabled={busy}
                 onClick={() => void loginWithBrowser(provider)}
-                title="需 Client ID + Secret（可配置一次）"
               >
-                浏览器登录
+                <span className="auth-method-mark" aria-hidden>
+                  Web
+                </span>
+                <span className="auth-method-text">
+                  <strong>浏览器登录</strong>
+                  <span>需 Client ID + Secret（可配置一次）</span>
+                </span>
               </button>
               {provider === "github" && (
                 <button
                   type="button"
+                  className="auth-method-card"
                   disabled={busy || !!deviceFlow}
                   onClick={() => void loginWithDevice()}
-                  title="只需 Client ID；在另一设备浏览器输入代码"
                 >
-                  设备码登录
+                  <span className="auth-method-mark" aria-hidden>
+                    码
+                  </span>
+                  <span className="auth-method-text">
+                    <strong>设备码登录</strong>
+                    <span>只需 Client ID，在另一设备浏览器输入代码</span>
+                  </span>
                 </button>
               )}
             </div>
@@ -2041,11 +2059,11 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className="primary"
+                  className="primary auth-token-login"
                   disabled={busy || !draft.token.trim()}
                   onClick={() => void loginWithToken(provider)}
                 >
-                  登录
+                  用 Token 登录
                 </button>
               </div>
             </div>
@@ -2642,24 +2660,34 @@ export default function App() {
                       {sessionWarnings.join("、")} 登录已失效，请重新登录。
                     </p>
                   )}
-                  <div className="auth-tabs">
+                  <div className="auth-tabs" role="tablist" aria-label="登录平台">
                     <button
                       type="button"
+                      role="tab"
+                      aria-selected={authTab === "github"}
                       className={authTab === "github" ? "active" : ""}
                       onClick={() => setAuthTab("github")}
                     >
-                      GitHub
-                      {accounts?.github.loggedIn ? " · 已登录" : ""}
-                      {accounts?.github.sessionExpired ? " · 已失效" : ""}
+                      <span className="auth-tab-label">GitHub</span>
+                      {accounts?.github.loggedIn ? (
+                        <span className="auth-tab-badge is-ok">已登录</span>
+                      ) : accounts?.github.sessionExpired ? (
+                        <span className="auth-tab-badge is-warn">已失效</span>
+                      ) : null}
                     </button>
                     <button
                       type="button"
+                      role="tab"
+                      aria-selected={authTab === "gitee"}
                       className={authTab === "gitee" ? "active" : ""}
                       onClick={() => setAuthTab("gitee")}
                     >
-                      Gitee
-                      {accounts?.gitee.loggedIn ? " · 已登录" : ""}
-                      {accounts?.gitee.sessionExpired ? " · 已失效" : ""}
+                      <span className="auth-tab-label">Gitee</span>
+                      {accounts?.gitee.loggedIn ? (
+                        <span className="auth-tab-badge is-ok">已登录</span>
+                      ) : accounts?.gitee.sessionExpired ? (
+                        <span className="auth-tab-badge is-warn">已失效</span>
+                      ) : null}
                     </button>
                   </div>
                   {renderProviderAuth(authTab)}
