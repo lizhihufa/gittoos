@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>青枝 · 打包工具</title>
+    <style>
+      :root {
+        --bg: #eef3f0;
+        --panel: #fbfefc;
+        --line: #c9d8cf;
+        --text: #163528;
+        --muted: #5a7264;
+        --accent: #0d6b45;
+        --accent-soft: #e4f3eb;
+        --danger: #9b2c2c;
+        --ok: #0f6b4c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(1200px 500px at 10% -10%, #d9eee3 0%, transparent 55%),
+          radial-gradient(900px 420px at 100% 0%, #e7f0ea 0%, transparent 50%),
+          var(--bg);
+      }
+      main {
+        width: min(820px, calc(100% - 2rem));
+        margin: 2rem auto 3rem;
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.75rem;
+        letter-spacing: 0.04em;
+      }
+      .sub {
+        margin: 0 0 1.25rem;
+        color: var(--muted);
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 1.1rem 1.2rem;
+        margin-bottom: 0.9rem;
+        box-shadow: 0 8px 24px rgba(22, 53, 40, 0.05);
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        align-items: center;
+      }
+      .meta {
+        display: grid;
+        gap: 0.35rem;
+        font-size: 13px;
+      }
+      .meta div {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      .meta span {
+        color: var(--muted);
+      }
+      .ver {
+        font-size: 1.45rem;
+        font-weight: 700;
+        color: var(--accent);
+      }
+      label {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 13px;
+        color: var(--muted);
+        flex: 1;
+        min-width: 180px;
+      }
+      input {
+        font: inherit;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 0.55rem 0.7rem;
+        background: #fff;
+      }
+      button {
+        font: inherit;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+        border-radius: 10px;
+        padding: 0.55rem 0.9rem;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      .chip {
+        border-radius: 999px;
+        background: var(--accent-soft);
+        border-color: transparent;
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .progress-wrap {
+        margin-top: 0.85rem;
+      }
+      .progress-head {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+      .bar {
+        height: 12px;
+        border-radius: 999px;
+        background: #e2ebe6;
+        overflow: hidden;
+      }
+      .bar > i {
+        display: block;
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #0d6b45, #2f9e6d);
+        transition: width 0.25s ease;
+      }
+      .msg {
+        margin: 0.55rem 0 0;
+        font-size: 13px;
+        color: var(--muted);
+        word-break: break-all;
+      }
+      .msg.ok {
+        color: var(--ok);
+        font-weight: 600;
+      }
+      .msg.err {
+        color: var(--danger);
+        font-weight: 600;
+      }
+      pre {
+        margin: 0.7rem 0 0;
+        max-height: 320px;
+        overflow: auto;
+        padding: 0.75rem;
+        border-radius: 12px;
+        background: #122019;
+        color: #d7efe3;
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .installer {
+        margin-top: 0.65rem;
+        padding: 0.7rem 0.8rem;
+        border-radius: 12px;
+        background: var(--accent-soft);
+        font-size: 13px;
+        display: none;
+        gap: 0.55rem;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .installer.show {
+        display: flex;
+        flex-wrap: wrap;
+      }
+      .danger {
+        border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+        color: var(--danger);
+        background: color-mix(in srgb, var(--danger) 6%, #fff);
+      }
+      .danger:hover:not(:disabled) {
+        border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+        background: color-mix(in srgb, var(--danger) 12%, #fff);
+      }
+      .disk-note {
+        margin: 0.45rem 0 0;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>青枝打包工具</h1>
+      <p class="sub">识别当前版本 → 拟定下一版 → 一键打包（含进度）</p>
+
+      <section class="card">
+        <div class="row" style="justify-content: space-between; margin-bottom: 0.75rem">
+          <div>
+            <div style="font-size: 12px; color: var(--muted)">当前版本</div>
+            <div class="ver" id="current">…</div>
+          </div>
+          <button type="button" id="refresh">刷新</button>
+        </div>
+        <div class="meta" id="files"></div>
+      </section>
+
+      <section class="card">
+        <div class="row" style="justify-content: space-between; margin-bottom: 0.35rem">
+          <div>
+            <div style="font-weight: 600">构建缓存</div>
+            <div class="disk-note" id="diskSummary">正在统计…</div>
+          </div>
+          <button type="button" class="danger" id="clean">清理缓存</button>
+        </div>
+        <p class="disk-note">
+          会删除 Rust 编译目录 <code>src-tauri/target</code> 和前端 <code>dist</code>。源码与安装包不受影响；下次打包会重新编译。
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="row" style="margin-bottom: 0.75rem">
+          <span style="font-weight: 600">拟定下一版本</span>
+          <button type="button" class="chip" data-kind="patch">补丁 +0.0.1</button>
+          <button type="button" class="chip" data-kind="minor">功能 +0.1.0</button>
+          <button type="button" class="chip" data-kind="major">大版本 +1.0.0</button>
+        </div>
+        <div class="row">
+          <label>
+            目标版本
+            <input id="nextVersion" placeholder="例如 1.3.1" />
+          </label>
+          <button type="button" class="primary" id="build">一键打包</button>
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-head">
+            <span id="progressLabel">待命</span>
+            <span id="progressPct">0%</span>
+          </div>
+          <div class="bar"><i id="bar"></i></div>
+          <p class="msg" id="message">填写版本后点击「一键打包」。</p>
+          <div class="installer" id="installer">
+            <span id="installerPath"></span>
+            <button type="button" id="openFolder">打开目录</button>
+          </div>
+        </div>
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <script>
+      const els = {
+        current: document.getElementById("current"),
+        files: document.getElementById("files"),
+        nextVersion: document.getElementById("nextVersion"),
+        refresh: document.getElementById("refresh"),
+        build: document.getElementById("build"),
+        clean: document.getElementById("clean"),
+        diskSummary: document.getElementById("diskSummary"),
+        bar: document.getElementById("bar"),
+        progressLabel: document.getElementById("progressLabel"),
+        progressPct: document.getElementById("progressPct"),
+        message: document.getElementById("message"),
+        log: document.getElementById("log"),
+        installer: document.getElementById("installer"),
+        installerPath: document.getElementById("installerPath"),
+        openFolder: document.getElementById("openFolder"),
+      };
+
+      let propose = { patch: "", minor: "", major: "" };
+      let lastInstaller = null;
+      let building = false;
+
+      function renderDisk(disk) {
+        if (!disk) {
+          els.diskSummary.textContent = "暂无统计";
+          return;
+        }
+        els.diskSummary.textContent = `合计 ${disk.totalLabel}（target ${disk.targetLabel} · dist ${disk.distLabel}）`;
+      }
+
+      function setProgress(pct, label) {
+        const n = Math.max(0, Math.min(100, Number(pct) || 0));
+        els.bar.style.width = `${n}%`;
+        els.progressPct.textContent = `${Math.round(n)}%`;
+        if (label) els.progressLabel.textContent = label;
+      }
+
+      function setMessage(text, kind) {
+        els.message.textContent = text || "";
+        els.message.className = `msg${kind ? ` ${kind}` : ""}`;
+      }
+
+      async function loadVersion() {
+        const res = await fetch("/api/version");
+        const data = await res.json();
+        els.current.textContent = `v${data.current}`;
+        propose = data.propose;
+        building = Boolean(data.building);
+        els.nextVersion.value = data.propose.patch;
+        els.files.innerHTML = `
+          <div><span>package.json</span><strong>${data.files.packageJson}</strong></div>
+          <div><span>tauri.conf.json</span><strong>${data.files.tauriConf}</strong></div>
+          <div><span>Cargo.toml</span><strong>${data.files.cargoToml}</strong></div>
+          <div><span>产品名</span><strong>${data.files.productName || "—"}</strong></div>
+        `;
+        renderDisk(data.disk);
+        setBusy(building);
+        if (building) {
+          setMessage("检测到任务进行中…", "");
+          setProgress(5, "进行中");
+        }
+      }
+
+      function setBusy(on) {
+        building = on;
+        els.build.disabled = on;
+        els.clean.disabled = on;
+        els.nextVersion.disabled = on;
+        document.querySelectorAll("[data-kind]").forEach((b) => (b.disabled = on));
+      }
+
+      async function startBuild() {
+        const version = els.nextVersion.value.trim();
+        els.log.textContent = "";
+        els.installer.classList.remove("show");
+        setBusy(true);
+        setProgress(2, "启动中");
+        setMessage("正在写入版本并启动打包…");
+        const res = await fetch("/api/build", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          setBusy(false);
+          setMessage(data.error || "启动失败", "err");
+        }
+      }
+
+      async function startClean() {
+        if (
+          !confirm(
+            "确认清理构建缓存？\n将删除 src-tauri/target 与 dist，下次打包需重新编译。",
+          )
+        ) {
+          return;
+        }
+        els.log.textContent = "";
+        els.installer.classList.remove("show");
+        setBusy(true);
+        setProgress(5, "清理中");
+        setMessage("正在清理构建缓存…");
+        const res = await fetch("/api/clean", { method: "POST" });
+        const data = await res.json();
+        if (!data.ok) {
+          setBusy(false);
+          setMessage(data.error || "清理失败", "err");
+        }
+      }
+
+      els.refresh.onclick = () => void loadVersion();
+      els.build.onclick = () => void startBuild();
+      els.clean.onclick = () => void startClean();
+      document.querySelectorAll("[data-kind]").forEach((btn) => {
+        btn.onclick = () => {
+          const kind = btn.getAttribute("data-kind");
+          if (propose[kind]) els.nextVersion.value = propose[kind];
+        };
+      });
+      els.openFolder.onclick = async () => {
+        await fetch("/api/open-folder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: lastInstaller?.path || "" }),
+        });
+      };
+
+      const es = new EventSource("/api/events");
+      es.addEventListener("log", (ev) => {
+        const data = JSON.parse(ev.data);
+        els.log.textContent += data.text || "";
+        els.log.scrollTop = els.log.scrollHeight;
+      });
+      es.addEventListener("status", (ev) => {
+        const data = JSON.parse(ev.data);
+        const kind = data.kind === "clean" ? "清理" : "打包";
+        setProgress(
+          data.progress,
+          data.running ? `${kind}中` : data.ok ? "完成" : "结束",
+        );
+        if (data.disk) renderDisk(data.disk);
+        if (data.running) {
+          setBusy(true);
+          setMessage(data.message || `${kind}中…`);
+        } else {
+          setBusy(false);
+          void loadVersion();
+          if (data.ok) {
+            setMessage(data.message || `${kind}完成`, "ok");
+            if (data.installer) {
+              lastInstaller = data.installer;
+              els.installerPath.textContent = data.installer.path;
+              els.installer.classList.add("show");
+            }
+          } else {
+            setMessage(data.message || `${kind}失败`, "err");
+          }
+        }
+      });
+
+      void loadVersion();
+    </script>
+  </body>
+</html>

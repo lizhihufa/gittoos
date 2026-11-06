@@ -614,16 +614,17 @@ fn credential_payload(host: &str, login: &str, token: Option<&str>) -> String {
 }
 
 fn run_credential(git: &GitBinary, action: &str, payload: &str) -> Result<(), GitError> {
-    let mut child = Command::new(&git.path)
+    let mut command = Command::new(&git.path);
+    command
         .args(["credential", action])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| GitError::Io {
-            path: git.path.display().to_string(),
-            message: e.to_string(),
-        })?;
+        .stderr(Stdio::piped());
+    crate::process_win::hide_console(&mut command);
+    let mut child = command.spawn().map_err(|e| GitError::Io {
+        path: git.path.display().to_string(),
+        message: e.to_string(),
+    })?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(payload.as_bytes());
     }
@@ -670,11 +671,13 @@ fn clear_system_credentials(provider: Provider, login: &str) {
             Ok(g) => g,
             Err(_) => return,
         };
-        let _ = Command::new(&git.path)
+        let mut logout = Command::new(&git.path);
+        logout
             .args(["credential-manager", "github", "logout", login, "--no-ui"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        crate::process_win::hide_console(&mut logout);
+        let _ = logout.status();
     }
     // Also erase generic host / user@host entries (ignore failures / hangs via short wait).
     let targets = [
@@ -682,11 +685,13 @@ fn clear_system_credentials(provider: Provider, login: &str) {
         format!("git:https://{login}@{}", provider.host()),
     ];
     for target in targets {
-        let _ = Command::new("cmdkey")
+        let mut cmdkey = Command::new("cmdkey");
+        cmdkey
             .args(["/delete", &target])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        crate::process_win::hide_console(&mut cmdkey);
+        let _ = cmdkey.status();
     }
     // Avoid `git credential reject` here — GCM may hang the UI thread.
 }
@@ -1450,14 +1455,14 @@ pub fn auth_manager_login(provider_raw: &str) -> Result<ProviderStatus, GitError
     match provider {
         Provider::Github => {
             emit_terminal("info", "正在打开 Git 凭据管理器登录 GitHub…");
-            let output = Command::new(&git.path)
-                .args(["credential-manager", "github", "login"])
-                .output()
-                .map_err(|e| {
-                    GitError::InvalidInput(format!(
-                        "无法启动 Git 凭据管理器：{e}。请确认已安装完整版 Git for Windows。"
-                    ))
-                })?;
+            let mut login_cmd = Command::new(&git.path);
+            login_cmd.args(["credential-manager", "github", "login"]);
+            crate::process_win::hide_console(&mut login_cmd);
+            let output = login_cmd.output().map_err(|e| {
+                GitError::InvalidInput(format!(
+                    "无法启动 Git 凭据管理器：{e}。请确认已安装完整版 Git for Windows。"
+                ))
+            })?;
             if !output.status.success() {
                 let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 let detail = if err.is_empty() {
@@ -1497,16 +1502,17 @@ struct FilledCredential {
 }
 
 fn fill_host_credential(git: &GitBinary, host: &str) -> Result<FilledCredential, GitError> {
-    let mut child = Command::new(&git.path)
+    let mut command = Command::new(&git.path);
+    command
         .args(["credential", "fill"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| GitError::Io {
-            path: git.path.display().to_string(),
-            message: e.to_string(),
-        })?;
+        .stderr(Stdio::piped());
+    crate::process_win::hide_console(&mut command);
+    let mut child = command.spawn().map_err(|e| GitError::Io {
+        path: git.path.display().to_string(),
+        message: e.to_string(),
+    })?;
     if let Some(mut stdin) = child.stdin.take() {
         let payload = format!("protocol=https\nhost={host}\n\n");
         let _ = stdin.write_all(payload.as_bytes());
@@ -1570,11 +1576,13 @@ pub fn auth_logout(provider_raw: &str) -> Result<ProviderStatus, GitError> {
         clear_system_credentials(provider, login);
     }
     if provider == Provider::Github {
-        let _ = Command::new("cmdkey")
+        let mut cmdkey = Command::new("cmdkey");
+        cmdkey
             .args(["/delete", "git:https://github.com"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        crate::process_win::hide_console(&mut cmdkey);
+        let _ = cmdkey.status();
     }
     emit_terminal("info", &format!("已退出 {} 登录", provider.label()));
     Ok(status_of(provider, provider_slot(&store, provider)))
@@ -1641,10 +1649,13 @@ pub fn auth_ssh_status() -> Result<SshStatus, GitError> {
             }
         }
     }
-    let has_agent = Command::new("ssh-add")
+    let mut ssh_add = Command::new("ssh-add");
+    ssh_add
         .arg("-l")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    crate::process_win::hide_console(&mut ssh_add);
+    let has_agent = ssh_add
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -1675,23 +1686,23 @@ pub fn auth_ssh_generate() -> Result<SshStatus, GitError> {
     }
     let comment = format!("qingzhi@{}", whoami_simple());
     emit_terminal("info", "正在生成 ed25519 SSH 密钥…");
-    let output = Command::new("ssh-keygen")
-        .args([
-            "-t",
-            "ed25519",
-            "-f",
-            &key_path.display().to_string(),
-            "-N",
-            "",
-            "-C",
-            &comment,
-        ])
-        .output()
-        .map_err(|e| {
-            GitError::InvalidInput(format!(
-                "无法运行 ssh-keygen：{e}。请确认已安装 OpenSSH 客户端。"
-            ))
-        })?;
+    let mut keygen = Command::new("ssh-keygen");
+    keygen.args([
+        "-t",
+        "ed25519",
+        "-f",
+        &key_path.display().to_string(),
+        "-N",
+        "",
+        "-C",
+        &comment,
+    ]);
+    crate::process_win::hide_console(&mut keygen);
+    let output = keygen.output().map_err(|e| {
+        GitError::InvalidInput(format!(
+            "无法运行 ssh-keygen：{e}。请确认已安装 OpenSSH 客户端。"
+        ))
+    })?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(GitError::InvalidInput(format!("生成密钥失败：{err}")));
@@ -1714,7 +1725,8 @@ pub fn auth_ssh_test(provider_raw: &str) -> Result<SshTestResult, GitError> {
     let target = provider.ssh_host();
     emit_terminal("info", &format!("正在测试 SSH：ssh -T {target} …"));
 
-    let child = Command::new("ssh")
+    let mut ssh_cmd = Command::new("ssh");
+    ssh_cmd
         .args([
             "-o",
             "BatchMode=yes",
@@ -1731,13 +1743,13 @@ pub fn auth_ssh_test(provider_raw: &str) -> Result<SshTestResult, GitError> {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            GitError::InvalidInput(format!(
-                "无法运行 ssh：{e}。请确认已安装 OpenSSH 客户端（Windows 可选功能）。"
-            ))
-        })?;
+        .stderr(Stdio::piped());
+    crate::process_win::hide_console(&mut ssh_cmd);
+    let child = ssh_cmd.spawn().map_err(|e| {
+        GitError::InvalidInput(format!(
+            "无法运行 ssh：{e}。请确认已安装 OpenSSH 客户端（Windows 可选功能）。"
+        ))
+    })?;
 
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
@@ -1755,11 +1767,12 @@ pub fn auth_ssh_test(provider_raw: &str) -> Result<SshTestResult, GitError> {
         Err(_) => {
             #[cfg(windows)]
             {
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/F", "/T"])
+                let mut kill = Command::new("taskkill");
+                kill.args(["/PID", &pid.to_string(), "/F", "/T"])
                     .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                    .stderr(Stdio::null());
+                crate::process_win::hide_console(&mut kill);
+                let _ = kill.status();
             }
             #[cfg(not(windows))]
             {

@@ -34,3 +34,4 @@ dist-ssr
 src-tauri/target/release/bundle/
 src-tauri/target/release/*.exe
 src-tauri/target/debug/*.exe
+src-tauri/webview2-fixed/

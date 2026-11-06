@@ -1912,6 +1912,78 @@ html[data-theme="dark"] .auth-ssh-feedback.is-ok {
   font-size: 12.5px;
 }
 
+.about-modal {
+  width: min(440px, calc(100vw - 2rem));
+  display: grid;
+  gap: 0.75rem;
+}
+
+.about-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.about-modal-head h3 {
+  margin: 0;
+}
+
+.about-modal-head p {
+  margin: 0.2rem 0 0;
+}
+
+.about-card {
+  gap: 0.45rem;
+}
+
+.about-brand {
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  margin-bottom: 0.25rem;
+}
+
+.about-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0;
+  font-size: 13px;
+}
+
+.about-line > span:first-child {
+  color: var(--muted);
+  flex: none;
+}
+
+.about-mail {
+  font-weight: 600;
+}
+
+.about-feedback h5 {
+  margin: 0 0 0.25rem;
+  font-size: 0.95rem;
+}
+
+.about-feedback-btn {
+  width: 100%;
+  margin-top: 0.35rem;
+}
+
+.about-copy-mail {
+  justify-self: start;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.15rem 0;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .pref-cards {
   display: grid;
   gap: 0.45rem;

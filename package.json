@@ -1,7 +1,7 @@
 {
   "name": "qingzhi",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.4.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "build:installer": "tauri build"
+    "build:installer": "tauri build",
+    "packager": "node packager/server.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

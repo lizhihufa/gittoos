@@ -189,10 +189,10 @@ pub fn ensure_git() -> Result<GitBinary, GitError> {
 }
 
 fn git_binary(path: PathBuf) -> Result<GitBinary, GitError> {
-    let output = Command::new(&path)
-        .arg("--version")
-        .output()
-        .map_err(|_| GitError::GitNotFound)?;
+    let mut cmd = Command::new(&path);
+    cmd.arg("--version");
+    crate::process_win::hide_console(&mut cmd);
+    let output = cmd.output().map_err(|_| GitError::GitNotFound)?;
     if !output.status.success() {
         return Err(GitError::GitNotFound);
     }
@@ -229,10 +229,10 @@ fn which_git() -> Option<PathBuf> {
         }
     }
 
-    let output = Command::new(if cfg!(windows) { "where" } else { "which" })
-        .arg("git")
-        .output()
-        .ok()?;
+    let mut cmd = Command::new(if cfg!(windows) { "where" } else { "which" });
+    cmd.arg("git");
+    crate::process_win::hide_console(&mut cmd);
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -318,13 +318,7 @@ fn run_git_timeout_locked(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::process_win::hide_console(&mut command);
 
     let mut child = command.spawn().map_err(|e| GitError::Io {
         path: git.path.display().to_string(),
@@ -423,13 +417,7 @@ pub fn run_shell(git: &GitBinary, repo: &Path, line: &str) -> Result<String, Git
             .env("HTTPS_PROXY", &proxy);
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::process_win::hide_console(&mut command);
 
     let mut child = command.spawn().map_err(|e| GitError::Io {
         path: "cmd.exe".to_string(),
@@ -557,24 +545,24 @@ fn install_full_git() -> Result<(), GitError> {
         "info",
         "正在静默安装 Git for Windows（可能弹出系统权限确认）…",
     );
-    let status = Command::new(&installer)
-        .args([
-            "/VERYSILENT",
-            "/NORESTART",
-            "/NOCANCEL",
-            "/SP-",
-            "/CLOSEAPPLICATIONS",
-            "/RESTARTAPPLICATIONS",
-            "/COMPONENTS=gitlfs,assoc,icons",
-            "/o:PathOption=Cmd",
-            "/o:SSHOption=OpenSSH",
-            "/o:CURLOption=OpenSSL",
-        ])
-        .status()
-        .map_err(|e| GitError::Io {
-            path: installer.display().to_string(),
-            message: e.to_string(),
-        })?;
+    let mut install_cmd = Command::new(&installer);
+    install_cmd.args([
+        "/VERYSILENT",
+        "/NORESTART",
+        "/NOCANCEL",
+        "/SP-",
+        "/CLOSEAPPLICATIONS",
+        "/RESTARTAPPLICATIONS",
+        "/COMPONENTS=gitlfs,assoc,icons",
+        "/o:PathOption=Cmd",
+        "/o:SSHOption=OpenSSH",
+        "/o:CURLOption=OpenSSL",
+    ]);
+    crate::process_win::hide_console(&mut install_cmd);
+    let status = install_cmd.status().map_err(|e| GitError::Io {
+        path: installer.display().to_string(),
+        message: e.to_string(),
+    })?;
     if status.success() {
         emit_terminal("info", "官方安装包执行完成");
         Ok(())
@@ -594,17 +582,18 @@ fn try_winget_install_git() -> bool {
         "info",
         &format!("尝试使用 winget 安装 Git.Git…（{}）", winget.display()),
     );
-    let status = Command::new(&winget)
-        .args([
-            "install",
-            "--id",
-            "Git.Git",
-            "-e",
-            "--accept-package-agreements",
-            "--accept-source-agreements",
-            "--disable-interactivity",
-        ])
-        .status();
+    let mut winget_cmd = Command::new(&winget);
+    winget_cmd.args([
+        "install",
+        "--id",
+        "Git.Git",
+        "-e",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+        "--disable-interactivity",
+    ]);
+    crate::process_win::hide_console(&mut winget_cmd);
+    let status = winget_cmd.status();
     match status {
         Ok(status) if status.success() => {
             emit_terminal("info", "winget 安装完成");
@@ -635,7 +624,10 @@ fn find_winget() -> Option<PathBuf> {
         }
     }
 
-    let output = Command::new("where").arg("winget").output().ok()?;
+    let mut where_cmd = Command::new("where");
+    where_cmd.arg("winget");
+    crate::process_win::hide_console(&mut where_cmd);
+    let output = where_cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -683,12 +675,7 @@ fn download_with_curl(url: &str, destination: &Path, proxy: Option<&str>) -> Res
     if let Some(proxy) = proxy {
         cmd.args(["-x", proxy]);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::process_win::hide_console(&mut cmd);
     let output = cmd.output().map_err(|e| e.to_string())?;
     if output.status.success() {
         Ok(())
@@ -729,12 +716,7 @@ if ($proxy) {{
     );
     let mut cmd = Command::new("powershell");
     cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::process_win::hide_console(&mut cmd);
     let output = cmd.output().map_err(|e| e.to_string())?;
     if output.status.success() {
         Ok(())

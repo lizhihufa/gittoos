@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -180,7 +181,11 @@ export default function App() {
   const [settingsPage, setSettingsPage] = useState<
     "appearance" | "auth" | "identity"
   >("appearance");
+  const [appVersion, setAppVersion] = useState(
+    typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "…",
+  );
   const [showHelp, setShowHelp] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [boot, setBoot] = useState<BootState | null>(null);
   const [entering, setEntering] = useState(false);
   const [syncingCache, setSyncingCache] = useState(false);
@@ -237,6 +242,14 @@ export default function App() {
   const identityDraftRef = useRef<IdentityRemoteDraft | null>(null);
   const onIdentityDraftChange = useCallback((draft: IdentityRemoteDraft) => {
     identityDraftRef.current = draft;
+  }, []);
+
+  useEffect(() => {
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => {
+        if (typeof __APP_VERSION__ === "string") setAppVersion(__APP_VERSION__);
+      });
   }, []);
 
   useEffect(() => {
@@ -2207,6 +2220,9 @@ export default function App() {
             <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
               说明书
             </button>
+            <button type="button" onClick={() => setShowAbout(true)} disabled={busy}>
+              关于
+            </button>
             <button type="button" onClick={() => void cloneRepo()} disabled={busy || !gitInfo}>
               克隆
             </button>
@@ -2289,8 +2305,86 @@ export default function App() {
         </div>
         {showSettings && renderSettings()}
         {showHelp && renderHelp()}
+        {showAbout && renderAbout()}
       </div>
       </>
+    );
+  }
+
+  function renderAbout() {
+    return (
+      <div className="modal-mask" onClick={() => setShowAbout(false)}>
+        <div
+          className="modal about-modal"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-label="关于青枝"
+        >
+          <header className="about-modal-head">
+            <div>
+              <h3>关于青枝</h3>
+              <p className="muted small">本地 Git 桌面工具 · 开源，禁止商用</p>
+            </div>
+            <button
+              type="button"
+              className="settings-close"
+              onClick={() => setShowAbout(false)}
+              aria-label="关闭"
+            >
+              关闭
+            </button>
+          </header>
+          <div className="settings-card about-card">
+            <div className="about-brand">青枝</div>
+            <p className="about-line">
+              <span>当前版本</span>
+              <strong>v{appVersion}</strong>
+            </p>
+            <p className="about-line">
+              <span>作者</span>
+              <strong>理智护发</strong>
+            </p>
+            <p className="about-line">
+              <span>邮箱</span>
+              <button
+                type="button"
+                className="linkish about-mail"
+                onClick={() => void openUrl("mailto:lizhihufa@163.com")}
+              >
+                lizhihufa@163.com
+              </button>
+            </p>
+          </div>
+          <div className="settings-card about-feedback">
+            <h5>遇到问题？</h5>
+            <p className="muted small">
+              请截图界面，并简要说明操作步骤与报错内容，发送到作者邮箱。收到后会尽快回复。
+            </p>
+            <button
+              type="button"
+              className="primary about-feedback-btn"
+              onClick={() =>
+                void openUrl(
+                  "mailto:lizhihufa@163.com?subject=%E9%9D%92%E6%9E%9D%E9%97%AE%E9%A2%98%E5%8F%8D%E9%A6%88&body=%E8%AF%B7%E9%99%84%E4%B8%8A%E6%88%AA%E5%9B%BE%EF%BC%8C%E5%B9%B6%E8%AF%B4%E6%98%8E%EF%BC%9A%0A1.%20%E5%81%9A%E4%BA%86%E4%BB%80%E4%B9%88%0A2.%20%E5%87%BA%E7%8E%B0%E4%BA%86%E4%BB%80%E4%B9%88%0A3.%20%E6%9C%9F%E6%9C%9B%E7%BB%93%E6%9E%9C%0A",
+                )
+              }
+            >
+              写邮件反馈
+            </button>
+            <button
+              type="button"
+              className="about-copy-mail"
+              onClick={() => {
+                void navigator.clipboard.writeText("lizhihufa@163.com");
+                setNotice("已复制邮箱");
+              }}
+            >
+              复制邮箱
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 
@@ -2314,6 +2408,7 @@ export default function App() {
             <h4>工具栏</h4>
             <ul>
               <li>打开 / 刷新：换项目或重新读取状态（F5、Ctrl+R）。</li>
+              <li>关于：查看当前版本与作者邮箱，可发邮件反馈问题。</li>
               <li>获取：只下载远程，不改本地文件。</li>
               <li>拉取：下载并合并到当前分支（Ctrl+Shift+L）。</li>
               <li>推送：上传本地提交（Ctrl+Shift+P）。</li>
@@ -2710,6 +2805,7 @@ export default function App() {
                   onSave={saveIdentityAndRemote}
                 />
               )}
+
             </div>
           </div>
         </div>
@@ -2758,6 +2854,14 @@ export default function App() {
           </button>
           <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
             说明书
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAbout(true)}
+            disabled={busy}
+            title={`关于青枝 v${appVersion}`}
+          >
+            关于
           </button>
           <div className="repo-title">
             <strong title={repoPath ?? undefined}>{status?.branch ?? "…"}</strong>
@@ -3037,6 +3141,7 @@ export default function App() {
       ) : null}
       {showSettings && renderSettings()}
       {showHelp && renderHelp()}
+      {showAbout && renderAbout()}
       {renderSyncDialog()}
       {renderResetDialog()}
       {renderLargeCommitDialog()}
