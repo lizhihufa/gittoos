@@ -142,42 +142,6 @@ body,
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 
-.window-chrome-controls {
-  display: flex;
-  align-items: stretch;
-  height: 100%;
-  flex: none;
-}
-
-.window-chrome-btn {
-  width: 46px;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  font-size: 14px;
-  line-height: 1;
-  display: grid;
-  place-items: center;
-}
-
-.window-chrome-btn:hover:not(:disabled) {
-  border-color: transparent;
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-}
-
-.window-chrome.is-overlay .window-chrome-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.window-chrome-btn.is-close:hover:not(:disabled) {
-  background: #e81123 !important;
-  color: #fff;
-}
-
 button,
 input,
 textarea {
@@ -195,6 +159,97 @@ button {
 
 button:hover:not(:disabled) {
   border-color: var(--btn-hover-border);
+}
+
+/* Window controls — after global button rules so they always win. */
+.window-chrome-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  flex: none;
+  padding: 0 8px 0 6px;
+}
+
+.window-chrome-controls button.window-chrome-btn {
+  box-sizing: border-box;
+  width: 36px;
+  height: 28px;
+  margin: 0;
+  padding: 0 !important;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent) !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--control-bg) 88%, var(--text)) !important;
+  color: var(--text) !important;
+  opacity: 1;
+  display: grid;
+  place-items: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.12s ease,
+    box-shadow 0.15s ease;
+}
+
+.window-chrome-controls button.window-chrome-btn svg {
+  display: block;
+  width: 11px;
+  height: 11px;
+}
+
+.window-chrome-controls button.window-chrome-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 14%, var(--control-bg)) !important;
+  color: var(--accent) !important;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.window-chrome-controls button.window-chrome-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.window-chrome.is-overlay .window-chrome-controls button.window-chrome-btn {
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+  color: #fff !important;
+  box-shadow: none;
+}
+
+.window-chrome.is-overlay .window-chrome-controls button.window-chrome-btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.4) !important;
+  background: rgba(255, 255, 255, 0.28) !important;
+  color: #fff !important;
+}
+
+.window-chrome-controls button.window-chrome-btn.is-close {
+  border-color: color-mix(in srgb, #e81123 28%, var(--line)) !important;
+  background: color-mix(in srgb, #e81123 10%, var(--control-bg)) !important;
+  color: #c50f1f !important;
+}
+
+.window-chrome-controls button.window-chrome-btn.is-close:hover:not(:disabled) {
+  border-color: transparent !important;
+  background: #e81123 !important;
+  color: #fff !important;
+  box-shadow: 0 2px 8px rgba(232, 17, 35, 0.35);
+}
+
+.window-chrome.is-overlay .window-chrome-controls button.window-chrome-btn.is-close {
+  border-color: rgba(255, 120, 120, 0.45) !important;
+  background: rgba(232, 17, 35, 0.28) !important;
+  color: #ffd7d7 !important;
+}
+
+.window-chrome.is-overlay .window-chrome-controls button.window-chrome-btn.is-close:hover:not(:disabled) {
+  background: #e81123 !important;
+  color: #fff !important;
+}
+
+html[data-theme="dark"] .window-chrome-controls button.window-chrome-btn {
+  background: color-mix(in srgb, var(--control-bg) 70%, #000) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 button:disabled {

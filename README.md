@@ -1,5 +1,14 @@
 # 青枝（qingzhi）
 
+- **作者**：理智护发
+- **邮箱**：lizhihufa@163.com
+- **安装包（百度网盘）**：青枝git小工具  
+  链接：https://pan.baidu.com/s/1kzrg41M9558oOi0DSV8ynA?pwd=j5tn  
+  提取码：`j5tn`
+- **许可**：本项目为开源项目，**禁止商用**
+
+---
+
 选一个项目文件夹，在图形界面里完成日常 Git 操作。基于 Tauri 2 + React + TypeScript，通过本机 `git` 命令读写仓库。安装目录为 `qingzhi`。
 
 完整操作说明见根目录 [使用说明书.md](./使用说明书.md)；应用内也可点「说明书」。
