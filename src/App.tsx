@@ -52,6 +52,7 @@ import type {
   GithubDeviceStart,
   GitInfo,
   Identity,
+  LargeFileInfo,
   ProviderStatus,
   RemoteBranchInfo,
   RemoteInfo,
@@ -60,6 +61,8 @@ import type {
   StashInfo,
   TagInfo,
 } from "./types";
+
+const LARGE_FILE_LIMIT_BYTES = 100 * 1024 * 1024;
 import "./App.css";
 
 function folderName(path: string): string {
@@ -173,6 +176,12 @@ export default function App() {
   const [syncingCache, setSyncingCache] = useState(false);
   const [syncDialog, setSyncDialog] = useState<SyncConflictKind | null>(null);
   const [resetTarget, setResetTarget] = useState<CommitInfo | null>(null);
+  const [largeCommit, setLargeCommit] = useState<{
+    mode: "commit" | "amend";
+    message: string;
+    files: LargeFileInfo[];
+    exclude: Record<string, boolean>;
+  } | null>(null);
   const [accounts, setAccounts] = useState<AuthAccounts | null>(null);
   const [authTab, setAuthTab] = useState<AuthProvider>("github");
   const [drafts, setDrafts] = useState<Record<AuthProvider, ProviderDraft>>({
@@ -1078,11 +1087,7 @@ export default function App() {
           return;
         }
         e.preventDefault();
-        void runAction(async () => {
-          await api.createCommit(repoPath, msg);
-          setMessage("");
-          setSelected(null);
-        }, "正在提交…");
+        void requestCommit("commit");
         return;
       }
 
@@ -1225,6 +1230,160 @@ export default function App() {
           .catch(() => {});
       }
     }
+  }
+
+  async function requestCommit(mode: "commit" | "amend") {
+    if (!repoPath || busyRef.current) return;
+    if (!identitySaved) {
+      openSettings("identity");
+      return;
+    }
+    const msg = messageRef.current.trim();
+    if (mode === "commit") {
+      if (!msg || staged.length === 0) return;
+    }
+
+    setError(null);
+    setNotice("正在检查大文件…");
+    try {
+      const files = await api.listStagedLargeFiles(
+        repoPath,
+        LARGE_FILE_LIMIT_BYTES,
+      );
+      setNotice(null);
+      if (files.length > 0) {
+        const exclude: Record<string, boolean> = {};
+        for (const f of files) exclude[f.path] = true;
+        setLargeCommit({ mode, message: msg, files, exclude });
+        return;
+      }
+    } catch (e) {
+      setNotice(null);
+      setError(failureLine(e));
+      return;
+    }
+
+    void runAction(
+      async () => {
+        if (mode === "amend") {
+          await api.amendCommit(repoPath, messageRef.current);
+        } else {
+          await api.createCommit(repoPath, msg);
+        }
+        setMessage("");
+        setSelected(null);
+      },
+      mode === "amend" ? "正在修改上次提交…" : "正在提交…",
+    );
+  }
+
+  async function confirmLargeCommit() {
+    if (!largeCommit || !repoPath) return;
+    const { mode, message: msg, files, exclude } = largeCommit;
+    const toExclude = files.filter((f) => exclude[f.path]).map((f) => f.path);
+    setLargeCommit(null);
+
+    void runAction(
+      async () => {
+        if (toExclude.length > 0) {
+          await api.unstageFiles(repoPath, toExclude);
+        }
+        if (mode === "commit") {
+          const core = await api.getRepoCore(repoPath);
+          const left = core.status.changes.filter(
+            (c) => c.staged && !c.untracked,
+          );
+          if (left.length === 0) {
+            throw new Error(
+              "排除大文件后没有可提交的改动了。请暂存其他文件，或取消排除部分大文件。",
+            );
+          }
+        }
+        if (mode === "amend") {
+          await api.amendCommit(repoPath, msg);
+        } else {
+          await api.createCommit(repoPath, msg);
+        }
+        setMessage("");
+        setSelected(null);
+      },
+      mode === "amend" ? "正在修改上次提交…" : "正在提交…",
+    );
+  }
+
+  function renderLargeCommitDialog() {
+    if (!largeCommit) return null;
+    const { files, exclude, mode } = largeCommit;
+    const excludeCount = files.filter((f) => exclude[f.path]).length;
+    const keepCount = files.length - excludeCount;
+    return (
+      <div className="modal-mask" onClick={() => setLargeCommit(null)}>
+        <div
+          className="modal sync-modal"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-label="大文件检测"
+        >
+          <h3>发现超过 100MB 的文件</h3>
+          <p className="muted">
+            GitHub 等平台通常拒绝单个超过 100MB 的文件。默认会排除它们；取消勾选表示仍要提交该文件。
+          </p>
+          <ul className="large-file-list">
+            {files.map((f) => (
+              <li key={f.path}>
+                <label className="large-file-item">
+                  <input
+                    type="checkbox"
+                    checked={!!exclude[f.path]}
+                    onChange={(e) =>
+                      setLargeCommit((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              exclude: {
+                                ...prev.exclude,
+                                [f.path]: e.target.checked,
+                              },
+                            }
+                          : prev,
+                      )
+                    }
+                  />
+                  <span className="large-file-meta">
+                    <strong title={f.path}>{f.path}</strong>
+                    <span className="muted small">{f.sizeLabel}</span>
+                  </span>
+                  <span className="large-file-tag">
+                    {exclude[f.path] ? "排除" : "仍提交"}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <p className="muted small">
+            将排除 {excludeCount} 个，保留提交 {keepCount} 个大文件
+            {mode === "amend" ? "（修改上次提交）" : ""}。
+          </p>
+          <div className="modal-actions">
+            <button type="button" onClick={() => setLargeCommit(null)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void confirmLargeCommit()}
+            >
+              {excludeCount === files.length
+                ? "排除后继续"
+                : keepCount > 0
+                  ? "按选择继续"
+                  : "继续提交"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   function renderResetDialog() {
@@ -2825,6 +2984,7 @@ export default function App() {
       {showHelp && renderHelp()}
       {renderSyncDialog()}
       {renderResetDialog()}
+      {renderLargeCommitDialog()}
 
       {openRepos.length > 0 && (
         <div className="repo-tabs" role="tablist" aria-label="已打开仓库">
@@ -3157,14 +3317,8 @@ export default function App() {
                   staged.length === 0 ||
                   !identitySaved
                 }
-                title="提交（Ctrl+Enter）"
-                onClick={() =>
-                  runAction(async () => {
-                    await api.createCommit(repoPath, message);
-                    setMessage("");
-                    setSelected(null);
-                  })
-                }
+                title="提交（Ctrl+Enter）；超过 100MB 的文件会先提示"
+                onClick={() => void requestCommit("commit")}
               >
                 提交 {staged.length > 0 ? `(${staged.length})` : ""}
               </button>
@@ -3178,11 +3332,7 @@ export default function App() {
                       ? "用当前说明修改最近一次提交？"
                       : "保留原说明，把已暂存改动并入最近一次提交？",
                     () => {
-                      void runAction(async () => {
-                        await api.amendCommit(repoPath, message);
-                        setMessage("");
-                        setSelected(null);
-                      }, "正在修改上次提交…");
+                      void requestCommit("amend");
                     },
                   )
                 }

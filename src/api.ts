@@ -6,6 +6,7 @@ import type {
   CommitInfo,
   GitInfo,
   Identity,
+  LargeFileInfo,
   ProviderStatus,
   RemoteBranchInfo,
   RemoteInfo,
@@ -49,6 +50,11 @@ export const api = {
   getIdentity: (path: string) => invoke<Identity>("get_identity", { path }),
   setIdentity: (path: string, name: string, email: string, global: boolean) =>
     invoke<void>("set_identity", { path, name, email, global }),
+  listStagedLargeFiles: (path: string, limitBytes?: number) =>
+    invoke<LargeFileInfo[]>("list_staged_large_files", {
+      path,
+      limitBytes: limitBytes ?? null,
+    }),
   createCommit: (path: string, message: string) =>
     invoke<string>("create_commit", { path, message }),
   amendCommit: (path: string, message: string) =>

@@ -63,6 +63,80 @@ pub fn unstage_paths(git: &GitBinary, repo: &Path, paths: &[String]) -> Result<(
     Ok(())
 }
 
+/// Default GitHub soft limit for a single blob.
+pub const LARGE_FILE_LIMIT_BYTES: u64 = 100 * 1024 * 1024;
+
+fn format_byte_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let n = bytes as f64;
+    if n >= GB {
+        format!("{:.2} GB", n / GB)
+    } else if n >= MB {
+        format!("{:.1} MB", n / MB)
+    } else if n >= KB {
+        format!("{:.0} KB", n / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// List staged files whose index blob exceeds `limit_bytes` (default 100MB).
+pub fn staged_large_files(
+    git: &GitBinary,
+    repo: &Path,
+    limit_bytes: u64,
+) -> Result<Vec<LargeFileInfo>, GitError> {
+    let limit = if limit_bytes == 0 {
+        LARGE_FILE_LIMIT_BYTES
+    } else {
+        limit_bytes
+    };
+    // Exclude deletions — no blob to measure.
+    let listed = run_git(
+        git,
+        repo,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=d",
+        ],
+    )?;
+    let mut large = Vec::new();
+    for path in listed.stdout.lines() {
+        let path = path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        let rev = format!(":{path}");
+        let blob = match run_git(git, repo, &["rev-parse", "--verify", &rev]) {
+            Ok(out) => out.stdout.trim().to_string(),
+            Err(_) => continue,
+        };
+        if blob.is_empty() {
+            continue;
+        }
+        let size_out = match run_git(git, repo, &["cat-file", "-s", &blob]) {
+            Ok(out) => out,
+            Err(_) => continue,
+        };
+        let size: u64 = size_out.stdout.trim().parse().unwrap_or(0);
+        if size >= limit {
+            large.push(LargeFileInfo {
+                path: path.to_string(),
+                size,
+                size_label: format_byte_size(size),
+            });
+        }
+    }
+    large.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
+    Ok(large)
+}
+
 pub fn discard_paths(git: &GitBinary, repo: &Path, paths: &[String]) -> Result<(), GitError> {
     if paths.is_empty() {
         return Ok(());

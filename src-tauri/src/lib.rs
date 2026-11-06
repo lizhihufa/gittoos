@@ -12,11 +12,11 @@ use git::{
     list_branches, list_commits, list_remote_branches, list_remotes, list_stashes, list_tags,
     merge_branch, pull, push, push_all_tags, push_tag, read_identity, rebase_branch, repo_status,
     repo_status_light_nonblocking, reset_to_commit, run_shell, set_app_handle, set_remote_url,
-    stage_paths, stash_drop, stash_pop, stash_push, undo_last_commit, unstage_paths, with_git_quiet,
-    write_identity, AuthAccounts, BranchInfo, CommitInfo, GitBinary, GitError, GitInfo,
-    GithubDevicePollResult, GithubDeviceStart, Identity, OauthBegin, ProviderStatus,
-    RemoteBranchInfo, RemoteInfo, RepoCore, RepoExtras, RepoSnapshot, RepoStatus, SshStatus,
-    SshTestResult, StashInfo, TagInfo,
+    stage_paths, staged_large_files, stash_drop, stash_pop, stash_push, undo_last_commit,
+    unstage_paths, with_git_quiet, write_identity, AuthAccounts, BranchInfo, CommitInfo,
+    GitBinary, GitError, GitInfo, GithubDevicePollResult, GithubDeviceStart, Identity,
+    LargeFileInfo, OauthBegin, ProviderStatus, RemoteBranchInfo, RemoteInfo, RepoCore,
+    RepoExtras, RepoSnapshot, RepoStatus, SshStatus, SshTestResult, StashInfo, TagInfo,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -296,6 +296,20 @@ async fn set_identity(
     let repo = repo_path(&path)?;
     with_git_async(&state, move |git| {
         write_identity(git, &repo, &name, &email, global)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_staged_large_files(
+    state: State<'_, AppState>,
+    path: String,
+    limit_bytes: Option<u64>,
+) -> Result<Vec<LargeFileInfo>, String> {
+    let repo = repo_path(&path)?;
+    let limit = limit_bytes.unwrap_or(0);
+    with_git_async(&state, move |git| {
+        with_git_quiet(|| staged_large_files(git, &repo, limit))
     })
     .await
 }
@@ -755,6 +769,7 @@ pub fn run() {
             get_repo_snapshot,
             stage_files,
             unstage_files,
+            list_staged_large_files,
             discard_files,
             get_diff,
             apply_patch,

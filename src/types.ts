@@ -12,6 +12,12 @@ export interface FileChange {
   conflicted: boolean;
 }
 
+export interface LargeFileInfo {
+  path: string;
+  size: number;
+  sizeLabel: string;
+}
+
 export interface RepoStatus {
   path: string;
   branch: string;

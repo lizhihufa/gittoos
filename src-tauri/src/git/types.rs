@@ -21,6 +21,16 @@ pub struct FileChange {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LargeFileInfo {
+    pub path: String,
+    /// Staged blob size in bytes.
+    pub size: u64,
+    /// Human-readable size, e.g. `128.4 MB`.
+    pub size_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RepoStatus {
     pub path: String,
     pub branch: String,

@@ -1434,6 +1434,49 @@ html[data-theme="dark"] .ref-badge {
   color: var(--danger);
 }
 
+.large-file-list {
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.large-file-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.large-file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.large-file-meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.large-file-tag {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 html[data-theme="dark"] .auth-ssh-feedback.is-ok {
   color: #8fd4a8;
 }
