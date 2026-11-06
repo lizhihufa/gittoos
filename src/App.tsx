@@ -15,6 +15,10 @@ import { api } from "./api";
 import { confirmAction, withConfirm } from "./confirm";
 import { ChangeList } from "./components/ChangeList";
 import { ExtraPane, type Pane } from "./components/ExtraPane";
+import {
+  IdentityRemotePane,
+  type IdentityRemoteDraft,
+} from "./components/IdentityRemotePane";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { Terminal } from "./components/Terminal";
 import { WindowChrome } from "./components/WindowChrome";
@@ -229,6 +233,11 @@ export default function App() {
   const syncProgressActive = useRef(false);
   const messageRef = useRef(message);
   messageRef.current = message;
+  /** Live identity/remote drafts (no App re-render while typing). */
+  const identityDraftRef = useRef<IdentityRemoteDraft | null>(null);
+  const onIdentityDraftChange = useCallback((draft: IdentityRemoteDraft) => {
+    identityDraftRef.current = draft;
+  }, []);
 
   useEffect(() => {
     let pending = "";
@@ -635,13 +644,15 @@ export default function App() {
   }, [openFolder]);
 
   const cloneRepo = useCallback(async () => {
-    const url = cloneUrl.trim();
+    const draftClone = identityDraftRef.current?.clone?.trim() ?? "";
+    const url = draftClone || cloneUrl.trim() || loadCloneUrl().trim();
     if (!url) {
       setError("请先在设置里填写克隆地址");
       openSettings("identity");
       return;
     }
     saveCloneUrl(url);
+    setCloneUrl(url);
     const selectedPath = await open({
       directory: true,
       multiple: false,
@@ -663,22 +674,38 @@ export default function App() {
     }
   }, [cloneUrl, openFolder]);
 
-  function applyRemote() {
-    const url = remoteUrl.trim();
-    if (!url) {
-      setError("请先在设置里填写远程地址");
-      openSettings("identity");
+  function saveIdentityAndRemote(draft: IdentityRemoteDraft) {
+    const name = draft.name.trim();
+    const email = draft.email.trim();
+    const remote = draft.remote.trim();
+    const clone = draft.clone.trim();
+
+    saveCloneUrl(clone);
+    setCloneUrl(clone);
+
+    if (!repoPath) {
+      setNotice(clone ? "已保存克隆地址" : null);
       return;
     }
-    void runAction(async () => {
-      await api.saveRemote(repoPath!, "origin", url);
-      setRemoteUrl(url);
-    }, "正在保存远程…");
-  }
 
-  function updateCloneUrl(value: string) {
-    setCloneUrl(value);
-    saveCloneUrl(value);
+    const wantIdentity = Boolean(name && email.includes("@"));
+    const wantRemote = Boolean(remote);
+    if (!wantIdentity && !wantRemote) {
+      setNotice(clone ? "已保存克隆地址" : null);
+      return;
+    }
+
+    void runAction(async () => {
+      if (wantIdentity) {
+        await api.setIdentity(repoPath, name, email, draft.saveGlobally);
+        setIdentity({ name, email });
+        setIdentitySaved(true);
+      }
+      if (wantRemote) {
+        await api.saveRemote(repoPath, "origin", remote);
+        setRemoteUrl(remote);
+      }
+    }, "正在保存身份与远程…");
   }
 
   function applyAccount(status: ProviderStatus) {
@@ -2269,7 +2296,6 @@ export default function App() {
             <h4>工具栏</h4>
             <ul>
               <li>打开 / 刷新：换项目或重新读取状态（F5、Ctrl+R）。</li>
-              <li>保存远程：把设置里的地址写成 origin。</li>
               <li>获取：只下载远程，不改本地文件。</li>
               <li>拉取：下载并合并到当前分支（Ctrl+Shift+L）。</li>
               <li>推送：上传本地提交（Ctrl+Shift+P）。</li>
@@ -2304,7 +2330,7 @@ export default function App() {
               <li>主题、字体、最近打开、提交图、仓库缓存加速。</li>
               <li>壁纸：加载页/欢迎页图片或视频背景；可清除缓存。</li>
               <li>GitHub / Gitee：Git 登录、浏览器 OAuth、Token；工具栏可看登录状态。</li>
-              <li>名字邮箱（可全局）、远程 origin、克隆地址。</li>
+              <li>身份与远程：名字邮箱、origin、克隆地址；点「保存」一并写入。</li>
             </ul>
             <h4>多仓库与安全</h4>
             <ul>
@@ -2641,113 +2667,20 @@ export default function App() {
               )}
 
               {settingsPage === "identity" && (
-                <section className="settings-section">
-                  <div className="settings-pane-intro">
-                    <h4>身份与远程</h4>
-                    <p className="muted small">
-                      提交署名、远程 origin 与克隆地址。
-                    </p>
-                  </div>
-                  <div className="settings-card">
-                    <label className="settings-field">
-                      <span>名称</span>
-                      <input
-                        value={identity.name}
-                        onChange={(e) =>
-                          setIdentity((prev) => ({
-                            ...prev,
-                            name: e.target.value,
-                          }))
-                        }
-                        placeholder="你的名字"
-                        disabled={!repoPath}
-                      />
-                    </label>
-                    <label className="settings-field">
-                      <span>邮箱</span>
-                      <input
-                        value={identity.email}
-                        onChange={(e) =>
-                          setIdentity((prev) => ({
-                            ...prev,
-                            email: e.target.value,
-                          }))
-                        }
-                        placeholder="you@example.com"
-                        disabled={!repoPath}
-                      />
-                    </label>
-                    {repoPath ? (
-                      <>
-                        <label className="check">
-                          <input
-                            type="checkbox"
-                            checked={saveGlobally}
-                            onChange={(e) => setSaveGlobally(e.target.checked)}
-                          />
-                          这台电脑上的其他仓库也使用
-                        </label>
-                        <button
-                          type="button"
-                          className="primary"
-                          disabled={
-                            busy ||
-                            !identity.name.trim() ||
-                            !identity.email.includes("@")
-                          }
-                          onClick={() =>
-                            void runAction(async () => {
-                              const name = identity.name.trim();
-                              const email = identity.email.trim();
-                              await api.setIdentity(
-                                repoPath,
-                                name,
-                                email,
-                                saveGlobally,
-                              );
-                              setIdentity({ name, email });
-                              setIdentitySaved(true);
-                            }, "正在保存身份…")
-                          }
-                        >
-                          保存名称和邮箱
-                        </button>
-                      </>
-                    ) : (
-                      <p className="muted small">打开仓库后可保存名称和邮箱。</p>
-                    )}
-                  </div>
-
-                  <div className="settings-card">
-                    <label className="settings-field">
-                      <span>远程地址（origin）</span>
-                      <input
-                        value={remoteUrl}
-                        onChange={(e) => setRemoteUrl(e.target.value)}
-                        placeholder="https://github.com/用户/仓库.git"
-                        disabled={!repoPath}
-                      />
-                    </label>
-                    <p className="muted small">
-                      {repoPath
-                        ? remotes.length === 0
-                          ? "填写后点工具栏「保存远程」写入 origin。"
-                          : "修改后点工具栏「保存远程」覆盖保存。"
-                        : "打开仓库后可设置远程地址。"}
-                    </p>
-                    <label className="settings-field">
-                      <span>克隆地址</span>
-                      <input
-                        value={cloneUrl}
-                        onChange={(e) => updateCloneUrl(e.target.value)}
-                        placeholder="https://github.com/用户/仓库.git"
-                      />
-                    </label>
-                    <p className="muted small">
-                      填写后点「克隆」直接选择空文件夹并克隆。
-                    </p>
-                  </div>
-                </section>
+                <IdentityRemotePane
+                  key={repoPath ?? "no-repo"}
+                  repoPath={repoPath}
+                  remotesCount={remotes.length}
+                  initialName={identity.name}
+                  initialEmail={identity.email}
+                  initialRemote={remoteUrl}
+                  initialClone={cloneUrl}
+                  saveGlobally={saveGlobally}
+                  busy={busy}
+                  onSaveGloballyChange={setSaveGlobally}
+                  onDraftChange={onIdentityDraftChange}
+                  onSave={saveIdentityAndRemote}
+                />
               )}
             </div>
           </div>
@@ -2836,14 +2769,6 @@ export default function App() {
               : sessionWarnings.length > 0
                 ? "登录已失效"
                 : "未登录"}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={applyRemote}
-            title="把设置里的远程地址保存为 origin"
-          >
-            保存远程
           </button>
           <button
             type="button"
@@ -2965,7 +2890,7 @@ export default function App() {
       )}
       {identitySaved && remotes.length === 0 && (
         <div className="hint-box">
-          还没有远程地址。可在设置里填写，再点「保存远程」，然后才能拉取/推送。
+          还没有远程地址。可在设置里填写后点「保存」，然后才能拉取/推送。
         </div>
       )}
       {status?.operation === "merge" ||

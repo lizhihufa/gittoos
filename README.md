@@ -21,7 +21,7 @@
 | 界面 | React + TypeScript + Tailwind CSS |
 | Git | 本机 `git.exe`（Git for Windows） |
 
-## 主要功能（v1.0.1）
+## 主要功能（v1.2.0）
 
 - 打开 / 初始化 / 克隆仓库；多仓库标签页；最近打开
 - 未暂存 / 已暂存、整文件与按块暂存、放弃改动、冲突处理
@@ -53,7 +53,7 @@ npm run build:installer
 
 生成文件大约在：
 
-`src-tauri/target/release/bundle/nsis/qingzhi_1.0.1_x64-setup.exe`
+`src-tauri/target/release/bundle/nsis/qingzhi_1.2.0_x64-setup.exe`
 
 ### 升级覆盖旧版
 

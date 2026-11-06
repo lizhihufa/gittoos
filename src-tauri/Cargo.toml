@@ -1,6 +1,6 @@
 [package]
 name = "qingzhi"
-version = "1.0.1"
+version = "1.2.0"
 description = "青枝 — 本地 Git 桌面工具"
 authors = ["you"]
 edition = "2021"
