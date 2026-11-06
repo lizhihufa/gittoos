@@ -954,25 +954,29 @@ export default function App() {
 
   async function logoutProvider(provider: AuthProvider) {
     const label = provider === "github" ? "GitHub" : "Gitee";
-    const multi = (accounts?.[provider]?.accounts?.length ?? 0) > 1;
     const ok = await confirmAction(
-      multi
-        ? `退出当前 ${label} 账号「${accounts?.[provider]?.login}」？\n将清除该账号登录信息，并尝试删除系统 Git 凭据。其他已保存账号仍保留。`
-        : `退出 ${label}？\n将清除本工具保存的登录信息，并尝试删除系统 Git 凭据中的对应条目。`,
+      `退出 ${label}${accounts?.[provider]?.login ? `（${accounts[provider].login}）` : ""}？\n将清除本工具保存的全部 ${label} 登录信息，并尽量删除系统 Git / 凭据管理器中的对应条目。`,
     );
     if (!ok) return;
     setBusy(true);
     setError(null);
+    setNotice(`正在退出 ${label}…`);
     try {
       const status = await api.authLogout(provider);
       applyAccount(status);
-      setAddingAccount(false);
-      setNotice(
-        status.loggedIn
-          ? `已退出，当前账号：${status.login}`
-          : `已退出 ${label}`,
+      setAccounts((prev) =>
+        prev
+          ? {
+              ...prev,
+              [provider]: status.loggedIn ? status : emptyProvider(provider),
+            }
+          : prev,
       );
+      setAddingAccount(false);
+      setSessionWarnings((prev) => prev.filter((p) => p !== label));
+      setNotice(status.loggedIn ? `已切换，当前：${status.login}` : `已退出 ${label}`);
     } catch (e) {
+      setNotice(null);
       setError(failureLine(e));
     } finally {
       setBusy(false);

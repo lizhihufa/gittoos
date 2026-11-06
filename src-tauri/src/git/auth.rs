@@ -658,6 +658,39 @@ fn reject_credential(provider: Provider, login: &str) -> Result<(), GitError> {
     )
 }
 
+/// Best-effort clear of system credentials. Must not hang the logout UI.
+fn clear_system_credentials(provider: Provider, login: &str) {
+    let login = login.trim();
+    if login.is_empty() {
+        return;
+    }
+    // Prefer GCM account removal for GitHub (this is what keeps "Select an account").
+    if provider == Provider::Github {
+        let git = match ensure_git() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let _ = Command::new(&git.path)
+            .args(["credential-manager", "github", "logout", login, "--no-ui"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // Also erase generic host / user@host entries (ignore failures / hangs via short wait).
+    let targets = [
+        format!("git:https://{}", provider.host()),
+        format!("git:https://{login}@{}", provider.host()),
+    ];
+    for target in targets {
+        let _ = Command::new("cmdkey")
+            .args(["/delete", &target])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // Avoid `git credential reject` here — GCM may hang the UI thread.
+}
+
 fn persist_session(
     provider: Provider,
     token: &str,
@@ -775,16 +808,13 @@ fn try_refresh_access_token(
 }
 
 fn remove_account_tokens(
-    provider: Provider,
+    _provider: Provider,
     slot: &mut ProviderStore,
     account_id: &str,
-) {
+) -> Option<String> {
     if let Some(pos) = slot.accounts.iter().position(|a| a.id == account_id) {
         let login = slot.accounts[pos].login.clone();
         slot.accounts.remove(pos);
-        if !login.is_empty() {
-            let _ = reject_credential(provider, &login);
-        }
         if slot.active_id == account_id {
             slot.active_id = slot
                 .accounts
@@ -793,6 +823,13 @@ fn remove_account_tokens(
                 .unwrap_or_default();
         }
         migrate_provider(slot);
+        if login.is_empty() {
+            None
+        } else {
+            Some(login)
+        }
+    } else {
+        None
     }
 }
 
@@ -914,11 +951,14 @@ fn refresh_provider(provider: Provider) -> Result<ProviderStatus, GitError> {
                             strip_kind_tag(&msg)
                         ),
                     );
-                    {
+                    let cleared_login = {
                         let slot = provider_slot_mut(&mut store, provider);
-                        remove_account_tokens(provider, slot, &active.id);
-                    }
+                        remove_account_tokens(provider, slot, &active.id)
+                    };
                     save_store(&store)?;
+                    if let Some(login) = cleared_login {
+                        clear_system_credentials(provider, &login);
+                    }
                     Ok(status_of_with_flag(
                         provider,
                         provider_slot(&store, provider),
@@ -1508,23 +1548,34 @@ pub fn auth_login_token(provider_raw: &str, token: &str) -> Result<ProviderStatu
 pub fn auth_logout(provider_raw: &str) -> Result<ProviderStatus, GitError> {
     let provider = Provider::parse(provider_raw)?;
     let mut store = load_store()?;
+    let mut logins_to_clear: Vec<String> = Vec::new();
     {
         let slot = provider_slot_mut(&mut store, provider);
-        let active_id = slot.active_id.clone();
-        if !active_id.is_empty() {
-            remove_account_tokens(provider, slot, &active_id);
-        } else {
-            // Clear everything for this provider.
-            for acc in slot.accounts.drain(..) {
-                if !acc.login.is_empty() {
-                    let _ = reject_credential(provider, &acc.login);
-                }
+        // Always clear every saved account for this provider so「退出」真正退出。
+        for acc in slot.accounts.drain(..) {
+            if !acc.login.trim().is_empty() {
+                logins_to_clear.push(acc.login);
             }
-            slot.active_id.clear();
-            migrate_provider(slot);
         }
+        slot.active_id.clear();
+        slot.token.clear();
+        slot.login.clear();
+        slot.name.clear();
+        slot.avatar_url.clear();
+        migrate_provider(slot);
     }
+    // Persist local session first — never block logout on credential helpers.
     save_store(&store)?;
+    for login in &logins_to_clear {
+        clear_system_credentials(provider, login);
+    }
+    if provider == Provider::Github {
+        let _ = Command::new("cmdkey")
+            .args(["/delete", "git:https://github.com"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     emit_terminal("info", &format!("已退出 {} 登录", provider.label()));
     Ok(status_of(provider, provider_slot(&store, provider)))
 }
