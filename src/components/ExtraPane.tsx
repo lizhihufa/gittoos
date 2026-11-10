@@ -3,9 +3,16 @@ import { layoutCommitGraph, parseRefBadges } from "../commitGraph";
 import type { CommitInfo, StashInfo, TagInfo } from "../types";
 import { DiffLines } from "./DiffLines";
 import { DiffView } from "./DiffView";
+import { ReleaseManager } from "./ReleaseManager";
 import { Terminal } from "./Terminal";
 
-export type Pane = "diff" | "history" | "stash" | "tags" | "terminal";
+export type Pane =
+  | "diff"
+  | "history"
+  | "stash"
+  | "tags"
+  | "terminal"
+  | "releases";
 
 interface Props {
   pane: Pane;
@@ -45,6 +52,16 @@ interface Props {
   onClearTerminal: () => void;
   onRunCommand: (line: string) => void;
   busy: boolean;
+  releaseOwner: string;
+  releaseRepo: string;
+  releaseDefaultTag: string;
+  githubLoggedIn: boolean;
+  updateBusy: boolean;
+  onUpdateBusy: (busy: boolean) => void;
+  onNotice: (text: string | null) => void;
+  onError: (text: string | null) => void;
+  onOpenAuth: () => void;
+  updateProgress: { percent: number; label: string } | null;
 }
 
 export function ExtraPane(props: Props) {
@@ -72,6 +89,7 @@ export function ExtraPane(props: Props) {
             ["stash", "储藏"],
             ["tags", "标签"],
             ["terminal", "终端"],
+            ["releases", "Release"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -331,6 +349,20 @@ export function ExtraPane(props: Props) {
           onRun={props.onRunCommand}
           busy={props.busy}
           embedded
+        />
+      )}
+      {props.pane === "releases" && (
+        <ReleaseManager
+          owner={props.releaseOwner}
+          repo={props.releaseRepo}
+          defaultTag={props.releaseDefaultTag}
+          githubLoggedIn={props.githubLoggedIn}
+          busy={props.busy || props.updateBusy}
+          onBusy={props.onUpdateBusy}
+          onNotice={props.onNotice}
+          onError={props.onError}
+          onOpenAuth={props.onOpenAuth}
+          progress={props.updateProgress}
         />
       )}
     </section>

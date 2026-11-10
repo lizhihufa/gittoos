@@ -174,3 +174,43 @@ export interface GithubDevicePollResult {
 
 /** @deprecated use ProviderStatus */
 export type GithubStatus = ProviderStatus;
+
+export interface UpdateInfo {
+  updateAvailable: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  tagName: string;
+  name: string;
+  body: string;
+  htmlUrl: string;
+  assetName: string;
+  assetUrl: string;
+  assetSize: number;
+  owner: string;
+  repo: string;
+}
+
+export interface PublishResult {
+  tagName: string;
+  htmlUrl: string;
+  assetName: string;
+}
+
+export interface ReleaseAssetInfo {
+  id: number;
+  name: string;
+  size: number;
+  sizeLabel: string;
+  downloadUrl: string;
+}
+
+export interface ReleaseItem {
+  id: number;
+  tagName: string;
+  name: string;
+  body: string;
+  htmlUrl: string;
+  publishedAt: string;
+  assets: ReleaseAssetInfo[];
+}
+

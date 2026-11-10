@@ -65,9 +65,12 @@ import type {
   SshStatus,
   StashInfo,
   TagInfo,
+  UpdateInfo,
 } from "./types";
 
 const LARGE_FILE_LIMIT_BYTES = 100 * 1024 * 1024;
+const UPDATE_REPO_OWNER = "lizhihufa";
+const UPDATE_REPO_NAME = "gittoos";
 import "./App.css";
 
 function folderName(path: string): string {
@@ -186,6 +189,13 @@ export default function App() {
   );
   const [showHelp, setShowHelp] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<{
+    percent: number;
+    label: string;
+  } | null>(null);
+  const [dismissedUpdateTag, setDismissedUpdateTag] = useState<string | null>(null);
   const [boot, setBoot] = useState<BootState | null>(null);
   const [entering, setEntering] = useState(false);
   const [syncingCache, setSyncingCache] = useState(false);
@@ -251,6 +261,89 @@ export default function App() {
         if (typeof __APP_VERSION__ === "string") setAppVersion(__APP_VERSION__);
       });
   }, []);
+
+  useEffect(() => {
+    const unlisten = listen<{ percent: number; label: string }>(
+      "update-progress",
+      (event) => {
+        setUpdateProgress({
+          percent: Math.max(0, Math.min(100, event.payload.percent)),
+          label: event.payload.label,
+        });
+      },
+    );
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
+  const checkForUpdate = useCallback(
+    async (silent = false) => {
+      const ver = appVersion === "…" ? "" : appVersion;
+      if (!ver) return null;
+      try {
+        if (!silent) {
+          setUpdateBusy(true);
+          setNotice("正在检查更新…");
+        }
+        const info = await api.checkAppUpdate(
+          ver,
+          UPDATE_REPO_OWNER,
+          UPDATE_REPO_NAME,
+        );
+        setUpdateInfo(info.updateAvailable ? info : info);
+        if (!silent) {
+          setNotice(
+            info.updateAvailable
+              ? `发现新版本 v${info.latestVersion}`
+              : `已是最新版本 v${info.currentVersion}`,
+          );
+        }
+        return info;
+      } catch (e) {
+        if (!silent) setError(failureLine(e));
+        return null;
+      } finally {
+        if (!silent) setUpdateBusy(false);
+      }
+    },
+    [appVersion],
+  );
+
+  useEffect(() => {
+    if (!appVersion || appVersion === "…") return;
+    const timer = window.setTimeout(() => {
+      void checkForUpdate(true);
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [appVersion, checkForUpdate]);
+
+  async function downloadAndInstallUpdate() {
+    if (!updateInfo?.updateAvailable) return;
+    const ok = await confirmAction(
+      `将下载 v${updateInfo.latestVersion} 安装包并启动安装程序。\n安装时请先关闭青枝。是否继续？`,
+      { title: "安装更新", confirmLabel: "下载并安装" },
+    );
+    if (!ok) return;
+    setUpdateBusy(true);
+    setUpdateProgress({ percent: 1, label: "准备下载…" });
+    setError(null);
+    setNotice(`正在下载 v${updateInfo.latestVersion}…`);
+    try {
+      const path = await api.downloadAppUpdate(
+        updateInfo.assetUrl,
+        updateInfo.assetName,
+      );
+      setNotice("下载完成，正在打开安装程序…");
+      await api.launchAppInstaller(path, true);
+    } catch (e) {
+      setNotice(null);
+      setError(failureLine(e));
+    } finally {
+      setUpdateBusy(false);
+      setUpdateProgress(null);
+    }
+  }
 
   useEffect(() => {
     let pending = "";
@@ -2299,6 +2392,27 @@ export default function App() {
             </div>
           )}
           {error && <div className="error-box" title={error}>{error}</div>}
+          {updateInfo?.updateAvailable &&
+            updateInfo.tagName !== dismissedUpdateTag && (
+            <div className="update-banner" role="status">
+              <div className="update-banner-text">
+                发现新版本 <strong>v{updateInfo.latestVersion}</strong>
+              </div>
+              <div className="update-banner-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={updateBusy || busy}
+                  onClick={() => void downloadAndInstallUpdate()}
+                >
+                  下载并安装
+                </button>
+                <button type="button" onClick={() => setShowAbout(true)}>
+                  关于
+                </button>
+              </div>
+            </div>
+          )}
           <div className="welcome-terminal">
             <Terminal text={terminal} onClear={() => setTerminal("")} />
           </div>
@@ -2312,6 +2426,7 @@ export default function App() {
   }
 
   function renderAbout() {
+    const hasUpdate = Boolean(updateInfo?.updateAvailable);
     return (
       <div className="modal-mask" onClick={() => setShowAbout(false)}>
         <div
@@ -2356,6 +2471,65 @@ export default function App() {
               </button>
             </p>
           </div>
+
+          <div className="settings-card about-feedback">
+            <h5>软件更新</h5>
+            <p className="muted small">
+              从 GitHub（{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}）检测最新 Release。
+            </p>
+            {hasUpdate ? (
+              <p className="about-update-tip">
+                发现新版本 <strong>v{updateInfo!.latestVersion}</strong>
+                {updateInfo!.name ? ` · ${updateInfo!.name}` : ""}
+              </p>
+            ) : updateInfo ? (
+              <p className="muted small">当前已是最新版本。</p>
+            ) : null}
+            {updateInfo?.body ? (
+              <pre className="about-release-notes">{updateInfo.body}</pre>
+            ) : null}
+            {updateProgress && (
+              <div className="about-progress">
+                <div className="about-progress-head">
+                  <span>{updateProgress.label}</span>
+                  <span>{updateProgress.percent}%</span>
+                </div>
+                <div className="about-progress-bar">
+                  <i style={{ width: `${updateProgress.percent}%` }} />
+                </div>
+              </div>
+            )}
+            <div className="about-actions">
+              <button
+                type="button"
+                disabled={updateBusy || busy}
+                onClick={() => void checkForUpdate(false)}
+              >
+                检查更新
+              </button>
+              {hasUpdate && (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={updateBusy || busy}
+                  onClick={() => void downloadAndInstallUpdate()}
+                >
+                  下载并安装
+                </button>
+              )}
+              {updateInfo?.htmlUrl && (
+                <button
+                  type="button"
+                  className="linkish"
+                  disabled={updateBusy}
+                  onClick={() => void openUrl(updateInfo.htmlUrl)}
+                >
+                  打开 Release 页面
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="settings-card about-feedback">
             <h5>遇到问题？</h5>
             <p className="muted small">
@@ -2408,7 +2582,8 @@ export default function App() {
             <h4>工具栏</h4>
             <ul>
               <li>打开 / 刷新：换项目或重新读取状态（F5、Ctrl+R）。</li>
-              <li>关于：查看当前版本与作者邮箱，可发邮件反馈问题。</li>
+              <li>关于：当前版本、检查更新、下载安装。</li>
+              <li>下方「Release」页：管理 GitHub Release 附件（上传/删除安装包）。</li>
               <li>获取：只下载远程，不改本地文件。</li>
               <li>拉取：下载并合并到当前分支（Ctrl+Shift+L）。</li>
               <li>推送：上传本地提交（Ctrl+Shift+P）。</li>
@@ -3011,6 +3186,35 @@ export default function App() {
           </button>
         </div>
       )}
+      {updateInfo?.updateAvailable &&
+        updateInfo.tagName !== dismissedUpdateTag && (
+        <div className="update-banner" role="status">
+          <div className="update-banner-text">
+            发现新版本 <strong>v{updateInfo.latestVersion}</strong>
+            （当前 v{updateInfo.currentVersion}）
+          </div>
+          <div className="update-banner-actions">
+            <button
+              type="button"
+              className="primary"
+              disabled={updateBusy || busy}
+              onClick={() => void downloadAndInstallUpdate()}
+            >
+              下载并安装
+            </button>
+            <button type="button" onClick={() => setShowAbout(true)} disabled={busy}>
+              详情
+            </button>
+            <button
+              type="button"
+              className="linkish"
+              onClick={() => setDismissedUpdateTag(updateInfo.tagName)}
+            >
+              稍后
+            </button>
+          </div>
+        </div>
+      )}
       {!identitySaved && (
         <div className="hint-box">
           提交前请先在
@@ -3183,7 +3387,6 @@ export default function App() {
 
       <div className="main">
         <aside className="sidebar">
-          <div className="sidebar-scroll">
           <div className="changes-filter">
             <input
               value={fileQuery}
@@ -3213,6 +3416,18 @@ export default function App() {
               ))}
             </div>
           </div>
+          <div className="sidebar-scroll">
+          <ChangeList
+            title="已暂存"
+            sectionId="staged"
+            stickyTop="0"
+            files={filteredStaged}
+            selected={selected && selected.staged ? selected.path : null}
+            stagedSection
+            busy={busy}
+            onSelect={(path) => setSelected({ path, staged: true })}
+            onUnstage={(paths) => runAction(() => api.unstageFiles(repoPath, paths))}
+          />
           <ChangeList
             title="未暂存"
             sectionId="unstaged"
@@ -3224,17 +3439,6 @@ export default function App() {
             onSelect={(path) => setSelected({ path, staged: false })}
             onStage={(paths) => runAction(() => api.stageFiles(repoPath, paths))}
             onDiscard={(paths) => runAction(() => api.discardFiles(repoPath, paths))}
-          />
-          <ChangeList
-            title="已暂存"
-            sectionId="staged"
-            stickyTop="2.35rem"
-            files={filteredStaged}
-            selected={selected && selected.staged ? selected.path : null}
-            stagedSection
-            busy={busy}
-            onSelect={(path) => setSelected({ path, staged: true })}
-            onUnstage={(paths) => runAction(() => api.unstageFiles(repoPath, paths))}
           />
 
           <div className="panel branch-panel">
@@ -3608,6 +3812,16 @@ export default function App() {
           }}
           terminalText={terminal}
           onClearTerminal={() => setTerminal("")}
+          releaseOwner={UPDATE_REPO_OWNER}
+          releaseRepo={UPDATE_REPO_NAME}
+          releaseDefaultTag={appVersion === "…" ? "" : `v${appVersion}`}
+          githubLoggedIn={Boolean(accounts?.github.loggedIn)}
+          updateBusy={updateBusy}
+          onUpdateBusy={setUpdateBusy}
+          onNotice={setNotice}
+          onError={setError}
+          onOpenAuth={() => openSettingsAuth("github")}
+          updateProgress={updateProgress}
           onRunCommand={(line) => {
             if (busyRef.current) return;
             setTerminal((prev) => `${prev}$ ${line}\n`);

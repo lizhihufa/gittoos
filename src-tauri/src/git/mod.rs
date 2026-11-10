@@ -6,12 +6,12 @@ mod types;
 pub use auth::{
     auth_accounts, auth_browser_begin, auth_browser_finish, auth_device_poll, auth_device_start,
     auth_ensure_credentials, auth_login_token, auth_logout, auth_manager_login, auth_save_config,
-    auth_ssh_generate, auth_ssh_status, auth_ssh_test, auth_switch_account, AuthAccounts,
-    GithubDevicePollResult, GithubDeviceStart, OauthBegin, ProviderStatus, SshStatus,
+    auth_ssh_generate, auth_ssh_status, auth_ssh_test, auth_switch_account, github_access_token,
+    AuthAccounts, GithubDevicePollResult, GithubDeviceStart, OauthBegin, ProviderStatus, SshStatus,
     SshTestResult,
 };
 pub use runner::{
-    ensure_git, git_info, run_shell, set_app_handle, with_git_quiet, GitBinary,
+    ensure_git, git_info, local_proxy, run_shell, set_app_handle, with_git_quiet, GitBinary,
 };
 pub use status::{repo_status, repo_status_light_nonblocking};
 pub use types::*;

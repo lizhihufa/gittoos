@@ -1,5 +1,6 @@
 mod git;
 mod process_win;
+mod update;
 mod webview2;
 
 use git::{
@@ -741,6 +742,88 @@ async fn auth_test_ssh(provider: String) -> Result<SshTestResult, String> {
     spawn_auth(move || auth_ssh_test(&provider)).await
 }
 
+#[tauri::command]
+async fn check_app_update(
+    current_version: String,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<update::UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::check_for_update(&current_version, owner, repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn download_app_update(asset_url: String, asset_name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::download_update(&asset_url, &asset_name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn launch_app_installer(path: String, exit_app: bool) -> Result<(), String> {
+    update::launch_installer(&path, exit_app)
+}
+
+#[tauri::command]
+async fn publish_github_release(
+    file_path: String,
+    tag: String,
+    title: Option<String>,
+    notes: Option<String>,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<update::PublishResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::publish_github_release(&file_path, &tag, title, notes, owner, repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn list_github_releases(
+    owner: Option<String>,
+    repo: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<update::ReleaseItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::list_github_releases(owner, repo, limit)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn delete_github_release_asset(
+    asset_id: u64,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::delete_github_release_asset(asset_id, owner, repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn delete_github_release(
+    release_id: u64,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::delete_github_release(release_id, owner, repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(windows)]
@@ -751,6 +834,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             set_app_handle(app.handle().clone());
+            update::init_update_handle(app.handle().clone());
             Ok(())
         })
         .manage(AppState {
@@ -826,6 +910,13 @@ pub fn run() {
             auth_get_ssh_status,
             auth_generate_ssh_key,
             auth_test_ssh,
+            check_app_update,
+            download_app_update,
+            launch_app_installer,
+            publish_github_release,
+            list_github_releases,
+            delete_github_release_asset,
+            delete_github_release,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -975,6 +975,14 @@ fn refresh_provider(provider: Provider) -> Result<ProviderStatus, GitError> {
     }
 }
 
+/// Active GitHub token for Releases API (upload). Empty if not logged in.
+pub fn github_access_token() -> Result<Option<String>, GitError> {
+    let store = load_store()?;
+    Ok(active_account(&store.github)
+        .map(|a| a.token.trim().to_string())
+        .filter(|t| !t.is_empty()))
+}
+
 pub fn auth_accounts() -> Result<AuthAccounts, GitError> {
     Ok(AuthAccounts {
         github: refresh_provider(Provider::Github)?,

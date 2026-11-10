@@ -8,6 +8,8 @@ import type {
   Identity,
   LargeFileInfo,
   ProviderStatus,
+  PublishResult,
+  ReleaseItem,
   RemoteBranchInfo,
   RemoteInfo,
   RepoCore,
@@ -16,6 +18,7 @@ import type {
   RepoStatus,
   StashInfo,
   TagInfo,
+  UpdateInfo,
 } from "./types";
 
 export const api = {
@@ -154,4 +157,49 @@ export const api = {
     invoke<import("./types").SshStatus>("auth_generate_ssh_key"),
   authSshTest: (provider: AuthProvider) =>
     invoke<import("./types").SshTestResult>("auth_test_ssh", { provider }),
+
+  checkAppUpdate: (currentVersion: string, owner?: string, repo?: string) =>
+    invoke<UpdateInfo>("check_app_update", {
+      currentVersion,
+      owner: owner ?? null,
+      repo: repo ?? null,
+    }),
+  downloadAppUpdate: (assetUrl: string, assetName: string) =>
+    invoke<string>("download_app_update", { assetUrl, assetName }),
+  launchAppInstaller: (path: string, exitApp = true) =>
+    invoke<void>("launch_app_installer", { path, exitApp }),
+  publishGithubRelease: (opts: {
+    filePath: string;
+    tag: string;
+    title?: string;
+    notes?: string;
+    owner?: string;
+    repo?: string;
+  }) =>
+    invoke<PublishResult>("publish_github_release", {
+      filePath: opts.filePath,
+      tag: opts.tag,
+      title: opts.title ?? null,
+      notes: opts.notes ?? null,
+      owner: opts.owner ?? null,
+      repo: opts.repo ?? null,
+    }),
+  listGithubReleases: (owner?: string, repo?: string, limit?: number) =>
+    invoke<ReleaseItem[]>("list_github_releases", {
+      owner: owner ?? null,
+      repo: repo ?? null,
+      limit: limit ?? null,
+    }),
+  deleteGithubReleaseAsset: (assetId: number, owner?: string, repo?: string) =>
+    invoke<void>("delete_github_release_asset", {
+      assetId,
+      owner: owner ?? null,
+      repo: repo ?? null,
+    }),
+  deleteGithubRelease: (releaseId: number, owner?: string, repo?: string) =>
+    invoke<void>("delete_github_release", {
+      releaseId,
+      owner: owner ?? null,
+      repo: repo ?? null,
+    }),
 };
