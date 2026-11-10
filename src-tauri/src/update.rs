@@ -164,11 +164,25 @@ fn github_get_json(url: &str, token: Option<&str>) -> Result<String, String> {
     if let Some(t) = token.filter(|t| !t.is_empty()) {
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
-    let resp = req.call().map_err(|e| format!("请求 GitHub 失败：{e}"))?;
+    // ureq returns Err(Status) for non-2xx; normalize so callers can match "HTTP 404".
+    let resp = match req.call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            return Err(format!(
+                "GitHub HTTP {code}：{}",
+                body.chars().take(200).collect::<String>()
+            ));
+        }
+        Err(e) => return Err(format!("请求 GitHub 失败：{e}")),
+    };
     let status = resp.status();
     let body = resp.into_string().map_err(|e| format!("读取响应失败：{e}"))?;
     if !(200..300).contains(&status) {
-        return Err(format!("GitHub HTTP {status}：{}", body.chars().take(200).collect::<String>()));
+        return Err(format!(
+            "GitHub HTTP {status}：{}",
+            body.chars().take(200).collect::<String>()
+        ));
     }
     Ok(body)
 }
@@ -528,7 +542,8 @@ fn ensure_release(
                 serde_json::from_str(&text).map_err(|e| format!("解析已有 Release 失败：{e}"))?;
             return Ok(rel);
         }
-        Err(e) if e.contains("HTTP 404") => {}
+        // Tag 尚无 Release 时 GitHub 返回 404，随后自动创建。
+        Err(e) if e.contains("HTTP 404") || e.contains("status code 404") => {}
         Err(e) => return Err(e),
     }
 
