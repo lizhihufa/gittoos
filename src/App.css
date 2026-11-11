@@ -3157,7 +3157,7 @@ html[data-scheme="dark"] .modal {
 }
 
 .notice-box.is-sticky::after {
-  content: " 路 鐐瑰嚮鍏抽棴";
+  content: " · 点击关闭";
   font-weight: 500;
   opacity: 0.72;
   font-size: 12px;
