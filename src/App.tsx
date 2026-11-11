@@ -450,10 +450,10 @@ export default function App() {
       const background = opts?.background === true;
       if (!background) {
         busyRef.current = true;
-        setBusy(true);
+    setBusy(true);
       }
-      setError(null);
-      try {
+    setError(null);
+    try {
         const core = await api.getRepoCore(path);
         if (repoPathRef.current === path || !background) {
           applyCore(core);
@@ -470,7 +470,7 @@ export default function App() {
             setTags(extras.tags);
             saveRepoCache(path, core, extras);
           }
-        } catch (e) {
+    } catch (e) {
           if (repoPathRef.current === path) {
             saveRepoCache(path, core);
             if (!background) setError(failureLine(e));
@@ -478,9 +478,9 @@ export default function App() {
         }
       } catch (e) {
         if (!background) {
-          setError(failureLine(e));
+      setError(failureLine(e));
           busyRef.current = false;
-          setBusy(false);
+      setBusy(false);
         }
         throw e;
       }
@@ -1415,7 +1415,7 @@ export default function App() {
           /* keep dialog error state */
         }
       } else {
-        setError(failureLine(e));
+      setError(failureLine(e));
         setAuthHint(isAuthFailure(e));
         try {
           const core = await api.getRepoCore(path);
@@ -1424,7 +1424,7 @@ export default function App() {
           /* keep original error */
         } finally {
           busyRef.current = false;
-          setBusy(false);
+      setBusy(false);
           syncProgressActive.current = false;
           setSyncProgress(null);
         }
@@ -1930,32 +1930,32 @@ export default function App() {
     const showLogin = !account?.loggedIn || addingAccount;
     const savedAccounts = account?.accounts ?? [];
 
-    return (
+      return (
       <div className="auth-login-panel">
         {account?.loggedIn && !addingAccount && (
           <div className="auth-logged-in">
             <div className="github-user auth-user-card">
-              {account.avatarUrl ? (
-                <img src={account.avatarUrl} alt="" className="github-avatar" />
-              ) : (
-                <div className="github-avatar placeholder" />
-              )}
-              <div className="github-user-meta">
-                <strong>{account.login}</strong>
+          {account.avatarUrl ? (
+            <img src={account.avatarUrl} alt="" className="github-avatar" />
+          ) : (
+            <div className="github-avatar placeholder" />
+          )}
+          <div className="github-user-meta">
+            <strong>{account.login}</strong>
                 {account.name && (
                   <span className="muted small">{account.name}</span>
                 )}
                 <span className="muted small">凭据已写入系统 Git Credential</span>
-              </div>
-              <button
-                type="button"
+          </div>
+          <button
+            type="button"
                 className="auth-logout-btn"
-                disabled={busy}
-                onClick={() => void logoutProvider(provider)}
-              >
-                退出
-              </button>
-            </div>
+            disabled={busy}
+            onClick={() => void logoutProvider(provider)}
+          >
+            退出
+          </button>
+        </div>
             {savedAccounts.length > 1 && (
               <div className="auth-account-list">
                 <span className="muted small">已保存账号</span>
@@ -1996,10 +1996,10 @@ export default function App() {
         {showLogin && (
           <>
             {addingAccount && account?.loggedIn && (
-              <button
-                type="button"
+          <button
+            type="button"
                 className="linkish auth-cancel-add"
-                disabled={busy}
+            disabled={busy}
                 onClick={() => {
                   stopDevicePoll();
                   setDeviceFlow(null);
@@ -2030,7 +2030,7 @@ export default function App() {
                 </span>
                 <span className="auth-method-text">
                   <strong>
-                    用 Git 登录
+            用 Git 登录
                     <em>推荐</em>
                   </strong>
                   <span>
@@ -2068,8 +2068,8 @@ export default function App() {
                     <strong>设备码登录</strong>
                     <span>只需 Client ID，在另一设备浏览器输入代码</span>
                   </span>
-                </button>
-              )}
+          </button>
+        )}
             </div>
 
             {provider === "github" && deviceFlow && (
@@ -2118,7 +2118,7 @@ export default function App() {
 
             <div className="auth-token-block">
               <div className="auth-token-head">
-                <span>Access Token</span>
+          <span>Access Token</span>
                 <button
                   type="button"
                   className="linkish"
@@ -2130,9 +2130,9 @@ export default function App() {
               </div>
               <p className="muted small">{scopeHint}</p>
               <div className="auth-token-row">
-                <input
+          <input
                   type={draft.showToken ? "text" : "password"}
-                  value={draft.token}
+            value={draft.token}
                   onChange={(e) =>
                     updateDraft(provider, { token: e.target.value })
                   }
@@ -2143,18 +2143,18 @@ export default function App() {
                     updateDraft(provider, { token: text });
                     void loginWithToken(provider, text);
                   }}
-                  placeholder={
-                    provider === "github"
-                      ? "ghp_… / github_pat_…"
-                      : "Gitee 私人令牌"
-                  }
-                  disabled={busy}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void loginWithToken(provider);
-                  }}
-                />
-                <button
-                  type="button"
+            placeholder={
+              provider === "github"
+                ? "ghp_… / github_pat_…"
+                : "Gitee 私人令牌"
+            }
+            disabled={busy}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void loginWithToken(provider);
+            }}
+          />
+        <button
+          type="button"
                   className="auth-toggle-vis"
                   disabled={busy}
                   onClick={() =>
@@ -2166,11 +2166,11 @@ export default function App() {
                 <button
                   type="button"
                   className="primary auth-token-login"
-                  disabled={busy || !draft.token.trim()}
-                  onClick={() => void loginWithToken(provider)}
-                >
-                  用 Token 登录
-                </button>
+          disabled={busy || !draft.token.trim()}
+          onClick={() => void loginWithToken(provider)}
+        >
+          用 Token 登录
+        </button>
               </div>
             </div>
 
@@ -2288,7 +2288,7 @@ export default function App() {
               <div className="welcome-scrim" />
             </div>
           )}
-          <div className="welcome-card">
+        <div className="welcome-card">
           <img className="brand-mark" src="/app-icon.png" alt="" width={72} height={72} />
           <h1>青枝</h1>
           <p className="muted">
@@ -2323,7 +2323,7 @@ export default function App() {
           {recent.length > 0 && (
             <div className="recent">
               <div className="recent-header">
-                <h2>最近打开</h2>
+              <h2>最近打开</h2>
                 <div className="row-actions">
                   {Object.values(recentExists).some((ok) => ok === false) && (
                     <button
@@ -2384,8 +2384,8 @@ export default function App() {
                         onClick={() => setRecent(removeRecent(p))}
                       >
                         ×
-                      </button>
-                    </li>
+                    </button>
+                  </li>
                   );
                 })}
               </ul>
@@ -2508,14 +2508,14 @@ export default function App() {
                 检查更新
               </button>
               {hasUpdate && (
-                <button
-                  type="button"
+              <button
+                type="button"
                   className="primary"
                   disabled={updateBusy || busy}
                   onClick={() => void downloadAndInstallUpdate()}
-                >
+              >
                   下载并安装
-                </button>
+              </button>
               )}
               {updateInfo?.htmlUrl && (
                 <button
@@ -2710,7 +2710,7 @@ export default function App() {
                     <p className="muted small">调整界面观感与打开仓库时的习惯。</p>
                   </div>
                   <div className="settings-grid-2">
-                    <label className="settings-field">
+          <label className="settings-field">
                       <span>主题</span>
                       <select
                         value={prefs.theme}
@@ -2745,40 +2745,40 @@ export default function App() {
                     <label
                       className={`pref-card${prefs.rememberRecent ? " is-on" : ""}`}
                     >
-                      <input
+            <input
                         type="checkbox"
                         checked={prefs.rememberRecent}
-                        onChange={(e) =>
+              onChange={(e) =>
                           updatePrefs({ rememberRecent: e.target.checked })
-                        }
-                      />
+              }
+            />
                       <span className="pref-card-text">
                         <strong>记住最近打开</strong>
                         <span>欢迎页保留最近打开过的仓库路径</span>
                       </span>
                       <span className="pref-switch" aria-hidden />
-                    </label>
+          </label>
                     <label
                       className={`pref-card${prefs.showCommitGraph ? " is-on" : ""}`}
                     >
-                      <input
+            <input
                         type="checkbox"
                         checked={prefs.showCommitGraph}
-                        onChange={(e) =>
+              onChange={(e) =>
                           updatePrefs({ showCommitGraph: e.target.checked })
-                        }
-                      />
+              }
+            />
                       <span className="pref-card-text">
                         <strong>历史页提交图</strong>
                         <span>在历史列表左侧显示分支车道图</span>
                       </span>
                       <span className="pref-switch" aria-hidden />
-                    </label>
+          </label>
                     <label
                       className={`pref-card${prefs.useRepoCache ? " is-on" : ""}`}
                     >
-                      <input
-                        type="checkbox"
+                <input
+                  type="checkbox"
                         checked={prefs.useRepoCache}
                         onChange={(e) =>
                           updatePrefs({ useRepoCache: e.target.checked })
@@ -2789,9 +2789,9 @@ export default function App() {
                         <span>再次打开同一仓库时先用本地快照</span>
                       </span>
                       <span className="pref-switch" aria-hidden />
-                    </label>
-                    <button
-                      type="button"
+              </label>
+              <button
+                type="button"
                       className="pref-cache-clear"
                       disabled={busy}
                       onClick={() => {
@@ -2910,7 +2910,7 @@ export default function App() {
                         }}
                       >
                         清除壁纸
-                      </button>
+              </button>
                     </div>
                   </div>
                 </section>
@@ -2920,7 +2920,7 @@ export default function App() {
                 <section className="settings-section" ref={authSectionRef}>
                   <div className="settings-pane-intro">
                     <h4>账号登录</h4>
-                    <p className="muted small">
+          <p className="muted small">
                       推荐「用 Git 登录」或粘贴 Token。浏览器登录需先配置 OAuth。
                       登录写入系统 Git 凭据，退出时会尽量清除。
                     </p>
@@ -3086,32 +3086,32 @@ export default function App() {
             克隆
           </button>
           <div className="sync-group" role="group" aria-label="同步">
-            <button
-              type="button"
-              disabled={busy}
+          <button
+            type="button"
+            disabled={busy}
               title="只下载远程更新，不改本地文件"
-              onClick={() => runAction(() => api.fetch(repoPath), "正在获取…")}
-            >
+            onClick={() => runAction(() => api.fetch(repoPath), "正在获取…")}
+          >
               获取
-            </button>
-            <button
-              type="button"
+          </button>
+          <button
+            type="button"
               className={behind > 0 ? "primary" : undefined}
-              disabled={busy}
+            disabled={busy}
               title="下载并合并到当前分支（Ctrl+Shift+L）"
-              onClick={() => runAction(() => api.pull(repoPath), "正在拉取…")}
-            >
+            onClick={() => runAction(() => api.pull(repoPath), "正在拉取…")}
+          >
               {busy ? "…" : behind > 0 ? `拉取 ↓${behind}` : "拉取"}
-            </button>
-            <button
-              type="button"
+          </button>
+          <button
+            type="button"
               className={ahead > 0 && behind === 0 ? "primary" : undefined}
-              disabled={busy}
+            disabled={busy}
               title="把本地提交上传到远程（Ctrl+Shift+P）"
-              onClick={() => runAction(() => api.push(repoPath), "正在推送…")}
-            >
+            onClick={() => runAction(() => api.push(repoPath), "正在推送…")}
+          >
               {busy ? "…" : ahead > 0 ? `推送 ↑${ahead}` : "推送"}
-            </button>
+          </button>
           </div>
         </div>
       </header>
@@ -3546,7 +3546,7 @@ export default function App() {
                       "正在合并…",
                     );
                   })
-                }
+                  }
               >
                 合并
               </button>
@@ -3693,9 +3693,9 @@ export default function App() {
                 title="修改最近一次未推送的提交"
                 onClick={() =>
                   withConfirm(
-                    message.trim()
-                      ? "用当前说明修改最近一次提交？"
-                      : "保留原说明，把已暂存改动并入最近一次提交？",
+                      message.trim()
+                        ? "用当前说明修改最近一次提交？"
+                        : "保留原说明，把已暂存改动并入最近一次提交？",
                     () => {
                       void requestCommit("amend");
                     },
