@@ -86,8 +86,27 @@ fn path_exists(path: String) -> bool {
     Path::new(&path).is_dir()
 }
 
+fn wallpaper_slot_prefix(slot: Option<String>) -> Result<&'static str, String> {
+    match slot
+        .as_deref()
+        .unwrap_or("load")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "load" | "" => Ok("wallpaper.load."),
+        "terminal" => Ok("wallpaper.terminal."),
+        other => Err(format!("未知壁纸槽位：{other}")),
+    }
+}
+
 #[tauri::command]
-fn import_wallpaper(app: AppHandle, source: String) -> Result<String, String> {
+fn import_wallpaper(
+    app: AppHandle,
+    source: String,
+    slot: Option<String>,
+) -> Result<String, String> {
+    let prefix = wallpaper_slot_prefix(slot)?;
     let src = Path::new(&source);
     if !src.is_file() {
         return Err("壁纸文件不存在".into());
@@ -106,22 +125,31 @@ fn import_wallpaper(app: AppHandle, source: String) -> Result<String, String> {
         .app_data_dir()
         .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // Clear previous wallpaper files.
+    // Clear previous files for this slot only.
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("wallpaper.") {
+            if name.starts_with(prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+            // Legacy single wallpaper.* (no slot) — clear when setting load wallpaper.
+            if prefix == "wallpaper.load."
+                && name.starts_with("wallpaper.")
+                && !name.starts_with("wallpaper.load.")
+                && !name.starts_with("wallpaper.terminal.")
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
-    let dest = dir.join(format!("wallpaper.{ext}"));
+    let dest = dir.join(format!("{prefix}{ext}"));
     std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
     Ok(dest.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn clear_wallpaper(app: AppHandle) -> Result<(), String> {
+fn clear_wallpaper(app: AppHandle, slot: Option<String>) -> Result<(), String> {
+    let prefix = wallpaper_slot_prefix(slot)?;
     let dir = app
         .path()
         .app_data_dir()
@@ -129,7 +157,14 @@ fn clear_wallpaper(app: AppHandle) -> Result<(), String> {
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("wallpaper.") {
+            if name.starts_with(prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+            if prefix == "wallpaper.load."
+                && name.starts_with("wallpaper.")
+                && !name.starts_with("wallpaper.load.")
+                && !name.starts_with("wallpaper.terminal.")
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

@@ -2,9 +2,37 @@ const CLONE_KEY = "gittool.cloneUrl";
 const PREFS_KEY = "gittool.prefs";
 const TABS_KEY = "gittool.openRepos";
 
-export type ThemeId = "light" | "dark" | "forest";
+export type ThemeId =
+  | "light"
+  | "dark"
+  | "forest"
+  | "nord"
+  | "solar"
+  | "tokyo"
+  | "mocha";
 export type FontSizeId = "normal" | "large";
 export type WallpaperKind = "none" | "image" | "video";
+export type ColorScheme = "light" | "dark";
+
+export const THEME_OPTIONS: {
+  id: ThemeId;
+  label: string;
+  scheme: ColorScheme;
+}[] = [
+  { id: "light", label: "暖纸浅色", scheme: "light" },
+  { id: "dark", label: "墨蓝深色", scheme: "dark" },
+  { id: "forest", label: "青枝绿", scheme: "light" },
+  { id: "nord", label: "Nord 极光", scheme: "dark" },
+  { id: "solar", label: "Solarized 日光", scheme: "light" },
+  { id: "tokyo", label: "Tokyo Night", scheme: "dark" },
+  { id: "mocha", label: "Catppuccin 摩卡", scheme: "dark" },
+];
+
+const THEME_IDS = new Set<string>(THEME_OPTIONS.map((t) => t.id));
+
+export function themeScheme(theme: ThemeId): ColorScheme {
+  return THEME_OPTIONS.find((t) => t.id === theme)?.scheme ?? "light";
+}
 
 export interface AppPrefs {
   theme: ThemeId;
@@ -13,9 +41,21 @@ export interface AppPrefs {
   showCommitGraph: boolean;
   /** Use last-open cache to enter the repo UI faster. */
   useRepoCache: boolean;
-  /** Absolute path to imported wallpaper file in app data. */
+  /** Welcome / loading wallpaper. */
   wallpaperPath: string;
   wallpaperKind: WallpaperKind;
+  /** Loading/welcome scrim strength 0–100 (higher = less wallpaper). */
+  wallpaperLoadScrim: number;
+  /** Terminal wallpaper (separate from load wallpaper). */
+  terminalWallpaperPath: string;
+  terminalWallpaperKind: WallpaperKind;
+  /** Terminal overlay opacity 0–100 (higher = less wallpaper). */
+  terminalWallpaperScrim: number;
+  /**
+   * Manual Release 仓库，格式 owner/repo。
+   * 留空则用当前打开仓库的 GitHub origin。
+   */
+  releaseRepoOverride: string;
 }
 
 const DEFAULT_PREFS: AppPrefs = {
@@ -26,7 +66,22 @@ const DEFAULT_PREFS: AppPrefs = {
   useRepoCache: true,
   wallpaperPath: "",
   wallpaperKind: "none",
+  wallpaperLoadScrim: 42,
+  terminalWallpaperPath: "",
+  terminalWallpaperKind: "none",
+  terminalWallpaperScrim: 55,
+  releaseRepoOverride: "",
 };
+
+function clampPercent(value: unknown, fallback: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function parseWallpaperKind(value: unknown): WallpaperKind {
+  return value === "image" || value === "video" ? value : "none";
+}
 
 export function loadCloneUrl(): string {
   try {
@@ -44,27 +99,43 @@ export function saveCloneUrl(url: string) {
   }
 }
 
+function parseTheme(value: unknown): ThemeId {
+  return typeof value === "string" && THEME_IDS.has(value)
+    ? (value as ThemeId)
+    : "light";
+}
+
 export function loadPrefs(): AppPrefs {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     if (!raw) return { ...DEFAULT_PREFS };
     const parsed = JSON.parse(raw) as Partial<AppPrefs>;
-    const kind =
-      parsed.wallpaperKind === "image" || parsed.wallpaperKind === "video"
-        ? parsed.wallpaperKind
-        : "none";
     return {
-      theme:
-        parsed.theme === "dark" || parsed.theme === "forest"
-          ? parsed.theme
-          : "light",
+      theme: parseTheme(parsed.theme),
       fontSize: parsed.fontSize === "large" ? "large" : "normal",
       rememberRecent: parsed.rememberRecent !== false,
       showCommitGraph: parsed.showCommitGraph !== false,
       useRepoCache: parsed.useRepoCache !== false,
       wallpaperPath:
         typeof parsed.wallpaperPath === "string" ? parsed.wallpaperPath : "",
-      wallpaperKind: kind,
+      wallpaperKind: parseWallpaperKind(parsed.wallpaperKind),
+      wallpaperLoadScrim: clampPercent(
+        parsed.wallpaperLoadScrim,
+        DEFAULT_PREFS.wallpaperLoadScrim,
+      ),
+      terminalWallpaperPath:
+        typeof parsed.terminalWallpaperPath === "string"
+          ? parsed.terminalWallpaperPath
+          : "",
+      terminalWallpaperKind: parseWallpaperKind(parsed.terminalWallpaperKind),
+      terminalWallpaperScrim: clampPercent(
+        parsed.terminalWallpaperScrim,
+        DEFAULT_PREFS.terminalWallpaperScrim,
+      ),
+      releaseRepoOverride:
+        typeof parsed.releaseRepoOverride === "string"
+          ? parsed.releaseRepoOverride.trim()
+          : "",
     };
   } catch {
     return { ...DEFAULT_PREFS };
@@ -80,8 +151,18 @@ export function savePrefs(prefs: AppPrefs) {
 }
 
 export function applyPrefsToDocument(prefs: AppPrefs) {
-  document.documentElement.dataset.theme = prefs.theme;
-  document.documentElement.dataset.fontSize = prefs.fontSize;
+  const root = document.documentElement;
+  root.dataset.theme = prefs.theme;
+  root.dataset.scheme = themeScheme(prefs.theme);
+  root.dataset.fontSize = prefs.fontSize;
+  root.style.setProperty(
+    "--wallpaper-load-scrim",
+    String(clampPercent(prefs.wallpaperLoadScrim, 42) / 100),
+  );
+  root.style.setProperty(
+    "--terminal-wallpaper-scrim",
+    String(clampPercent(prefs.terminalWallpaperScrim, 55) / 100),
+  );
 }
 
 export function loadOpenRepos(): string[] {

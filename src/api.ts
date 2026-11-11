@@ -24,9 +24,10 @@ import type {
 export const api = {
   getGitInfo: () => invoke<GitInfo>("get_git_info"),
   pathExists: (path: string) => invoke<boolean>("path_exists", { path }),
-  importWallpaper: (source: string) =>
-    invoke<string>("import_wallpaper", { source }),
-  clearWallpaper: () => invoke<void>("clear_wallpaper"),
+  importWallpaper: (source: string, slot: "load" | "terminal" = "load") =>
+    invoke<string>("import_wallpaper", { source, slot }),
+  clearWallpaper: (slot: "load" | "terminal" = "load") =>
+    invoke<void>("clear_wallpaper", { slot }),
   checkRepository: (path: string) =>
     invoke<boolean>("check_repository", { path }),
   initRepo: (path: string) => invoke<void>("init_repo", { path }),

@@ -31,6 +31,7 @@ import {
   removeRecent,
 } from "./recent";
 import { clearRepoCache, loadRepoCache, saveRepoCache } from "./repoCache";
+import { formatGithubOwnerRepo, parseGithubOwnerRepo } from "./githubRepo";
 import {
   applyPrefsToDocument,
   loadCloneUrl,
@@ -39,6 +40,7 @@ import {
   saveCloneUrl,
   saveOpenRepos,
   savePrefs,
+  THEME_OPTIONS,
   type AppPrefs,
 } from "./settingsStore";
 import {
@@ -499,6 +501,45 @@ export default function App() {
       return null;
     }
   }, [prefs.wallpaperKind, prefs.wallpaperPath]);
+
+  const terminalWallpaperUrl = useMemo(() => {
+    if (
+      prefs.terminalWallpaperKind === "none" ||
+      !prefs.terminalWallpaperPath
+    ) {
+      return null;
+    }
+    try {
+      const src = convertFileSrc(prefs.terminalWallpaperPath);
+      const sep = src.includes("?") ? "&" : "?";
+      return `${src}${sep}t=${encodeURIComponent(prefs.terminalWallpaperPath)}`;
+    } catch {
+      return null;
+    }
+  }, [prefs.terminalWallpaperKind, prefs.terminalWallpaperPath]);
+
+  function mediaKindFromPath(path: string): "image" | "video" {
+    const lower = path.toLowerCase();
+    return lower.endsWith(".mp4") ||
+      lower.endsWith(".webm") ||
+      lower.endsWith(".mov")
+      ? "video"
+      : "image";
+  }
+
+  const releaseTarget = useMemo(() => {
+    const fromPrefs = parseGithubOwnerRepo(prefs.releaseRepoOverride);
+    if (fromPrefs) {
+      return { ...fromPrefs, source: "settings" as const };
+    }
+    const origin =
+      remotes.find((remote) => remote.name === "origin") ?? remotes[0];
+    const fromRemote = parseGithubOwnerRepo(origin?.url);
+    if (fromRemote) {
+      return { ...fromRemote, source: "remote" as const };
+    }
+    return { owner: "", repo: "", source: "none" as const };
+  }, [prefs.releaseRepoOverride, remotes]);
 
   const refreshStatusQuiet = useCallback(async (path: string) => {
     if (busyRef.current) return;
@@ -2414,7 +2455,13 @@ export default function App() {
             </div>
           )}
           <div className="welcome-terminal">
-            <Terminal text={terminal} onClear={() => setTerminal("")} />
+            <Terminal
+              text={terminal}
+              onClear={() => setTerminal("")}
+              wallpaperUrl={terminalWallpaperUrl}
+              wallpaperKind={prefs.terminalWallpaperKind}
+              wallpaperScrim={prefs.terminalWallpaperScrim}
+            />
           </div>
         </div>
         {showSettings && renderSettings()}
@@ -2616,7 +2663,7 @@ export default function App() {
             <h4>设置</h4>
             <ul>
               <li>主题、字体、最近打开、提交图、仓库缓存加速。</li>
-              <li>壁纸：加载页/欢迎页图片或视频背景；可清除缓存。</li>
+              <li>壁纸：欢迎页/加载页与终端可分别设置背景。</li>
               <li>GitHub / Gitee：Git 登录、浏览器 OAuth、Token；工具栏可看登录状态。</li>
               <li>身份与远程：名字邮箱、origin、克隆地址；点「保存」一并写入。</li>
             </ul>
@@ -2720,9 +2767,11 @@ export default function App() {
                           })
                         }
                       >
-                        <option value="light">浅色</option>
-                        <option value="dark">墨蓝深色</option>
-                        <option value="forest">青枝绿</option>
+                        {THEME_OPTIONS.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.label}
+                          </option>
+                        ))}
                       </select>
                     </label>
                     <label className="settings-field">
@@ -2805,9 +2854,9 @@ export default function App() {
 
                   <div className="wallpaper-panel">
                     <div className="wallpaper-panel-head">
-                      <h4>欢迎页 / 加载页壁纸</h4>
+                      <h4>加载页壁纸</h4>
                       <p className="muted small">
-                        支持图片或视频；打开仓库时的加载页也会使用。
+                        用于欢迎页与打开仓库时的加载页（与终端背景分开设置）。
                       </p>
                     </div>
                     <div className="wallpaper-preview-frame">
@@ -2815,7 +2864,7 @@ export default function App() {
                         <img
                           className="wallpaper-preview-media"
                           src={wallpaperUrl}
-                          alt="当前壁纸预览"
+                          alt="加载页壁纸预览"
                         />
                       ) : prefs.wallpaperKind === "video" && wallpaperUrl ? (
                         <video
@@ -2828,8 +2877,8 @@ export default function App() {
                         />
                       ) : (
                         <div className="wallpaper-preview-empty">
-                          <span>暂未设置壁纸</span>
-                          <span className="muted small">选择图片或视频作为背景</span>
+                          <span>暂未设置加载页壁纸</span>
+                          <span className="muted small">选择图片或视频</span>
                         </div>
                       )}
                       {prefs.wallpaperKind !== "none" && (
@@ -2847,7 +2896,7 @@ export default function App() {
                           void (async () => {
                             const selected = await open({
                               multiple: false,
-                              title: "选择壁纸图片或视频",
+                              title: "选择加载页壁纸",
                               filters: [
                                 {
                                   name: "媒体",
@@ -2866,22 +2915,19 @@ export default function App() {
                             });
                             if (typeof selected !== "string") return;
                             try {
-                              const saved = await api.importWallpaper(selected);
-                              const lower = saved.toLowerCase();
-                              const kind =
-                                lower.endsWith(".mp4") ||
-                                lower.endsWith(".webm") ||
-                                lower.endsWith(".mov")
-                                  ? ("video" as const)
-                                  : ("image" as const);
+                              const saved = await api.importWallpaper(
+                                selected,
+                                "load",
+                              );
+                              const kind = mediaKindFromPath(saved);
                               updatePrefs({
                                 wallpaperPath: saved,
                                 wallpaperKind: kind,
                               });
                               setNotice(
                                 kind === "video"
-                                  ? "已设置动态视频壁纸"
-                                  : "已设置图片壁纸",
+                                  ? "已设置加载页视频壁纸"
+                                  : "已设置加载页图片壁纸",
                               );
                             } catch (e) {
                               setError(failureLine(e));
@@ -2897,7 +2943,7 @@ export default function App() {
                         onClick={() => {
                           void (async () => {
                             try {
-                              await api.clearWallpaper();
+                              await api.clearWallpaper("load");
                             } catch {
                               /* ignore */
                             }
@@ -2905,13 +2951,216 @@ export default function App() {
                               wallpaperPath: "",
                               wallpaperKind: "none",
                             });
-                            setNotice("已清除壁纸");
+                            setNotice("已清除加载页壁纸");
                           })();
                         }}
                       >
-                        清除壁纸
-              </button>
+                        清除
+                      </button>
                     </div>
+                    <div
+                      className={`wallpaper-sliders${
+                        prefs.wallpaperKind === "none" ? " is-disabled" : ""
+                      }`}
+                    >
+                      <label className="wallpaper-slider-row">
+                        <span>
+                          <em>加载页蒙层</em>
+                          <strong>{prefs.wallpaperLoadScrim}%</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={90}
+                          value={prefs.wallpaperLoadScrim}
+                          disabled={prefs.wallpaperKind === "none"}
+                          onChange={(e) =>
+                            updatePrefs({
+                              wallpaperLoadScrim: Number(e.target.value),
+                            })
+                          }
+                        />
+                        <span className="muted small">
+                          数值越大，欢迎页/加载页壁纸越淡
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="wallpaper-panel">
+                    <div className="wallpaper-panel-head">
+                      <h4>终端背景</h4>
+                      <p className="muted small">
+                        仅作用于「终端」页，与加载页壁纸互不影响。
+                      </p>
+                    </div>
+                    <div className="wallpaper-preview-frame">
+                      {prefs.terminalWallpaperKind === "image" &&
+                      terminalWallpaperUrl ? (
+                        <img
+                          className="wallpaper-preview-media"
+                          src={terminalWallpaperUrl}
+                          alt="终端背景预览"
+                        />
+                      ) : prefs.terminalWallpaperKind === "video" &&
+                        terminalWallpaperUrl ? (
+                        <video
+                          className="wallpaper-preview-media"
+                          src={terminalWallpaperUrl}
+                          muted
+                          autoPlay
+                          loop
+                          playsInline
+                        />
+                      ) : (
+                        <div className="wallpaper-preview-empty">
+                          <span>暂未设置终端背景</span>
+                          <span className="muted small">选择图片或视频</span>
+                        </div>
+                      )}
+                      {prefs.terminalWallpaperKind !== "none" && (
+                        <span className="wallpaper-preview-badge">
+                          {prefs.terminalWallpaperKind === "video"
+                            ? "视频"
+                            : "图片"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="row-actions wallpaper-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={busy}
+                        onClick={() => {
+                          void (async () => {
+                            const selected = await open({
+                              multiple: false,
+                              title: "选择终端背景",
+                              filters: [
+                                {
+                                  name: "媒体",
+                                  extensions: [
+                                    "png",
+                                    "jpg",
+                                    "jpeg",
+                                    "webp",
+                                    "gif",
+                                    "mp4",
+                                    "webm",
+                                    "mov",
+                                  ],
+                                },
+                              ],
+                            });
+                            if (typeof selected !== "string") return;
+                            try {
+                              const saved = await api.importWallpaper(
+                                selected,
+                                "terminal",
+                              );
+                              const kind = mediaKindFromPath(saved);
+                              updatePrefs({
+                                terminalWallpaperPath: saved,
+                                terminalWallpaperKind: kind,
+                              });
+                              setNotice(
+                                kind === "video"
+                                  ? "已设置终端视频背景"
+                                  : "已设置终端图片背景",
+                              );
+                            } catch (e) {
+                              setError(failureLine(e));
+                            }
+                          })();
+                        }}
+                      >
+                        选择背景
+                      </button>
+                      <button
+                        type="button"
+                        disabled={
+                          busy || prefs.terminalWallpaperKind === "none"
+                        }
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await api.clearWallpaper("terminal");
+                            } catch {
+                              /* ignore */
+                            }
+                            updatePrefs({
+                              terminalWallpaperPath: "",
+                              terminalWallpaperKind: "none",
+                            });
+                            setNotice("已清除终端背景");
+                          })();
+                        }}
+                      >
+                        清除
+                      </button>
+                    </div>
+                    <div
+                      className={`wallpaper-sliders${
+                        prefs.terminalWallpaperKind === "none"
+                          ? " is-disabled"
+                          : ""
+                      }`}
+                    >
+                      <label className="wallpaper-slider-row">
+                        <span>
+                          <em>终端蒙层</em>
+                          <strong>{prefs.terminalWallpaperScrim}%</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={90}
+                          value={prefs.terminalWallpaperScrim}
+                          disabled={prefs.terminalWallpaperKind === "none"}
+                          onChange={(e) =>
+                            updatePrefs({
+                              terminalWallpaperScrim: Number(e.target.value),
+                            })
+                          }
+                        />
+                        <span className="muted small">
+                          数值越大，终端背景越淡、文字越清晰
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="settings-card">
+                    <h5>Release 仓库</h5>
+                    <p className="muted small">
+                      管理 GitHub Release 时使用的仓库。留空则自动用当前打开仓库的
+                      origin（仅 GitHub）。青枝自身的「检查更新」仍固定为{" "}
+                      {UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}。
+                    </p>
+                    <label className="settings-field">
+                      <span>手动指定（owner/repo）</span>
+                      <input
+                        value={prefs.releaseRepoOverride}
+                        onChange={(e) =>
+                          updatePrefs({ releaseRepoOverride: e.target.value })
+                        }
+                        placeholder="例如 lizhihufa/huaweiyunapp，留空=当前仓库"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <p className="muted small">
+                      当前生效：
+                      {releaseTarget.owner
+                        ? `${formatGithubOwnerRepo(
+                            releaseTarget.owner,
+                            releaseTarget.repo,
+                          )}（${
+                            releaseTarget.source === "settings"
+                              ? "设置指定"
+                              : "当前仓库远程"
+                          }）`
+                        : "未识别到 GitHub 仓库，请填写上方或配置 origin"}
+                    </p>
                   </div>
                 </section>
               )}
@@ -3004,7 +3253,7 @@ export default function App() {
           wallpaperKind={prefs.wallpaperKind}
         />
       )}
-      <div className={`app ${entering ? "app-enter" : ""}`}>
+      <div className={`app${entering ? " app-enter" : ""}`}>
       {syncingCache && (
         <div className="sync-strip" role="status">
           <div className="sync-strip-bar" />
@@ -3812,8 +4061,11 @@ export default function App() {
           }}
           terminalText={terminal}
           onClearTerminal={() => setTerminal("")}
-          releaseOwner={UPDATE_REPO_OWNER}
-          releaseRepo={UPDATE_REPO_NAME}
+          terminalWallpaperUrl={terminalWallpaperUrl}
+          terminalWallpaperKind={prefs.terminalWallpaperKind}
+          terminalWallpaperScrim={prefs.terminalWallpaperScrim}
+          releaseOwner={releaseTarget.owner}
+          releaseRepo={releaseTarget.repo}
           releaseDefaultTag={appVersion === "…" ? "" : `v${appVersion}`}
           githubLoggedIn={Boolean(accounts?.github.loggedIn)}
           updateBusy={updateBusy}
@@ -3821,6 +4073,7 @@ export default function App() {
           onNotice={setNotice}
           onError={setError}
           onOpenAuth={() => openSettingsAuth("github")}
+          onConfigureReleaseRepo={() => openSettings("appearance")}
           updateProgress={updateProgress}
           onRunCommand={(line) => {
             if (busyRef.current) return;

@@ -52,6 +52,9 @@ interface Props {
   onClearTerminal: () => void;
   onRunCommand: (line: string) => void;
   busy: boolean;
+  terminalWallpaperUrl?: string | null;
+  terminalWallpaperKind?: "image" | "video" | "none";
+  terminalWallpaperScrim?: number;
   releaseOwner: string;
   releaseRepo: string;
   releaseDefaultTag: string;
@@ -61,6 +64,7 @@ interface Props {
   onNotice: (text: string | null) => void;
   onError: (text: string | null) => void;
   onOpenAuth: () => void;
+  onConfigureReleaseRepo?: () => void;
   updateProgress: { percent: number; label: string } | null;
 }
 
@@ -115,106 +119,135 @@ export function ExtraPane(props: Props) {
         />
       )}
       {props.pane === "history" && (
-        <div className="split-pane">
-          <ul className="record-list commit-graph-list">
-            {props.commits.length === 0 && (
-              <li className="muted pad">
-                还没有提交。先在左侧暂存文件，填写说明后点「提交」。
-              </li>
-            )}
-            {graphRows.map((row) => {
-              const badges = parseRefBadges(row.commit.refs);
-              const colW = 12;
-              const width = Math.max(row.width, 1) * colW + 8;
-              return (
-                <li key={row.commit.hash} className="commit-row">
-                  <button
-                    type="button"
-                    className={
-                      props.selectedHash === row.commit.hash ? "active" : ""
-                    }
-                    onClick={() => props.onSelectCommit(row.commit.hash)}
+        <div className="split-pane history-pane">
+          <div className="history-list-pane">
+            <div className="history-list-head">
+              <strong>提交记录</strong>
+              <span className="muted small">{props.commits.length} 条</span>
+            </div>
+            <ul className="record-list commit-graph-list history-commit-list">
+              {props.commits.length === 0 && (
+                <li className="history-empty muted">
+                  还没有提交。先在左侧暂存文件，填写说明后点「提交」。
+                </li>
+              )}
+              {graphRows.map((row) => {
+                const badges = parseRefBadges(row.commit.refs);
+                const colW = 12;
+                const width = Math.max(row.width, 1) * colW + 8;
+                const selected = props.selectedHash === row.commit.hash;
+                return (
+                  <li
+                    key={row.commit.hash}
+                    className={`commit-row${selected ? " is-selected" : ""}`}
                   >
-                    {props.showCommitGraph !== false && (
-                      <span
-                        className="graph-cell"
-                        style={{ width }}
-                        aria-hidden
-                      >
-                        {Array.from({ length: row.width }, (_, i) => {
-                          const active = row.through.includes(i);
-                          const isNode = i === row.lane;
-                          return (
-                            <span
-                              key={i}
-                              className={[
-                                "graph-lane",
-                                active ? "is-active" : "",
-                                isNode ? "is-node" : "",
-                              ]
-                                .filter(Boolean)
-                                .join(" ")}
-                              style={{
-                                left: i * colW + 4,
-                                ["--lane-color" as string]: laneColor(i),
-                              }}
-                            />
-                          );
-                        })}
-                      </span>
-                    )}
-                    <span className="hash">{row.commit.shortHash}</span>
-                    <span className="subject">
-                      {row.commit.subject}
-                      {badges.length > 0 && (
-                        <span className="ref-badges">
-                          {badges.map((b) => (
-                            <span key={b} className="ref-badge">
-                              {b}
-                            </span>
-                          ))}
+                    <button
+                      type="button"
+                      className={`commit-main${selected ? " active" : ""}`}
+                      onClick={() => props.onSelectCommit(row.commit.hash)}
+                    >
+                      {props.showCommitGraph !== false && (
+                        <span
+                          className="graph-cell"
+                          style={{ width }}
+                          aria-hidden
+                        >
+                          {Array.from({ length: row.width }, (_, i) => {
+                            const active = row.through.includes(i);
+                            const isNode = i === row.lane;
+                            return (
+                              <span
+                                key={i}
+                                className={[
+                                  "graph-lane",
+                                  active ? "is-active" : "",
+                                  isNode ? "is-node" : "",
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")}
+                                style={{
+                                  left: i * colW + 4,
+                                  ["--lane-color" as string]: laneColor(i),
+                                }}
+                              />
+                            );
+                          })}
                         </span>
                       )}
-                    </span>
-                    <span className="muted small">
-                      {row.commit.date} · {row.commit.author}
-                    </span>
-                  </button>
-                  <span className="row-actions history-actions">
-                    <button
-                      type="button"
-                      className="mini"
-                      disabled={props.busy}
-                      title="把该提交应用到当前分支"
-                      onClick={() => props.onCherryPick(row.commit.hash)}
-                    >
-                      拣选
+                      <span className="commit-body">
+                        <span className="commit-top">
+                          <span className="hash commit-hash">
+                            {row.commit.shortHash}
+                          </span>
+                          {badges.length > 0 && (
+                            <span className="ref-badges">
+                              {badges.map((b) => (
+                                <span key={b} className="ref-badge">
+                                  {b}
+                                </span>
+                              ))}
+                            </span>
+                          )}
+                        </span>
+                        <span className="subject commit-subject">
+                          {row.commit.subject}
+                        </span>
+                        <span className="commit-meta muted small">
+                          <span>{row.commit.author}</span>
+                          <span className="commit-meta-dot" aria-hidden>
+                            ·
+                          </span>
+                          <span>{row.commit.date}</span>
+                        </span>
+                      </span>
                     </button>
-                    <button
-                      type="button"
-                      className="mini"
-                      disabled={props.busy}
-                      title="把当前分支重置到此提交"
-                      onClick={() => props.onResetCommit(row.commit)}
-                    >
-                      重置
-                    </button>
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-          {props.patchLoading ? (
-            <p className="muted pad">加载中…</p>
-          ) : props.selectedHash ? (
-            <DiffLines
-              className="diff patch"
-              text={props.commitPatch}
-              empty="该提交没有可显示的补丁内容"
-            />
-          ) : (
-            <p className="muted pad">选择左侧一条提交，查看改动内容</p>
-          )}
+                    <span className="row-actions history-actions">
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--soft pane-btn--sm"
+                        disabled={props.busy}
+                        title="把该提交应用到当前分支"
+                        onClick={() => props.onCherryPick(row.commit.hash)}
+                      >
+                        拣选
+                      </button>
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--danger pane-btn--sm"
+                        disabled={props.busy}
+                        title="把当前分支重置到此提交"
+                        onClick={() => props.onResetCommit(row.commit)}
+                      >
+                        重置
+                      </button>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+          <div className="history-detail-pane">
+            {props.patchLoading ? (
+              <div className="history-detail-empty muted">加载中…</div>
+            ) : props.selectedHash ? (
+              <>
+                <div className="history-detail-head">
+                  <strong>改动内容</strong>
+                  <span className="hash commit-hash">{props.selectedHash.slice(0, 7)}</span>
+                </div>
+                <DiffLines
+                  className="diff patch history-patch"
+                  text={props.commitPatch}
+                  empty="该提交没有可显示的补丁内容"
+                />
+              </>
+            ) : (
+              <div className="history-detail-empty">
+                <strong>选择一条提交</strong>
+                <p className="muted small">在左侧点选后，这里会显示改动详情</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
       {props.pane === "stash" && (
@@ -349,6 +382,9 @@ export function ExtraPane(props: Props) {
           onRun={props.onRunCommand}
           busy={props.busy}
           embedded
+          wallpaperUrl={props.terminalWallpaperUrl}
+          wallpaperKind={props.terminalWallpaperKind}
+          wallpaperScrim={props.terminalWallpaperScrim}
         />
       )}
       {props.pane === "releases" && (
@@ -362,6 +398,7 @@ export function ExtraPane(props: Props) {
           onNotice={props.onNotice}
           onError={props.onError}
           onOpenAuth={props.onOpenAuth}
+          onConfigureRepo={props.onConfigureReleaseRepo}
           progress={props.updateProgress}
         />
       )}

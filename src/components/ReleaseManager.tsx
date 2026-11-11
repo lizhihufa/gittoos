@@ -16,6 +16,7 @@ type Props = {
   onNotice: (text: string | null) => void;
   onError: (text: string | null) => void;
   onOpenAuth: () => void;
+  onConfigureRepo?: () => void;
   progress: { percent: number; label: string } | null;
 };
 
@@ -54,6 +55,11 @@ export function ReleaseManager(props: Props) {
   const { owner, repo, onError } = props;
 
   const refresh = useCallback(async () => {
+    if (!owner.trim() || !repo.trim()) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     onError(null);
     try {
@@ -70,6 +76,8 @@ export function ReleaseManager(props: Props) {
     void refresh();
   }, [refresh]);
 
+  const hasTarget = Boolean(owner.trim() && repo.trim());
+
   async function pickFile() {
     const selected = await open({
       multiple: false,
@@ -80,6 +88,10 @@ export function ReleaseManager(props: Props) {
   }
 
   async function upload() {
+    if (!hasTarget) {
+      props.onError("未识别到 GitHub 仓库：请配置 origin，或在设置中手动指定 Release 仓库");
+      return;
+    }
     if (!filePath.trim()) {
       props.onError("请先选择要上传的文件");
       return;
@@ -181,16 +193,16 @@ export function ReleaseManager(props: Props) {
         <div className="release-actions" role="group" aria-label="Release 操作">
           <button
             type="button"
-            className="release-btn release-btn-file"
-            disabled={props.busy}
+            className="pane-btn pane-btn--soft"
+            disabled={props.busy || !hasTarget}
             onClick={() => void pickFile()}
           >
             选择文件
           </button>
           <button
             type="button"
-            className="release-btn release-btn-upload"
-            disabled={props.busy || !filePath}
+            className="pane-btn pane-btn--primary"
+            disabled={props.busy || !hasTarget || !filePath}
             onClick={() => void upload()}
             title="上传到 GitHub Release"
           >
@@ -199,15 +211,15 @@ export function ReleaseManager(props: Props) {
           <span className="release-actions-split" aria-hidden />
           <button
             type="button"
-            className="release-btn release-btn-secondary"
-            disabled={props.busy || loading}
+            className="pane-btn pane-btn--ghost"
+            disabled={props.busy || loading || !hasTarget}
             onClick={() => void refresh()}
           >
             {loading ? "刷新中" : "刷新"}
           </button>
           <button
             type="button"
-            className={`release-btn release-btn-secondary${showNotes ? " is-on" : ""}`}
+            className={`pane-btn pane-btn--ghost${showNotes ? " is-on" : ""}`}
             disabled={props.busy}
             onClick={() => setShowNotes((v) => !v)}
           >
@@ -218,12 +230,23 @@ export function ReleaseManager(props: Props) {
 
       <div className="release-toolbar-meta">
         <span className="muted small" title={filePath || undefined}>
-          {filePath
-            ? fileName(filePath)
-            : `目标 ${props.owner}/${props.repo}${
-                props.githubLoggedIn ? "" : " · 上传/删除需登录"
-              }`}
+          {!hasTarget
+            ? "未识别到 GitHub 仓库：请配置 origin，或到设置 → 外观 手动指定"
+            : filePath
+              ? fileName(filePath)
+              : `目标 ${props.owner}/${props.repo}${
+                  props.githubLoggedIn ? "" : " · 上传/删除需登录"
+                }`}
         </span>
+        {!hasTarget && props.onConfigureRepo ? (
+          <button
+            type="button"
+            className="pane-btn pane-btn--soft pane-btn--sm"
+            onClick={props.onConfigureRepo}
+          >
+            去设置
+          </button>
+        ) : null}
       </div>
 
       {showNotes && (
@@ -267,14 +290,14 @@ export function ReleaseManager(props: Props) {
               <span className="row-actions release-row-actions">
                 <button
                   type="button"
-                  className="release-btn release-btn-chip"
+                  className="pane-btn pane-btn--soft pane-btn--sm"
                   onClick={() => void openUrl(rel.htmlUrl)}
                 >
                   打开
                 </button>
                 <button
                   type="button"
-                  className="release-btn release-btn-chip release-btn-danger"
+                  className="pane-btn pane-btn--danger pane-btn--sm"
                   disabled={props.busy || !props.githubLoggedIn}
                   onClick={() => void removeRelease(rel)}
                 >
@@ -294,14 +317,14 @@ export function ReleaseManager(props: Props) {
                   <span className="row-actions release-row-actions">
                     <button
                       type="button"
-                      className="release-btn release-btn-chip"
+                      className="pane-btn pane-btn--soft pane-btn--sm"
                       onClick={() => void openUrl(asset.downloadUrl)}
                     >
                       下载
                     </button>
                     <button
                       type="button"
-                      className="release-btn release-btn-chip release-btn-danger"
+                      className="pane-btn pane-btn--danger pane-btn--sm"
                       disabled={props.busy || !props.githubLoggedIn}
                       onClick={() =>
                         void removeAsset(rel, asset.id, asset.name)
