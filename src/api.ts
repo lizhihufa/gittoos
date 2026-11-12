@@ -8,6 +8,7 @@ import type {
   Identity,
   LargeFileInfo,
   ProviderStatus,
+  HostingRepo,
   PublishResult,
   ReleaseItem,
   RemoteBranchInfo,
@@ -95,8 +96,32 @@ export const api = {
   fetch: (path: string) => invoke<string>("git_fetch", { path }),
   pull: (path: string, allowUnrelated = false) =>
     invoke<string>("git_pull", { path, allowUnrelated }),
-  push: (path: string, force = false) =>
-    invoke<string>("git_push", { path, force }),
+  push: (path: string, force = false, syncGitee = false) =>
+    invoke<string>("git_push", { path, force, syncGitee }),
+  createHostingRepo: (
+    provider: AuthProvider,
+    name: string,
+    privateRepo = false,
+    description = "",
+  ) =>
+    invoke<HostingRepo>("create_hosting_repo", {
+      provider,
+      name,
+      private: privateRepo,
+      description,
+    }),
+  publishRemotes: (
+    path: string,
+    name: string,
+    opts: { toGithub?: boolean; toGitee?: boolean; privateRepo?: boolean } = {},
+  ) =>
+    invoke<string>("publish_remotes", {
+      path,
+      name,
+      toGithub: opts.toGithub ?? false,
+      toGitee: opts.toGitee ?? false,
+      private: opts.privateRepo ?? false,
+    }),
   getCommits: (path: string) => invoke<CommitInfo[]>("get_commits", { path }),
   getCommitPatch: (path: string, hash: string) =>
     invoke<string>("get_commit_patch", { path, hash }),

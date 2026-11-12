@@ -202,6 +202,18 @@ export default function App() {
   const [entering, setEntering] = useState(false);
   const [syncingCache, setSyncingCache] = useState(false);
   const [syncDialog, setSyncDialog] = useState<SyncConflictKind | null>(null);
+  const [pushMenuOpen, setPushMenuOpen] = useState(false);
+  const [publishDialog, setPublishDialog] = useState<{
+    path: string;
+    name: string;
+  } | null>(null);
+  const [publishDraft, setPublishDraft] = useState({
+    name: "",
+    toGithub: true,
+    toGitee: true,
+    privateRepo: false,
+  });
+  const pendingPublishRef = useRef<string | null>(null);
   const [resetTarget, setResetTarget] = useState<CommitInfo | null>(null);
   const [largeCommit, setLargeCommit] = useState<{
     mode: "commit" | "amend";
@@ -649,6 +661,9 @@ export default function App() {
             fromCache: false,
           });
           await api.initRepo(path);
+          const baseName =
+            path.split(/[/\\]/).filter(Boolean).pop()?.trim() || "repo";
+          pendingPublishRef.current = baseName;
         }
 
         setSelected(null);
@@ -743,7 +758,19 @@ export default function App() {
         setEntering(true);
         busyRef.current = false;
         setBusy(false);
+        if (pendingPublishRef.current) {
+          const name = pendingPublishRef.current;
+          pendingPublishRef.current = null;
+          setPublishDraft({
+            name,
+            toGithub: true,
+            toGitee: true,
+            privateRepo: false,
+          });
+          setPublishDialog({ path, name });
+        }
       } catch (e) {
+        pendingPublishRef.current = null;
         setBoot(null);
         setError(failureLine(e));
         busyRef.current = false;
@@ -1279,6 +1306,18 @@ export default function App() {
   }, [status?.operation, conflictFiles]);
 
   useEffect(() => {
+    if (!pushMenuOpen) return;
+    const onPointer = () => setPushMenuOpen(false);
+    const timer = window.setTimeout(() => {
+      window.addEventListener("click", onPointer);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("click", onPointer);
+    };
+  }, [pushMenuOpen]);
+
+  useEffect(() => {
     if (!repoPath) return;
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -1705,6 +1744,106 @@ export default function App() {
           <div className="modal-actions">
             <button type="button" disabled={busy} onClick={() => setResetTarget(null)}>
               取消
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderPublishDialog() {
+    if (!publishDialog) return null;
+    const ghOk = Boolean(accounts?.github.loggedIn);
+    const geOk = Boolean(accounts?.gitee.loggedIn);
+    return (
+      <div className="modal-mask" onClick={() => setPublishDialog(null)}>
+        <div
+          className="modal sync-modal"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+        >
+          <h3>创建远程仓库</h3>
+          <p className="muted">
+            本地已初始化。可同时在 GitHub / Gitee 建空仓库并写入远程地址（需已登录）。
+          </p>
+          <label className="field-block">
+            <span>仓库名</span>
+            <input
+              value={publishDraft.name}
+              onChange={(e) =>
+                setPublishDraft((d) => ({ ...d, name: e.target.value }))
+              }
+              disabled={busy}
+              spellCheck={false}
+            />
+          </label>
+          <div className="publish-checks">
+            <label>
+              <input
+                type="checkbox"
+                checked={publishDraft.toGithub}
+                disabled={busy || !ghOk}
+                onChange={(e) =>
+                  setPublishDraft((d) => ({ ...d, toGithub: e.target.checked }))
+                }
+              />
+              GitHub{ghOk ? "" : "（未登录）"}
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={publishDraft.toGitee}
+                disabled={busy || !geOk}
+                onChange={(e) =>
+                  setPublishDraft((d) => ({ ...d, toGitee: e.target.checked }))
+                }
+              />
+              Gitee{geOk ? "" : "（未登录）"}
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={publishDraft.privateRepo}
+                disabled={busy}
+                onChange={(e) =>
+                  setPublishDraft((d) => ({
+                    ...d,
+                    privateRepo: e.target.checked,
+                  }))
+                }
+              />
+              私有仓库
+            </label>
+          </div>
+          <div className="modal-actions">
+            <button type="button" disabled={busy} onClick={() => setPublishDialog(null)}>
+              稍后
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={
+                busy ||
+                !publishDraft.name.trim() ||
+                (!publishDraft.toGithub && !publishDraft.toGitee)
+              }
+              onClick={() => {
+                const target = publishDialog.path;
+                const name = publishDraft.name.trim();
+                setPublishDialog(null);
+                void runAction(
+                  () =>
+                    api.publishRemotes(target, name, {
+                      toGithub: publishDraft.toGithub && ghOk,
+                      toGitee: publishDraft.toGitee && geOk,
+                      privateRepo: publishDraft.privateRepo,
+                    }),
+                  "正在创建远程仓库…",
+                );
+              }}
+            >
+              创建
             </button>
           </div>
         </div>
@@ -3352,15 +3491,61 @@ export default function App() {
           >
               {busy ? "…" : behind > 0 ? `拉取 ↓${behind}` : "拉取"}
           </button>
-          <button
-            type="button"
+          <div className={`push-split${pushMenuOpen ? " is-open" : ""}`}>
+            <button
+              type="button"
               className={ahead > 0 && behind === 0 ? "primary" : undefined}
-            disabled={busy}
-              title="把本地提交上传到远程（Ctrl+Shift+P）"
-            onClick={() => runAction(() => api.push(repoPath), "正在推送…")}
-          >
+              disabled={busy}
+              title="推送到默认远程 origin（Ctrl+Shift+P）"
+              onClick={() => {
+                setPushMenuOpen(false);
+                void runAction(() => api.push(repoPath), "正在推送…");
+              }}
+            >
               {busy ? "…" : ahead > 0 ? `推送 ↑${ahead}` : "推送"}
-          </button>
+            </button>
+            <button
+              type="button"
+              className={`push-caret${ahead > 0 && behind === 0 ? " primary" : ""}`}
+              disabled={busy}
+              title="选择推送方式"
+              aria-expanded={pushMenuOpen}
+              onClick={() => setPushMenuOpen((v) => !v)}
+            >
+              ▾
+            </button>
+            {pushMenuOpen && (
+              <div className="push-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={busy}
+                  onClick={() => {
+                    setPushMenuOpen(false);
+                    void runAction(() => api.push(repoPath), "正在推送…");
+                  }}
+                >
+                  <strong>直接推送</strong>
+                  <span>只推送到 origin / 默认远程</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={busy}
+                  onClick={() => {
+                    setPushMenuOpen(false);
+                    void runAction(
+                      () => api.push(repoPath, false, true),
+                      "正在同步推送 Gitee…",
+                    );
+                  }}
+                >
+                  <strong>同步 Gitee 推送</strong>
+                  <span>先推 origin，再推/创建 Gitee 镜像</span>
+                </button>
+              </div>
+            )}
+          </div>
           </div>
         </div>
       </header>
@@ -3475,7 +3660,26 @@ export default function App() {
       )}
       {identitySaved && remotes.length === 0 && (
         <div className="hint-box">
-          还没有远程地址。可在设置里填写后点「保存」，然后才能拉取/推送。
+          还没有远程地址。可在设置里填写，或
+          <button
+            type="button"
+            className="linkish"
+            onClick={() => {
+              const name =
+                repoPath?.split(/[/\\]/).filter(Boolean).pop()?.trim() ||
+                "repo";
+              setPublishDraft({
+                name,
+                toGithub: true,
+                toGitee: true,
+                privateRepo: false,
+              });
+              setPublishDialog({ path: repoPath!, name });
+            }}
+          >
+            创建远程仓库
+          </button>
+          （GitHub / Gitee）。
         </div>
       )}
       {status?.operation === "merge" ||
@@ -3595,6 +3799,7 @@ export default function App() {
       {showSettings && renderSettings()}
       {showHelp && renderHelp()}
       {showAbout && renderAbout()}
+      {renderPublishDialog()}
       {renderSyncDialog()}
       {renderResetDialog()}
       {renderLargeCommitDialog()}

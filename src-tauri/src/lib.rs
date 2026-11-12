@@ -9,15 +9,16 @@ use git::{
     auth_login_token, auth_logout, auth_manager_login as do_auth_manager_login, auth_save_config,
     auth_ssh_generate, auth_ssh_status, auth_ssh_test, auth_switch_account, checkout_branch,
     checkout_remote_branch, cherry_pick, clone_repository, commit, commit_patch, continue_operation,
-    create_branch, create_tag, delete_branch, delete_remote_branch, delete_remote_tag, delete_tag,
-    discard_paths, ensure_git, fetch, file_diff, git_info, init_repository, is_repository,
-    list_branches, list_commits, list_remote_branches, list_remotes, list_stashes, list_tags,
-    merge_branch, pull, push, push_all_tags, push_tag, read_identity, rebase_branch, repo_status,
+    create_branch, create_or_get_hosting_repo, create_tag, delete_branch, delete_remote_branch,
+    delete_remote_tag, delete_tag, discard_paths, ensure_git, fetch, file_diff, git_info,
+    init_repository, is_repository, list_branches, list_commits, list_remote_branches,
+    list_remotes, list_stashes, list_tags, merge_branch, publish_hosting_remotes, pull,
+    push_all_tags, push_tag, push_with_options, read_identity, rebase_branch, repo_status,
     repo_status_light_nonblocking, reset_to_commit, run_shell, set_app_handle, set_remote_url,
     stage_paths, staged_large_files, stash_drop, stash_pop, stash_push, undo_last_commit,
     unstage_paths, with_git_quiet, write_identity, AuthAccounts, BranchInfo, CommitInfo,
-    GitBinary, GitError, GitInfo, GithubDevicePollResult, GithubDeviceStart, Identity,
-    LargeFileInfo, OauthBegin, ProviderStatus, RemoteBranchInfo, RemoteInfo, RepoCore,
+    GitBinary, GitError, GitInfo, GithubDevicePollResult, GithubDeviceStart, HostingRepo,
+    Identity, LargeFileInfo, OauthBegin, ProviderStatus, RemoteBranchInfo, RemoteInfo, RepoCore,
     RepoExtras, RepoSnapshot, RepoStatus, SshStatus, SshTestResult, StashInfo, TagInfo,
 };
 use std::path::{Path, PathBuf};
@@ -555,10 +556,46 @@ async fn git_push(
     state: State<'_, AppState>,
     path: String,
     force: Option<bool>,
+    sync_gitee: Option<bool>,
 ) -> Result<String, String> {
     let repo = repo_path(&path)?;
     let force = force.unwrap_or(false);
-    with_git_async(&state, move |git| push(git, &repo, force)).await
+    let sync_gitee = sync_gitee.unwrap_or(false);
+    with_git_async(&state, move |git| {
+        push_with_options(git, &repo, force, sync_gitee)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn create_hosting_repo(
+    provider: String,
+    name: String,
+    private: Option<bool>,
+    description: Option<String>,
+) -> Result<HostingRepo, String> {
+    let private = private.unwrap_or(false);
+    let description = description.unwrap_or_default();
+    create_or_get_hosting_repo(&provider, &name, private, &description).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn publish_remotes(
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+    to_github: Option<bool>,
+    to_gitee: Option<bool>,
+    private: Option<bool>,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    let to_github = to_github.unwrap_or(false);
+    let to_gitee = to_gitee.unwrap_or(false);
+    let private = private.unwrap_or(false);
+    with_git_async(&state, move |git| {
+        publish_hosting_remotes(git, &repo, &name, to_github, to_gitee, private)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -917,6 +954,8 @@ pub fn run() {
             git_fetch,
             git_pull,
             git_push,
+            create_hosting_repo,
+            publish_remotes,
             get_commits,
             get_commit_patch,
             get_stashes,

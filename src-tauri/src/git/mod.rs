@@ -6,9 +6,9 @@ mod types;
 pub use auth::{
     auth_accounts, auth_browser_begin, auth_browser_finish, auth_device_poll, auth_device_start,
     auth_ensure_credentials, auth_login_token, auth_logout, auth_manager_login, auth_save_config,
-    auth_ssh_generate, auth_ssh_status, auth_ssh_test, auth_switch_account, github_access_token,
-    AuthAccounts, GithubDevicePollResult, GithubDeviceStart, OauthBegin, ProviderStatus, SshStatus,
-    SshTestResult,
+    auth_ssh_generate, auth_ssh_status, auth_ssh_test, auth_switch_account,
+    create_or_get_hosting_repo, github_access_token, AuthAccounts, GithubDevicePollResult,
+    GithubDeviceStart, HostingRepo, OauthBegin, ProviderStatus, SshStatus, SshTestResult,
 };
 pub use runner::{
     ensure_git, git_info, local_proxy, run_shell, set_app_handle, with_git_quiet, GitBinary,
@@ -1175,7 +1175,13 @@ fn has_commits(git: &GitBinary, repo: &Path) -> Result<bool, GitError> {
     }
 }
 
-pub fn push(git: &GitBinary, repo: &Path, force: bool) -> Result<String, GitError> {
+/// sync_gitee=true：先推 origin（或默认远程），再确保并推送到 gitee 远程。
+pub fn push_with_options(
+    git: &GitBinary,
+    repo: &Path,
+    force: bool,
+    sync_gitee: bool,
+) -> Result<String, GitError> {
     if !has_commits(git, repo)? {
         return Err(GitError::InvalidInput(
             "还没有任何提交。请先在左侧写说明并点「提交」，再推送。".to_string(),
@@ -1186,8 +1192,39 @@ pub fn push(git: &GitBinary, repo: &Path, force: bool) -> Result<String, GitErro
         GitError::InvalidInput("当前不在分支上，无法推送。请先提交一次。".to_string())
     })?;
 
+    let primary = push_one_remote(git, repo, &remote, &branch, force)?;
+    if !sync_gitee {
+        return Ok(primary);
+    }
+
+    let gitee_url = ensure_gitee_remote(git, repo)?;
+    // 若默认远程本身就是 gitee，避免重复推送
+    let remotes = list_remotes(git, repo)?;
+    let origin_is_gitee = remotes
+        .iter()
+        .find(|r| r.name == remote)
+        .map(|r| r.url.to_ascii_lowercase().contains("gitee.com"))
+        .unwrap_or(false);
+    if origin_is_gitee {
+        return Ok(format!(
+            "{primary}\n默认远程已是 Gitee，无需再同步。\n{gitee_url}"
+        ));
+    }
+
+    let secondary = push_one_remote(git, repo, "gitee", &branch, force)?;
+    Ok(format!(
+        "{primary}\n——\n已同步推送到 Gitee（gitee）\n{secondary}"
+    ))
+}
+
+fn push_one_remote(
+    git: &GitBinary,
+    repo: &Path,
+    remote: &str,
+    branch: &str,
+    force: bool,
+) -> Result<String, GitError> {
     let result = if force {
-        // --force-with-lease refuses to overwrite if remote moved unexpectedly.
         run_git_timeout(
             git,
             repo,
@@ -1196,18 +1233,19 @@ pub fn push(git: &GitBinary, repo: &Path, force: bool) -> Result<String, GitErro
                 "--progress",
                 "--force-with-lease",
                 "-u",
-                &remote,
-                &branch,
+                remote,
+                branch,
             ],
             180,
         )
-    } else if upstream_of_head(git, repo)?.is_some() {
+    } else if remote == "origin" && upstream_of_head(git, repo)?.is_some() {
+        // 仅默认推送可省略远端名；指定 gitee 时必须带远端
         run_git_timeout(git, repo, &["push", "--progress"], 180)
     } else {
         run_git_timeout(
             git,
             repo,
-            &["push", "--progress", "-u", &remote, &branch],
+            &["push", "--progress", "-u", remote, branch],
             180,
         )
     };
@@ -1231,15 +1269,109 @@ pub fn push(git: &GitBinary, repo: &Path, force: bool) -> Result<String, GitErro
             } else if text.to_ascii_lowercase().contains("rejected")
                 || text.contains("failed to push")
             {
-                Err(GitError::InvalidInput(format!(
-                    "推送失败。\n{text}"
-                )))
+                Err(GitError::InvalidInput(format!("推送失败。\n{text}")))
             } else {
-                Err(GitError::CommandFailed { code, stderr, stdout })
+                Err(GitError::CommandFailed {
+                    code,
+                    stderr,
+                    stdout,
+                })
             }
         }
         Err(err) => Err(err),
     }
+}
+
+/// 确保存在名为 gitee 的远程；没有则按 origin 仓库名在 Gitee 建仓并添加。
+fn ensure_gitee_remote(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
+    let remotes = list_remotes(git, repo)?;
+    if let Some(existing) = remotes.iter().find(|r| r.name == "gitee") {
+        return Ok(existing.url.clone());
+    }
+    let repo_name = infer_repo_name(git, repo)?;
+    let created = create_or_get_hosting_repo("gitee", &repo_name, false, "")?;
+    set_remote_url(git, repo, "gitee", &created.clone_url)?;
+    Ok(created.clone_url)
+}
+
+fn infer_repo_name(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
+    if let Ok(remotes) = list_remotes(git, repo) {
+        if let Some(origin) = remotes.iter().find(|r| r.name == "origin").or(remotes.first())
+        {
+            if let Some(name) = repo_name_from_url(&origin.url) {
+                return Ok(name);
+            }
+        }
+    }
+    repo.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| GitError::InvalidInput("无法推断仓库名，请先设置远程地址".to_string()))
+}
+
+fn repo_name_from_url(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    let name = trimmed.rsplit(['/', ':']).next()?;
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// 在 GitHub / Gitee 创建远程空仓，并写入本地 remote（origin / gitee）。
+pub fn publish_hosting_remotes(
+    git: &GitBinary,
+    repo: &Path,
+    name: &str,
+    to_github: bool,
+    to_gitee: bool,
+    private: bool,
+) -> Result<String, GitError> {
+    if !to_github && !to_gitee {
+        return Err(GitError::InvalidInput(
+            "请至少选择 GitHub 或 Gitee 之一".to_string(),
+        ));
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::InvalidInput("请填写仓库名称".to_string()));
+    }
+    let folder = repo
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    let desc = format!("{folder}（由青枝创建）");
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut github_url = None;
+    let mut gitee_url = None;
+
+    if to_github {
+        let created = create_or_get_hosting_repo("github", name, private, &desc)?;
+        set_remote_url(git, repo, "origin", &created.clone_url)?;
+        github_url = Some(created.clone_url.clone());
+        lines.push(format!(
+            "GitHub：{}（{}）",
+            created.full_name,
+            if created.created { "已创建" } else { "已存在" }
+        ));
+    }
+    if to_gitee {
+        let created = create_or_get_hosting_repo("gitee", name, private, &desc)?;
+        let remote_name = if to_github { "gitee" } else { "origin" };
+        set_remote_url(git, repo, remote_name, &created.clone_url)?;
+        gitee_url = Some(created.clone_url.clone());
+        lines.push(format!(
+            "Gitee：{} → 远程「{remote_name}」（{}）",
+            created.full_name,
+            if created.created { "已创建" } else { "已存在" }
+        ));
+    }
+
+    let _ = (github_url, gitee_url);
+    Ok(lines.join("\n"))
 }
 
 fn is_non_fast_forward_push(text: &str) -> bool {

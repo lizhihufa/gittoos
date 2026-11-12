@@ -977,10 +977,271 @@ fn refresh_provider(provider: Provider) -> Result<ProviderStatus, GitError> {
 
 /// Active GitHub token for Releases API (upload). Empty if not logged in.
 pub fn github_access_token() -> Result<Option<String>, GitError> {
+    provider_access_token(Provider::Github)
+}
+
+pub fn provider_access_token(provider: Provider) -> Result<Option<String>, GitError> {
     let store = load_store()?;
-    Ok(active_account(&store.github)
+    Ok(active_account(provider_slot(&store, provider))
         .map(|a| a.token.trim().to_string())
         .filter(|t| !t.is_empty()))
+}
+
+pub fn provider_login_name(provider: Provider) -> Result<Option<String>, GitError> {
+    let store = load_store()?;
+    Ok(active_account(provider_slot(&store, provider))
+        .map(|a| a.login.trim().to_string())
+        .filter(|t| !t.is_empty()))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostingRepo {
+    pub provider: String,
+    pub name: String,
+    pub full_name: String,
+    pub html_url: String,
+    pub clone_url: String,
+    /// false = 仓库已存在，仅返回地址
+    pub created: bool,
+}
+
+/// 在 GitHub / Gitee 上创建空仓库；若已存在则直接返回地址。
+pub fn create_or_get_hosting_repo(
+    provider_raw: &str,
+    name: &str,
+    private: bool,
+    description: &str,
+) -> Result<HostingRepo, GitError> {
+    let provider = Provider::parse(provider_raw)?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::InvalidInput("请填写仓库名称".to_string()));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(GitError::InvalidInput(
+            "仓库名仅支持字母、数字、短横线、下划线和点".to_string(),
+        ));
+    }
+    let token = provider_access_token(provider)?.ok_or_else(|| {
+        GitError::InvalidInput(format!(
+            "尚未登录 {}，请先在设置里登录后再创建远程仓库",
+            provider.label()
+        ))
+    })?;
+    let login = provider_login_name(provider)?.unwrap_or_default();
+    let agent = http_agent();
+    let desc = description.trim();
+
+    // 先查是否已存在
+    let existing = match provider {
+        Provider::Github => {
+            if login.is_empty() {
+                None
+            } else {
+                let url = format!("https://api.github.com/repos/{login}/{name}");
+                match agent
+                    .get(&url)
+                    .set("Accept", "application/vnd.github+json")
+                    .set("Authorization", &format!("Bearer {token}"))
+                    .set("User-Agent", "qingzhi")
+                    .set("X-GitHub-Api-Version", "2022-11-28")
+                    .call()
+                {
+                    Ok(resp) if (200..300).contains(&resp.status()) => {
+                        let body: serde_json::Value = resp
+                            .into_json()
+                            .map_err(|e| GitError::InvalidInput(e.to_string()))?;
+                        Some(HostingRepo {
+                            provider: provider.as_str().to_string(),
+                            name: name.to_string(),
+                            full_name: body
+                                .get("full_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&format!("{login}/{name}"))
+                                .to_string(),
+                            html_url: body
+                                .get("html_url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            clone_url: body
+                                .get("clone_url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&format!(
+                                    "https://github.com/{login}/{name}.git"
+                                ))
+                                .to_string(),
+                            created: false,
+                        })
+                    }
+                    _ => None,
+                }
+            }
+        }
+        Provider::Gitee => {
+            if login.is_empty() {
+                None
+            } else {
+                let url = format!("https://gitee.com/api/v5/repos/{login}/{name}");
+                match agent
+                    .get(&url)
+                    .set("User-Agent", "qingzhi")
+                    .query("access_token", &token)
+                    .call()
+                {
+                    Ok(resp) if (200..300).contains(&resp.status()) => {
+                        let body: serde_json::Value = resp
+                            .into_json()
+                            .map_err(|e| GitError::InvalidInput(e.to_string()))?;
+                        Some(HostingRepo {
+                            provider: provider.as_str().to_string(),
+                            name: name.to_string(),
+                            full_name: body
+                                .get("full_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&format!("{login}/{name}"))
+                                .to_string(),
+                            html_url: body
+                                .get("html_url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            clone_url: body
+                                .get("html_url")
+                                .and_then(|v| v.as_str())
+                                .map(|u| format!("{u}.git"))
+                                .unwrap_or_else(|| {
+                                    format!("https://gitee.com/{login}/{name}.git")
+                                }),
+                            created: false,
+                        })
+                    }
+                    _ => None,
+                }
+            }
+        }
+    };
+    if let Some(repo) = existing {
+        emit_terminal(
+            "info",
+            &format!("{} 仓库已存在：{}", provider.label(), repo.full_name),
+        );
+        return Ok(repo);
+    }
+
+    emit_terminal(
+        "info",
+        &format!(
+            "正在 {} 创建仓库 {}（{}）…",
+            provider.label(),
+            name,
+            if private { "私有" } else { "公开" }
+        ),
+    );
+
+    match provider {
+        Provider::Github => {
+            let mut body = serde_json::json!({
+                "name": name,
+                "private": private,
+                "auto_init": false,
+            });
+            if !desc.is_empty() {
+                body["description"] = serde_json::Value::String(desc.to_string());
+            }
+            let resp = agent
+                .post("https://api.github.com/user/repos")
+                .set("Accept", "application/vnd.github+json")
+                .set("Authorization", &format!("Bearer {token}"))
+                .set("User-Agent", "qingzhi")
+                .set("X-GitHub-Api-Version", "2022-11-28")
+                .send_json(&body)
+                .map_err(|e| GitError::InvalidInput(format!("创建 GitHub 仓库失败：{e}")))?;
+            if !(200..300).contains(&resp.status()) {
+                let status = resp.status();
+                let text = resp.into_string().unwrap_or_default();
+                return Err(GitError::InvalidInput(format!(
+                    "创建 GitHub 仓库失败（HTTP {status}）：{text}"
+                )));
+            }
+            let body: serde_json::Value = resp
+                .into_json()
+                .map_err(|e| GitError::InvalidInput(e.to_string()))?;
+            let full_name = body
+                .get("full_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(name)
+                .to_string();
+            Ok(HostingRepo {
+                provider: "github".into(),
+                name: name.to_string(),
+                full_name: full_name.clone(),
+                html_url: body
+                    .get("html_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                clone_url: body
+                    .get("clone_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&format!("https://github.com/{full_name}.git"))
+                    .to_string(),
+                created: true,
+            })
+        }
+        Provider::Gitee => {
+            let mut form: Vec<(&str, &str)> = vec![
+                ("access_token", token.as_str()),
+                ("name", name),
+                ("private", if private { "true" } else { "false" }),
+                ("auto_init", "false"),
+            ];
+            if !desc.is_empty() {
+                form.push(("description", desc));
+            }
+            let resp = agent
+                .post("https://gitee.com/api/v5/user/repos")
+                .set("User-Agent", "qingzhi")
+                .send_form(&form)
+                .map_err(|e| GitError::InvalidInput(format!("创建 Gitee 仓库失败：{e}")))?;
+            if !(200..300).contains(&resp.status()) {
+                let status = resp.status();
+                let text = resp.into_string().unwrap_or_default();
+                return Err(GitError::InvalidInput(format!(
+                    "创建 Gitee 仓库失败（HTTP {status}）：{text}"
+                )));
+            }
+            let body: serde_json::Value = resp
+                .into_json()
+                .map_err(|e| GitError::InvalidInput(e.to_string()))?;
+            let full_name = body
+                .get("full_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(name)
+                .to_string();
+            let html_url = body
+                .get("html_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(HostingRepo {
+                provider: "gitee".into(),
+                name: name.to_string(),
+                full_name: full_name.clone(),
+                html_url: html_url.clone(),
+                clone_url: if html_url.is_empty() {
+                    format!("https://gitee.com/{full_name}.git")
+                } else {
+                    format!("{html_url}.git")
+                },
+                created: true,
+            })
+        }
+    }
 }
 
 pub fn auth_accounts() -> Result<AuthAccounts, GitError> {

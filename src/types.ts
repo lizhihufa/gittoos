@@ -196,6 +196,15 @@ export interface PublishResult {
   assetName: string;
 }
 
+export interface HostingRepo {
+  provider: string;
+  name: string;
+  fullName: string;
+  htmlUrl: string;
+  cloneUrl: string;
+  created: boolean;
+}
+
 export interface ReleaseAssetInfo {
   id: number;
   name: string;
