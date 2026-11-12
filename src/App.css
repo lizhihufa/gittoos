@@ -902,6 +902,7 @@ html[data-scheme="dark"] .hunk-toolbar {
 }
 
 .push-split {
+  position: relative;
   display: inline-flex;
   align-items: stretch;
 }
@@ -912,8 +913,9 @@ html[data-scheme="dark"] .hunk-toolbar {
 }
 
 .push-caret {
-  padding-left: 0.45rem;
-  padding-right: 0.55rem;
+  min-width: 1.6rem;
+  padding-left: 0.25rem;
+  padding-right: 0.35rem;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   border-left: none;
@@ -924,6 +926,53 @@ html[data-scheme="dark"] .hunk-toolbar {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+}
+
+.push-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 80;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+}
+
+.push-menu button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  text-align: left;
+  padding: 0.45rem 0.55rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  width: 100%;
+}
+
+.push-menu button:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.push-menu button.is-active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+}
+
+.push-menu button strong {
+  font-size: 13px;
+}
+
+.push-menu button span {
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .publish-checks {
@@ -962,6 +1011,12 @@ html[data-scheme="dark"] .hunk-toolbar {
   background: #fff;
 }
 
+.sync-group:has(.push-split.is-open) {
+  overflow: visible;
+  position: relative;
+  z-index: 50;
+}
+
 .sync-group > button {
   border: none;
   border-radius: 0;
@@ -992,6 +1047,12 @@ html[data-scheme="dark"] .hunk-toolbar {
 .sync-group > button:disabled,
 .sync-group .push-split > button:disabled {
   opacity: 0.55;
+}
+
+.sync-group .push-menu button {
+  border: none;
+  border-right: none;
+  width: 100%;
 }
 
 .sync-badge {

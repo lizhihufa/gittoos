@@ -202,6 +202,9 @@ export default function App() {
   const [entering, setEntering] = useState(false);
   const [syncingCache, setSyncingCache] = useState(false);
   const [syncDialog, setSyncDialog] = useState<SyncConflictKind | null>(null);
+  /** 推送主按钮模式：直接推送，或同步到另一平台 */
+  const [pushMode, setPushMode] = useState<"direct" | "mirror">("direct");
+  const [pushMenuOpen, setPushMenuOpen] = useState(false);
   const [publishDialog, setPublishDialog] = useState<{
     path: string;
     name: string;
@@ -1293,6 +1296,42 @@ export default function App() {
   const hasChanges = staged.length + unstaged.length > 0;
   const ahead = status?.ahead ?? 0;
   const behind = status?.behind ?? 0;
+  const primaryHost = useMemo((): "github" | "gitee" | null => {
+    const origin =
+      remotes.find((r) => r.name === "origin") ?? remotes[0] ?? null;
+    if (!origin) return null;
+    const url = origin.url.toLowerCase();
+    if (url.includes("github.com")) return "github";
+    if (url.includes("gitee.com")) return "gitee";
+    return null;
+  }, [remotes]);
+  const mirrorTarget =
+    primaryHost === "github"
+      ? ("gitee" as const)
+      : primaryHost === "gitee"
+        ? ("github" as const)
+        : null;
+  const mirrorLabel =
+    mirrorTarget === "gitee"
+      ? "推送到 Gitee"
+      : mirrorTarget === "github"
+        ? "推送到 GitHub"
+        : null;
+
+  useEffect(() => {
+    if (!mirrorTarget && pushMode === "mirror") setPushMode("direct");
+  }, [mirrorTarget, pushMode]);
+
+  useEffect(() => {
+    if (!pushMenuOpen) return;
+    const onPointer = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".push-split")) return;
+      setPushMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onPointer);
+    return () => window.removeEventListener("mousedown", onPointer);
+  }, [pushMenuOpen]);
 
   useEffect(() => {
     if (!status) return;
@@ -1360,12 +1399,29 @@ export default function App() {
         void runAction(() => api.pull(repoPath), "正在拉取…");
       } else if ((e.key === "p" || e.key === "P") && e.shiftKey) {
         e.preventDefault();
-        void runAction(() => api.push(repoPath), "正在推送…");
+        if (pushMode === "mirror" && mirrorTarget) {
+          void runAction(
+            () => api.push(repoPath, false, mirrorTarget),
+            mirrorTarget === "gitee"
+              ? "正在同步推送 Gitee…"
+              : "正在同步推送 GitHub…",
+          );
+        } else {
+          void runAction(() => api.push(repoPath), "正在推送…");
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [repoPath, refresh, staged.length, unstaged, identitySaved]);
+  }, [
+    repoPath,
+    refresh,
+    staged.length,
+    unstaged,
+    identitySaved,
+    pushMode,
+    mirrorTarget,
+  ]);
 
   function isNetworkLabel(label?: string) {
     return /拉取|推送|获取|克隆|同步/.test(label ?? "");
@@ -3489,32 +3545,90 @@ export default function App() {
           >
               {busy ? "…" : behind > 0 ? `拉取 ↓${behind}` : "拉取"}
           </button>
-          <div className="push-split">
+          <div className={`push-split${pushMenuOpen ? " is-open" : ""}`}>
             <button
               type="button"
               className={ahead > 0 && behind === 0 ? "primary" : undefined}
               disabled={busy}
-              title="直接推送到默认远程 origin（Ctrl+Shift+P）"
+              title={
+                pushMode === "mirror" && mirrorLabel
+                  ? `${mirrorLabel}（先推默认远程，再同步；Ctrl+Shift+P）`
+                  : "直接推送到默认远程（Ctrl+Shift+P）"
+              }
               onClick={() => {
-                void runAction(() => api.push(repoPath), "正在推送…");
+                setPushMenuOpen(false);
+                if (pushMode === "mirror" && mirrorTarget) {
+                  void runAction(
+                    () => api.push(repoPath, false, mirrorTarget),
+                    mirrorTarget === "gitee"
+                      ? "正在同步推送 Gitee…"
+                      : "正在同步推送 GitHub…",
+                  );
+                } else {
+                  void runAction(() => api.push(repoPath), "正在推送…");
+                }
               }}
             >
-              {busy ? "…" : ahead > 0 ? `推送 ↑${ahead}` : "推送"}
+              {busy
+                ? "…"
+                : pushMode === "mirror" && mirrorLabel
+                  ? ahead > 0
+                    ? `${mirrorLabel} ↑${ahead}`
+                    : mirrorLabel
+                  : ahead > 0
+                    ? `推送 ↑${ahead}`
+                    : "推送"}
             </button>
             <button
               type="button"
               className={`push-caret${ahead > 0 && behind === 0 ? " primary" : ""}`}
               disabled={busy}
-              title="同步推送到 Gitee（先推 origin，再推/创建 Gitee）"
-              onClick={() => {
-                void runAction(
-                  () => api.push(repoPath, false, true),
-                  "正在同步推送 Gitee…",
-                );
+              title="选择推送方式"
+              aria-expanded={pushMenuOpen}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                setPushMenuOpen((v) => !v);
               }}
             >
-              码云
+              ▾
             </button>
+            {pushMenuOpen && (
+              <div
+                className="push-menu"
+                role="menu"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={pushMode === "direct" ? "is-active" : undefined}
+                  disabled={busy}
+                  onClick={() => {
+                    setPushMode("direct");
+                    setPushMenuOpen(false);
+                  }}
+                >
+                  <strong>直接推送</strong>
+                  <span>只推送到默认远程</span>
+                </button>
+                {mirrorLabel && mirrorTarget && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={pushMode === "mirror" ? "is-active" : undefined}
+                    disabled={busy}
+                    onClick={() => {
+                      setPushMode("mirror");
+                      setPushMenuOpen(false);
+                    }}
+                  >
+                    <strong>{mirrorLabel}</strong>
+                    <span>先推默认远程，再同步到另一平台</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           </div>
         </div>

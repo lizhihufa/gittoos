@@ -96,8 +96,11 @@ export const api = {
   fetch: (path: string) => invoke<string>("git_fetch", { path }),
   pull: (path: string, allowUnrelated = false) =>
     invoke<string>("git_pull", { path, allowUnrelated }),
-  push: (path: string, force = false, syncGitee = false) =>
-    invoke<string>("git_push", { path, force, syncGitee }),
+  push: (
+    path: string,
+    force = false,
+    syncMirror: "gitee" | "github" | null = null,
+  ) => invoke<string>("git_push", { path, force, syncMirror }),
   createHostingRepo: (
     provider: AuthProvider,
     name: string,

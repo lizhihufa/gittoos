@@ -556,13 +556,17 @@ async fn git_push(
     state: State<'_, AppState>,
     path: String,
     force: Option<bool>,
-    sync_gitee: Option<bool>,
+    sync_mirror: Option<String>,
 ) -> Result<String, String> {
     let repo = repo_path(&path)?;
     let force = force.unwrap_or(false);
-    let sync_gitee = sync_gitee.unwrap_or(false);
+    let sync_mirror = sync_mirror
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     with_git_async(&state, move |git| {
-        push_with_options(git, &repo, force, sync_gitee)
+        push_with_options(git, &repo, force, sync_mirror.as_deref())
     })
     .await
 }

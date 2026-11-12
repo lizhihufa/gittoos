@@ -1175,12 +1175,12 @@ fn has_commits(git: &GitBinary, repo: &Path) -> Result<bool, GitError> {
     }
 }
 
-/// sync_gitee=true：先推 origin（或默认远程），再确保并推送到 gitee 远程。
+/// sync_mirror: "gitee" | "github" — 先推默认远程，再同步到另一平台。
 pub fn push_with_options(
     git: &GitBinary,
     repo: &Path,
     force: bool,
-    sync_gitee: bool,
+    sync_mirror: Option<&str>,
 ) -> Result<String, GitError> {
     if !has_commits(git, repo)? {
         return Err(GitError::InvalidInput(
@@ -1193,37 +1193,51 @@ pub fn push_with_options(
     })?;
 
     let primary = push_one_remote(git, repo, &remote, &branch, force)?;
-    if !sync_gitee {
+    let Some(target) = sync_mirror.map(|s| s.trim().to_ascii_lowercase()) else {
         return Ok(primary);
-    }
-
-    let gitee_url = match ensure_gitee_remote(git, repo) {
-        Ok(url) => url,
-        Err(err) => {
+    };
+    let (mirror_remote, label) = match target.as_str() {
+        "gitee" => ("gitee", "Gitee"),
+        "github" => ("github", "GitHub"),
+        _ => {
             return Err(GitError::InvalidInput(format!(
-                "默认远程已推送成功，但准备 Gitee 远程失败：{err}"
+                "未知同步目标：{target}"
             )));
         }
     };
-    // 若默认远程本身就是 gitee，避免重复推送
+
     let remotes = list_remotes(git, repo)?;
-    let origin_is_gitee = remotes
+    let primary_url = remotes
         .iter()
         .find(|r| r.name == remote)
-        .map(|r| r.url.to_ascii_lowercase().contains("gitee.com"))
-        .unwrap_or(false);
-    if origin_is_gitee {
+        .map(|r| r.url.to_ascii_lowercase())
+        .unwrap_or_default();
+    let primary_already = match mirror_remote {
+        "gitee" => primary_url.contains("gitee.com"),
+        "github" => primary_url.contains("github.com"),
+        _ => false,
+    };
+    if primary_already {
         return Ok(format!(
-            "{primary}\n默认远程已是 Gitee，无需再同步。\n{gitee_url}"
+            "{primary}\n默认远程已是 {label}，无需再同步。"
         ));
     }
 
-    match push_one_remote(git, repo, "gitee", &branch, force) {
+    let mirror_url = match ensure_mirror_remote(git, repo, mirror_remote) {
+        Ok(url) => url,
+        Err(err) => {
+            return Err(GitError::InvalidInput(format!(
+                "默认远程已推送成功，但准备 {label} 远程失败：{err}"
+            )));
+        }
+    };
+
+    match push_one_remote(git, repo, mirror_remote, &branch, force) {
         Ok(secondary) => Ok(format!(
-            "{primary}\n——\n已同步推送到 Gitee（gitee）\n{secondary}"
+            "{primary}\n——\n已同步推送到 {label}（{mirror_remote}）\n{mirror_url}\n{secondary}"
         )),
         Err(err) => Err(GitError::InvalidInput(format!(
-            "默认远程已推送成功，但同步 Gitee 失败：{err}"
+            "默认远程已推送成功，但同步 {label} 失败：{err}"
         ))),
     }
 }
@@ -1293,15 +1307,28 @@ fn push_one_remote(
     }
 }
 
-/// 确保存在名为 gitee 的远程；没有则按 origin 仓库名在 Gitee 建仓并添加。
-fn ensure_gitee_remote(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
+/// 确保存在名为 gitee / github 的镜像远程；没有则按仓库名在对应平台建仓并添加。
+fn ensure_mirror_remote(
+    git: &GitBinary,
+    repo: &Path,
+    remote_name: &str,
+) -> Result<String, GitError> {
     let remotes = list_remotes(git, repo)?;
-    if let Some(existing) = remotes.iter().find(|r| r.name == "gitee") {
+    if let Some(existing) = remotes.iter().find(|r| r.name == remote_name) {
         return Ok(existing.url.clone());
     }
+    let provider = match remote_name {
+        "gitee" => "gitee",
+        "github" => "github",
+        other => {
+            return Err(GitError::InvalidInput(format!(
+                "不支持的镜像远程：{other}"
+            )));
+        }
+    };
     let repo_name = infer_repo_name(git, repo)?;
-    let created = create_or_get_hosting_repo("gitee", &repo_name, false, "")?;
-    set_remote_url(git, repo, "gitee", &created.clone_url)?;
+    let created = create_or_get_hosting_repo(provider, &repo_name, false, "")?;
+    set_remote_url(git, repo, remote_name, &created.clone_url)?;
     Ok(created.clone_url)
 }
 
