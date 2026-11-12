@@ -1,0 +1,75 @@
+name: Mirror to Gitee
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    # 兜底：防止个别推送未触发同步
+    - cron: "0 */6 * * *"
+
+concurrency:
+  group: mirror-gitee
+  cancel-in-progress: true
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure Gitee repo & mirror
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: ${{ secrets.GITEE_OWNER }}
+          GITEE_REPO: ${{ secrets.GITEE_REPO }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITEE_TOKEN:-}" ]; then
+            echo "::error::缺少 Secrets.GITEE_TOKEN（Gitee 私人令牌）"
+            exit 1
+          fi
+
+          OWNER="${GITEE_OWNER:-lizhihufa}"
+          REPO="${GITEE_REPO:-gittoos}"
+          DESC="${GITHUB_REPOSITORY} 的自动镜像（GitHub Actions）"
+
+          # 1) 仓库不存在则自动创建（个人仓；组织仓需令牌有对应权限）
+          CODE=$(curl -sS -o /tmp/gitee-repo.json -w "%{http_code}" \
+            "https://gitee.com/api/v5/repos/${OWNER}/${REPO}?access_token=${GITEE_TOKEN}" || true)
+
+          if [ "${CODE}" = "404" ]; then
+            echo "Gitee 仓库不存在，正在创建 ${OWNER}/${REPO} …"
+            CREATE_CODE=$(curl -sS -o /tmp/gitee-create.json -w "%{http_code}" \
+              -X POST "https://gitee.com/api/v5/user/repos" \
+              -H "Content-Type: application/json" \
+              -d "{\"access_token\":\"${GITEE_TOKEN}\",\"name\":\"${REPO}\",\"description\":\"${DESC}\",\"private\":false,\"auto_init\":false}")
+            if [ "${CREATE_CODE}" != "201" ] && [ "${CREATE_CODE}" != "200" ]; then
+              echo "::error::自动创建 Gitee 仓库失败（HTTP ${CREATE_CODE}）"
+              cat /tmp/gitee-create.json || true
+              echo
+              echo "若目标是组织仓库，请先手动建仓，或确认令牌有建仓权限。"
+              exit 1
+            fi
+            echo "已创建 Gitee 仓库。"
+          elif [ "${CODE}" != "200" ]; then
+            echo "::error::查询 Gitee 仓库失败（HTTP ${CODE}）"
+            cat /tmp/gitee-repo.json || true
+            exit 1
+          else
+            echo "Gitee 仓库已存在：${OWNER}/${REPO}"
+          fi
+
+          # 2) 拿到全部远端引用，保证 --mirror 完整
+          git fetch --prune --unshallow || true
+          git fetch --tags --force || true
+
+          git remote remove gitee 2>/dev/null || true
+          git remote add gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/${OWNER}/${REPO}.git"
+
+          # 3) 全量镜像：分支 + 标签；Gitee 上多出的引用会被删除
+          git push --mirror gitee
