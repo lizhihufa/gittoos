@@ -1311,11 +1311,17 @@ export default function App() {
       : primaryHost === "gitee"
         ? ("github" as const)
         : null;
-  const mirrorLabel =
+  const mirrorMenuLabel =
     mirrorTarget === "gitee"
       ? "推送到 Gitee"
       : mirrorTarget === "github"
         ? "推送到 GitHub"
+        : null;
+  const mirrorButtonLabel =
+    mirrorTarget === "gitee"
+      ? "同步推送（Gitee）"
+      : mirrorTarget === "github"
+        ? "同步推送（GitHub）"
         : null;
 
   useEffect(() => {
@@ -3551,8 +3557,8 @@ export default function App() {
               className={ahead > 0 && behind === 0 ? "primary" : undefined}
               disabled={busy}
               title={
-                pushMode === "mirror" && mirrorLabel
-                  ? `${mirrorLabel}（先推默认远程，再同步；Ctrl+Shift+P）`
+                pushMode === "mirror" && mirrorButtonLabel
+                  ? `${mirrorButtonLabel}：先推默认远程，再同步（Ctrl+Shift+P）`
                   : "直接推送到默认远程（Ctrl+Shift+P）"
               }
               onClick={() => {
@@ -3571,10 +3577,10 @@ export default function App() {
             >
               {busy
                 ? "…"
-                : pushMode === "mirror" && mirrorLabel
+                : pushMode === "mirror" && mirrorButtonLabel
                   ? ahead > 0
-                    ? `${mirrorLabel} ↑${ahead}`
-                    : mirrorLabel
+                    ? `${mirrorButtonLabel} ↑${ahead}`
+                    : mirrorButtonLabel
                   : ahead > 0
                     ? `推送 ↑${ahead}`
                     : "推送"}
@@ -3612,7 +3618,7 @@ export default function App() {
                   <strong>直接推送</strong>
                   <span>只推送到默认远程</span>
                 </button>
-                {mirrorLabel && mirrorTarget && (
+                {mirrorMenuLabel && mirrorTarget && (
                   <button
                     type="button"
                     role="menuitem"
@@ -3623,7 +3629,7 @@ export default function App() {
                       setPushMenuOpen(false);
                     }}
                   >
-                    <strong>{mirrorLabel}</strong>
+                    <strong>{mirrorMenuLabel}</strong>
                     <span>先推默认远程，再同步到另一平台</span>
                   </button>
                 )}
