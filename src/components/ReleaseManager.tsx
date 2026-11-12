@@ -20,19 +20,34 @@ type Props = {
   progress: { percent: number; label: string } | null;
 };
 
-function releaseLabel(rel: ReleaseItem): string {
-  const tag = rel.tagName;
-  const name = rel.name.trim();
-  if (
-    !name ||
-    name === tag ||
-    name === `青枝 ${tag}` ||
-    name === `青枝${tag}` ||
-    name.replace(/\s+/g, "") === `青枝${tag}`
-  ) {
-    return tag;
+/** 去掉标题末尾的版本/Tag，避免「青枝 v1.6.0」这类带回填 */
+function stripVersionSuffix(name: string, tag: string): string {
+  let text = name.trim();
+  const tagName = tag.trim();
+  if (tagName) {
+    const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`\\s*${escaped}\\s*$`, "i"), "").trim();
   }
-  return `${tag} · ${name}`;
+  text = text
+    .replace(/\s*v?\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?\s*$/i, "")
+    .trim();
+  return text;
+}
+
+/** 有独立标题时返回标题（不含版本号）；与 Tag 相同或空则视为无标题 */
+function releaseTitleOf(rel: ReleaseItem): string | null {
+  const name = rel.name.trim();
+  const tag = rel.tagName.trim();
+  if (!name || name === tag) return null;
+  const cleaned = stripVersionSuffix(name, tag);
+  if (!cleaned || cleaned === tag) return null;
+  return cleaned;
+}
+
+function normalizeTag(raw: string, fallback = ""): string {
+  const t = (raw.trim() || fallback).replace(/^V/, "v");
+  if (!t) return "";
+  return t.startsWith("v") ? t : `v${t}`;
 }
 
 function fileName(path: string): string {
@@ -44,15 +59,52 @@ export function ReleaseManager(props: Props) {
   const [items, setItems] = useState<ReleaseItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [filePath, setFilePath] = useState("");
-  const [tag, setTag] = useState(props.defaultTag);
+  const [tag, setTag] = useState("");
+  const [tagTouched, setTagTouched] = useState(false);
+  const [title, setTitle] = useState("");
+  const [titleTouched, setTitleTouched] = useState(false);
   const [notes, setNotes] = useState("");
   const [showNotes, setShowNotes] = useState(false);
 
-  useEffect(() => {
-    if (props.defaultTag && !tag) setTag(props.defaultTag);
-  }, [props.defaultTag, tag]);
-
   const { owner, repo, onError } = props;
+
+  // 切换仓库时重置，避免沿用上一仓库 / 本软件版本号
+  useEffect(() => {
+    setTag("");
+    setTitle("");
+    setTagTouched(false);
+    setTitleTouched(false);
+    setFilePath("");
+    setNotes("");
+  }, [owner, repo]);
+
+  // Tag 默认取该仓库最新 Release；没有列表时才用外部 defaultTag
+  useEffect(() => {
+    if (tagTouched) return;
+    if (items.length > 0) {
+      setTag(items[0].tagName);
+      return;
+    }
+    if (props.defaultTag) setTag(props.defaultTag);
+  }, [items, props.defaultTag, tagTouched]);
+
+  // 标题默认取当前 Tag 对应项（或最新一条），并去掉版本后缀
+  useEffect(() => {
+    if (titleTouched) return;
+    const tagName = normalizeTag(tag, props.defaultTag);
+    if (items.length > 0) {
+      const match =
+        items.find((rel) => rel.tagName === tagName) ?? items[0] ?? null;
+      if (match) {
+        setTitle(releaseTitleOf(match) ?? "");
+        return;
+      }
+    }
+    if (title.trim()) {
+      const cleaned = stripVersionSuffix(title, tagName);
+      if (cleaned !== title.trim()) setTitle(cleaned);
+    }
+  }, [items, tag, props.defaultTag, titleTouched, title]);
 
   const refresh = useCallback(async () => {
     if (!owner.trim() || !repo.trim()) {
@@ -102,10 +154,11 @@ export function ReleaseManager(props: Props) {
       return;
     }
 
-    const rawTag = (tag.trim() || props.defaultTag).replace(/^V/, "v");
-    const tagName = rawTag.startsWith("v") ? rawTag : `v${rawTag}`;
+    const tagName = normalizeTag(tag, props.defaultTag);
+    const releaseTitle =
+      stripVersionSuffix(title.trim() || tagName, tagName) || tagName;
     const ok = await confirmAction(
-      `上传到 ${props.owner}/${props.repo}\nTag：${tagName}\n文件：${fileName(filePath)}\n若 Tag 不存在会自动创建 Release。`,
+      `上传到 ${props.owner}/${props.repo}\n标题：${releaseTitle}\nTag：${tagName}\n文件：${fileName(filePath)}\n若 Tag 不存在会自动创建 Release。`,
       { title: "上传到 Release", confirmLabel: "上传" },
     );
     if (!ok) return;
@@ -116,7 +169,7 @@ export function ReleaseManager(props: Props) {
       const result = await api.publishGithubRelease({
         filePath,
         tag: tagName,
-        title: `青枝 ${tagName}`,
+        title: releaseTitle,
         notes: notes.trim() || undefined,
         owner: props.owner,
         repo: props.repo,
@@ -179,14 +232,30 @@ export function ReleaseManager(props: Props) {
   return (
     <div className="panel pad-block release-manager">
       <div className="release-bar">
+        <label className="release-field release-field-title">
+          <span>标题</span>
+          <input
+            value={title}
+            onChange={(e) => {
+              setTitleTouched(true);
+              setTitle(e.target.value);
+            }}
+            placeholder="例如：青枝；留空则用 Tag"
+            disabled={props.busy}
+            title="Release 显示名称（不要带版本号）；默认取自下方列表，留空则用 Tag"
+          />
+        </label>
         <label className="release-field">
           <span>Tag</span>
           <input
             value={tag}
-            onChange={(e) => setTag(e.target.value)}
-            placeholder={props.defaultTag || "v1.0.0"}
+            onChange={(e) => {
+              setTagTouched(true);
+              setTag(e.target.value);
+            }}
+            placeholder={items[0]?.tagName || props.defaultTag || "v1.0.0"}
             disabled={props.busy}
-            title="版本 Tag"
+            title="版本 Tag（默认取本仓库最新 Release）"
           />
         </label>
 
@@ -276,17 +345,32 @@ export function ReleaseManager(props: Props) {
         {items.length === 0 && !loading && (
           <li className="muted pad">还没有 Release。选择文件并上传后会自动创建。</li>
         )}
-        {items.map((rel) => (
+        {items.map((rel) => {
+          const relTitle = releaseTitleOf(rel);
+          return (
           <li key={rel.id} className="release-group">
             <div className="stash-row release-row">
-              <span className="release-row-main">
-                <strong>{releaseLabel(rel)}</strong>
+              <button
+                type="button"
+                className="release-row-main release-row-pick"
+                title="填入上方标题 / Tag"
+                onClick={() => {
+                  setTag(rel.tagName);
+                  setTagTouched(true);
+                  setTitle(relTitle ?? "");
+                  setTitleTouched(true);
+                }}
+              >
+                <strong>{relTitle || rel.tagName}</strong>
+                {relTitle ? (
+                  <span className="release-row-tag">{rel.tagName}</span>
+                ) : null}
                 {rel.publishedAt ? (
                   <span className="muted small">
                     {rel.publishedAt.replace("T", " ").slice(0, 16)}
                   </span>
                 ) : null}
-              </span>
+              </button>
               <span className="row-actions release-row-actions">
                 <button
                   type="button"
@@ -337,7 +421,8 @@ export function ReleaseManager(props: Props) {
               ))
             )}
           </li>
-        ))}
+          );
+        })}
       </ul>
     </div>
   );

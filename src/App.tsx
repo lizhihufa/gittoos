@@ -3155,7 +3155,7 @@ export default function App() {
                         }}
                       >
                         清除
-                      </button>
+              </button>
                     </div>
                     <div
                       className={`wallpaper-sliders${
@@ -3310,7 +3310,7 @@ export default function App() {
                           <em>终端蒙层</em>
                           <strong>{prefs.terminalWallpaperScrim}%</strong>
                         </span>
-                        <input
+            <input
                           type="range"
                           min={0}
                           max={90}
@@ -3325,28 +3325,28 @@ export default function App() {
                         <span className="muted small">
                           数值越大，终端背景越淡、文字越清晰
                         </span>
-                      </label>
+          </label>
                     </div>
                   </div>
 
                   <div className="settings-card">
                     <h5>Release 仓库</h5>
-                    <p className="muted small">
+          <p className="muted small">
                       管理 GitHub Release 时使用的仓库。留空则自动用当前打开仓库的
                       origin（仅 GitHub）。青枝自身的「检查更新」仍固定为{" "}
                       {UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}。
                     </p>
-                    <label className="settings-field">
+          <label className="settings-field">
                       <span>手动指定（owner/repo）</span>
-                      <input
+            <input
                         value={prefs.releaseRepoOverride}
                         onChange={(e) =>
                           updatePrefs({ releaseRepoOverride: e.target.value })
                         }
                         placeholder="例如 lizhihufa/huaweiyunapp，留空=当前仓库"
                         spellCheck={false}
-                      />
-                    </label>
+            />
+          </label>
                     <p className="muted small">
                       当前生效：
                       {releaseTarget.owner
@@ -3406,7 +3406,7 @@ export default function App() {
                       ) : accounts?.gitee.sessionExpired ? (
                         <span className="auth-tab-badge is-warn">已失效</span>
                       ) : null}
-                    </button>
+            </button>
                   </div>
                   {renderProviderAuth(authTab)}
                 </section>
@@ -3552,10 +3552,10 @@ export default function App() {
               {busy ? "…" : behind > 0 ? `拉取 ↓${behind}` : "拉取"}
           </button>
           <div className={`push-split${pushMenuOpen ? " is-open" : ""}`}>
-            <button
-              type="button"
+          <button
+            type="button"
               className={ahead > 0 && behind === 0 ? "primary" : undefined}
-              disabled={busy}
+            disabled={busy}
               title={
                 pushMode === "mirror" && mirrorButtonLabel
                   ? `${mirrorButtonLabel}：先推默认远程，再同步（Ctrl+Shift+P）`
@@ -3584,7 +3584,7 @@ export default function App() {
                   : ahead > 0
                     ? `推送 ↑${ahead}`
                     : "推送"}
-            </button>
+          </button>
             <button
               type="button"
               className={`push-caret${ahead > 0 && behind === 0 ? " primary" : ""}`}
@@ -4361,7 +4361,7 @@ export default function App() {
           terminalWallpaperScrim={prefs.terminalWallpaperScrim}
           releaseOwner={releaseTarget.owner}
           releaseRepo={releaseTarget.repo}
-          releaseDefaultTag={appVersion === "…" ? "" : `v${appVersion}`}
+          releaseDefaultTag=""
           githubLoggedIn={Boolean(accounts?.github.loggedIn)}
           updateBusy={updateBusy}
           onUpdateBusy={setUpdateBusy}

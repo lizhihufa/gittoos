@@ -2510,6 +2510,16 @@ html[data-scheme="dark"] .auth-ssh-feedback.is-ok {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
+.release-field-title {
+  flex: 1 1 12rem;
+  min-width: 10rem;
+}
+
+.release-field-title input {
+  width: 100%;
+  min-width: 10rem;
+}
+
 /* Shared action buttons for History / Release panes */
 .pane-btn {
   display: inline-flex;
@@ -2673,6 +2683,29 @@ html[data-scheme="dark"] .auth-ssh-feedback.is-ok {
   flex-direction: column;
   gap: 0.1rem;
   min-width: 0;
+}
+
+button.release-row-pick {
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  flex: 1;
+}
+
+button.release-row-pick:hover strong {
+  color: var(--accent);
+}
+
+.release-row-tag {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: Consolas, "Courier New", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .release-row-actions {
