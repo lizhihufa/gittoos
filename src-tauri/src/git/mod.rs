@@ -1197,7 +1197,14 @@ pub fn push_with_options(
         return Ok(primary);
     }
 
-    let gitee_url = ensure_gitee_remote(git, repo)?;
+    let gitee_url = match ensure_gitee_remote(git, repo) {
+        Ok(url) => url,
+        Err(err) => {
+            return Err(GitError::InvalidInput(format!(
+                "默认远程已推送成功，但准备 Gitee 远程失败：{err}"
+            )));
+        }
+    };
     // 若默认远程本身就是 gitee，避免重复推送
     let remotes = list_remotes(git, repo)?;
     let origin_is_gitee = remotes
@@ -1211,10 +1218,14 @@ pub fn push_with_options(
         ));
     }
 
-    let secondary = push_one_remote(git, repo, "gitee", &branch, force)?;
-    Ok(format!(
-        "{primary}\n——\n已同步推送到 Gitee（gitee）\n{secondary}"
-    ))
+    match push_one_remote(git, repo, "gitee", &branch, force) {
+        Ok(secondary) => Ok(format!(
+            "{primary}\n——\n已同步推送到 Gitee（gitee）\n{secondary}"
+        )),
+        Err(err) => Err(GitError::InvalidInput(format!(
+            "默认远程已推送成功，但同步 Gitee 失败：{err}"
+        ))),
+    }
 }
 
 fn push_one_remote(
@@ -1299,15 +1310,44 @@ fn infer_repo_name(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
         if let Some(origin) = remotes.iter().find(|r| r.name == "origin").or(remotes.first())
         {
             if let Some(name) = repo_name_from_url(&origin.url) {
-                return Ok(name);
+                if is_valid_hosting_repo_name(&name) {
+                    return Ok(name);
+                }
             }
         }
     }
-    repo.file_name()
+    let folder = repo
+        .file_name()
         .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| GitError::InvalidInput("无法推断仓库名，请先设置远程地址".to_string()))
+        .unwrap_or("")
+        .trim();
+    let sanitized = sanitize_hosting_repo_name(folder);
+    if sanitized.is_empty() {
+        return Err(GitError::InvalidInput(
+            "无法推断合法仓库名（需字母/数字/-/_/.）。请先设置远程地址，或手动创建 Gitee 仓库。"
+                .to_string(),
+        ));
+    }
+    Ok(sanitized)
+}
+
+fn is_valid_hosting_repo_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+fn sanitize_hosting_repo_name(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+            out.push(ch);
+        } else if ch == ' ' || ch == '　' {
+            out.push('-');
+        }
+    }
+    out.trim_matches(|c| c == '-' || c == '.' || c == '_').to_string()
 }
 
 fn repo_name_from_url(url: &str) -> Option<String> {

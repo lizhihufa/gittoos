@@ -202,7 +202,6 @@ export default function App() {
   const [entering, setEntering] = useState(false);
   const [syncingCache, setSyncingCache] = useState(false);
   const [syncDialog, setSyncDialog] = useState<SyncConflictKind | null>(null);
-  const [pushMenuOpen, setPushMenuOpen] = useState(false);
   const [publishDialog, setPublishDialog] = useState<{
     path: string;
     name: string;
@@ -763,8 +762,8 @@ export default function App() {
           pendingPublishRef.current = null;
           setPublishDraft({
             name,
-            toGithub: true,
-            toGitee: true,
+            toGithub: Boolean(accounts?.github.loggedIn),
+            toGitee: Boolean(accounts?.gitee.loggedIn),
             privateRepo: false,
           });
           setPublishDialog({ path, name });
@@ -777,7 +776,14 @@ export default function App() {
         setBusy(false);
       }
     },
-    [applyCore, prefs.rememberRecent, prefs.useRepoCache, refresh],
+    [
+      accounts?.github.loggedIn,
+      accounts?.gitee.loggedIn,
+      applyCore,
+      prefs.rememberRecent,
+      prefs.useRepoCache,
+      refresh,
+    ],
   );
 
   const closeRepoTab = useCallback(
@@ -1306,18 +1312,6 @@ export default function App() {
   }, [status?.operation, conflictFiles]);
 
   useEffect(() => {
-    if (!pushMenuOpen) return;
-    const onPointer = () => setPushMenuOpen(false);
-    const timer = window.setTimeout(() => {
-      window.addEventListener("click", onPointer);
-    }, 0);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("click", onPointer);
-    };
-  }, [pushMenuOpen]);
-
-  useEffect(() => {
     if (!repoPath) return;
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -1826,17 +1820,21 @@ export default function App() {
               disabled={
                 busy ||
                 !publishDraft.name.trim() ||
-                (!publishDraft.toGithub && !publishDraft.toGitee)
+                (!(publishDraft.toGithub && ghOk) &&
+                  !(publishDraft.toGitee && geOk))
               }
               onClick={() => {
                 const target = publishDialog.path;
                 const name = publishDraft.name.trim();
+                const toGithub = publishDraft.toGithub && ghOk;
+                const toGitee = publishDraft.toGitee && geOk;
+                if (!toGithub && !toGitee) return;
                 setPublishDialog(null);
                 void runAction(
                   () =>
                     api.publishRemotes(target, name, {
-                      toGithub: publishDraft.toGithub && ghOk,
-                      toGitee: publishDraft.toGitee && geOk,
+                      toGithub,
+                      toGitee,
                       privateRepo: publishDraft.privateRepo,
                     }),
                   "正在创建远程仓库…",
@@ -3491,14 +3489,13 @@ export default function App() {
           >
               {busy ? "…" : behind > 0 ? `拉取 ↓${behind}` : "拉取"}
           </button>
-          <div className={`push-split${pushMenuOpen ? " is-open" : ""}`}>
+          <div className="push-split">
             <button
               type="button"
               className={ahead > 0 && behind === 0 ? "primary" : undefined}
               disabled={busy}
-              title="推送到默认远程 origin（Ctrl+Shift+P）"
+              title="直接推送到默认远程 origin（Ctrl+Shift+P）"
               onClick={() => {
-                setPushMenuOpen(false);
                 void runAction(() => api.push(repoPath), "正在推送…");
               }}
             >
@@ -3508,43 +3505,16 @@ export default function App() {
               type="button"
               className={`push-caret${ahead > 0 && behind === 0 ? " primary" : ""}`}
               disabled={busy}
-              title="选择推送方式"
-              aria-expanded={pushMenuOpen}
-              onClick={() => setPushMenuOpen((v) => !v)}
+              title="同步推送到 Gitee（先推 origin，再推/创建 Gitee）"
+              onClick={() => {
+                void runAction(
+                  () => api.push(repoPath, false, true),
+                  "正在同步推送 Gitee…",
+                );
+              }}
             >
-              ▾
+              码云
             </button>
-            {pushMenuOpen && (
-              <div className="push-menu" role="menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={busy}
-                  onClick={() => {
-                    setPushMenuOpen(false);
-                    void runAction(() => api.push(repoPath), "正在推送…");
-                  }}
-                >
-                  <strong>直接推送</strong>
-                  <span>只推送到 origin / 默认远程</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={busy}
-                  onClick={() => {
-                    setPushMenuOpen(false);
-                    void runAction(
-                      () => api.push(repoPath, false, true),
-                      "正在同步推送 Gitee…",
-                    );
-                  }}
-                >
-                  <strong>同步 Gitee 推送</strong>
-                  <span>先推 origin，再推/创建 Gitee 镜像</span>
-                </button>
-              </div>
-            )}
           </div>
           </div>
         </div>
@@ -3670,8 +3640,8 @@ export default function App() {
                 "repo";
               setPublishDraft({
                 name,
-                toGithub: true,
-                toGitee: true,
+                toGithub: Boolean(accounts?.github.loggedIn),
+                toGitee: Boolean(accounts?.gitee.loggedIn),
                 privateRepo: false,
               });
               setPublishDialog({ path: repoPath!, name });
