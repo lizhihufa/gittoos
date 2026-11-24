@@ -24,7 +24,7 @@ export interface RepoStatus {
   isDetached: boolean;
   ahead: number;
   behind: number;
-  /** Ongoing operation: "merge" | "cherry-pick" | "rebase" | "" */
+  /** Ongoing operation: "merge" | "cherry-pick" | "rebase" | "revert" | "" */
   operation: string;
   changes: FileChange[];
 }
@@ -59,6 +59,15 @@ export interface StashInfo {
 export interface TagInfo {
   name: string;
   tip: string;
+}
+
+export interface ReflogInfo {
+  index: number;
+  hash: string;
+  shortHash: string;
+  selector: string;
+  date: string;
+  subject: string;
 }
 
 export interface BranchInfo {
@@ -221,5 +230,27 @@ export interface ReleaseItem {
   htmlUrl: string;
   publishedAt: string;
   assets: ReleaseAssetInfo[];
+}
+
+export interface ActionsMirrorSetup {
+  workflowPath: string;
+  workflowWritten: boolean;
+  workflowExists: boolean;
+  giteeUrl: string;
+  giteeFullName: string;
+  githubOwner: string;
+  githubRepo: string;
+  secretsUrl: string;
+  secretConfigured: boolean;
+  message: string;
+}
+
+export interface ActionsMirrorStatus {
+  workflowExists: boolean;
+  workflowPath: string;
+  hasGiteeRemote: boolean;
+  githubOwner: string;
+  githubRepo: string;
+  secretsUrl: string;
 }
 

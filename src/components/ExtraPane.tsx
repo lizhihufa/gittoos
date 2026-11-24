@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { layoutCommitGraph, parseRefBadges } from "../commitGraph";
-import type { CommitInfo, StashInfo, TagInfo } from "../types";
+import type { CommitInfo, ReflogInfo, StashInfo, TagInfo } from "../types";
+import { ConflictEditor } from "./ConflictEditor";
 import { DiffLines } from "./DiffLines";
 import { DiffView } from "./DiffView";
 import { ReleaseManager } from "./ReleaseManager";
@@ -24,13 +25,19 @@ interface Props {
   hasChanges?: boolean;
   allowHunks?: boolean;
   onApplyHunk?: (patch: string, reverse: boolean) => void;
+  onDiscardHunk?: (patch: string) => void;
+  onBlame?: () => void;
   showCommitGraph?: boolean;
   commits: CommitInfo[];
+  historyScope?: string | null;
+  onClearHistoryScope?: () => void;
   selectedHash: string | null;
   commitPatch: string;
   patchLoading: boolean;
   onSelectCommit: (hash: string) => void;
   onCherryPick: (hash: string) => void;
+  onRevert: (hash: string) => void;
+  onCheckoutCommit: (commit: CommitInfo) => void;
   onResetCommit: (commit: CommitInfo) => void;
   stashes: StashInfo[];
   stashMessage: string;
@@ -39,15 +46,40 @@ interface Props {
   onStashIncludeUntracked: (value: boolean) => void;
   onStash: () => void;
   onPopStash: (index: number) => void;
+  onApplyStash: (index: number) => void;
+  onShowStash: (index: number) => void;
   onDropStash: (index: number) => void;
+  stashPreview: string | null;
+  onClearStashPreview: () => void;
   tags: TagInfo[];
   tagName: string;
   onTagName: (value: string) => void;
+  tagMessage: string;
+  onTagMessage: (value: string) => void;
   onCreateTag: () => void;
   onPushTag: (name: string) => void;
   onPushAllTags: () => void;
   onDeleteTag: (name: string) => void;
   onDeleteRemoteTag: (name: string) => void;
+  compareLeft: string;
+  compareRight: string;
+  onCompareLeft: (value: string) => void;
+  onCompareRight: (value: string) => void;
+  onCompare: () => void;
+  compareResult: string | null;
+  showReflog?: boolean;
+  reflogEntries?: ReflogInfo[];
+  onToggleReflog?: () => void;
+  onSelectReflog?: (entry: ReflogInfo) => void;
+  blameText?: string | null;
+  onClearBlame?: () => void;
+  /** When set, diff pane shows the built-in conflict editor. */
+  conflictContent?: string | null;
+  conflictLoading?: boolean;
+  onSaveConflict?: (content: string, stage: boolean) => void;
+  onCloseConflict?: () => void;
+  onOpenConflict?: () => void;
+  fileConflicted?: boolean;
   terminalText: string;
   onClearTerminal: () => void;
   onRunCommand: (line: string) => void;
@@ -69,19 +101,39 @@ interface Props {
 }
 
 export function ExtraPane(props: Props) {
+  const [commitSearch, setCommitSearch] = useState("");
+
+  const filteredCommits = useMemo(() => {
+    const q = commitSearch.trim().toLowerCase();
+    if (!q) return props.commits;
+    return props.commits.filter((c) => {
+      const hay = [
+        c.subject,
+        c.hash,
+        c.shortHash,
+        c.author,
+        c.date,
+        c.refs ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [props.commits, commitSearch]);
+
   const graphRows = useMemo(() => {
     // Only build the graph while History is open — avoids work on every refresh.
     if (props.pane !== "history") return [];
     if (props.showCommitGraph === false) {
-      return props.commits.map((commit) => ({
+      return filteredCommits.map((commit) => ({
         commit,
         lane: 0,
         through: [0],
         width: 1,
       }));
     }
-    return layoutCommitGraph(props.commits);
-  }, [props.commits, props.showCommitGraph, props.pane]);
+    return layoutCommitGraph(filteredCommits);
+  }, [filteredCommits, props.showCommitGraph, props.pane]);
 
   return (
     <section className="extra">
@@ -106,29 +158,214 @@ export function ExtraPane(props: Props) {
           </button>
         ))}
       </div>
-      {props.pane === "diff" && (
-        <DiffView
-          path={props.diffPath}
-          staged={props.diffStaged}
-          text={props.diffText}
-          loading={props.diffLoading}
-          hasChanges={props.hasChanges}
-          busy={props.busy}
-          allowHunks={props.allowHunks}
-          onApplyHunk={props.onApplyHunk}
-        />
-      )}
+      {props.pane === "diff" &&
+        (props.conflictLoading || props.conflictContent != null ? (
+          props.conflictLoading || props.conflictContent == null ? (
+            <p className="muted pad">正在加载冲突文件…</p>
+          ) : (
+            <ConflictEditor
+              path={props.diffPath ?? ""}
+              content={props.conflictContent}
+              busy={props.busy}
+              onSave={(content, stage) => props.onSaveConflict?.(content, stage)}
+              onCancel={props.onCloseConflict}
+            />
+          )
+        ) : props.blameText ? (
+          <div className="panel pad-block blame-panel">
+            <div className="history-detail-head">
+              <strong>文件追溯（blame）</strong>
+              <button
+                type="button"
+                className="pane-btn pane-btn--sm"
+                onClick={props.onClearBlame}
+              >
+                关闭
+              </button>
+            </div>
+            <DiffLines
+              className="diff patch blame-text"
+              text={props.blameText}
+              empty="没有可显示的追溯内容"
+            />
+          </div>
+        ) : (
+          <>
+            {props.fileConflicted && props.onOpenConflict && (
+              <div className="conflict-open-bar">
+                <span className="muted small">
+                  该文件有合并冲突，可用内置编辑器处理标记。
+                </span>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={props.busy}
+                  onClick={props.onOpenConflict}
+                >
+                  打开冲突编辑器
+                </button>
+              </div>
+            )}
+            <DiffView
+              path={props.diffPath}
+              staged={props.diffStaged}
+              text={props.diffText}
+              loading={props.diffLoading}
+              hasChanges={props.hasChanges}
+              busy={props.busy}
+              allowHunks={props.allowHunks}
+              onApplyHunk={props.onApplyHunk}
+              onDiscardHunk={props.onDiscardHunk}
+              onBlame={props.onBlame}
+            />
+          </>
+        ))}
       {props.pane === "history" && (
         <div className="split-pane history-pane">
           <div className="history-list-pane">
             <div className="history-list-head">
-              <strong>提交记录</strong>
-              <span className="muted small">{props.commits.length} 条</span>
+              <strong>{props.showReflog ? "操作记录" : "提交记录"}</strong>
+              <span className="row-actions">
+                <span className="muted small">
+                  {props.showReflog
+                    ? `${props.reflogEntries?.length ?? 0} 条`
+                    : `${filteredCommits.length}${
+                        commitSearch.trim() ||
+                        props.commits.length !== filteredCommits.length
+                          ? ` / ${props.commits.length}`
+                          : ""
+                      } 条`}
+                </span>
+                {props.onToggleReflog && (
+                  <button
+                    type="button"
+                    className="pane-btn pane-btn--sm"
+                    disabled={props.busy}
+                    onClick={props.onToggleReflog}
+                  >
+                    {props.showReflog ? "提交历史" : "操作记录"}
+                  </button>
+                )}
+              </span>
             </div>
+            {props.showReflog ? (
+              <ul className="record-list history-commit-list">
+                {(props.reflogEntries?.length ?? 0) === 0 && (
+                  <li className="history-empty muted">暂无操作记录。</li>
+                )}
+                {(props.reflogEntries ?? []).map((entry) => (
+                  <li key={`${entry.index}-${entry.hash}`} className="commit-row">
+                    <button
+                      type="button"
+                      className="commit-main"
+                      onClick={() => props.onSelectReflog?.(entry)}
+                    >
+                      <span className="commit-body">
+                        <span className="commit-top">
+                          <span className="hash commit-hash">{entry.shortHash}</span>
+                          <span className="muted small">{entry.selector}</span>
+                        </span>
+                        <span className="subject commit-subject">{entry.subject}</span>
+                        <span className="commit-meta muted small">{entry.date}</span>
+                      </span>
+                    </button>
+                    <span className="row-actions history-actions">
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--soft pane-btn--sm"
+                        disabled={props.busy}
+                        onClick={() => props.onCheckoutCommit({
+                          hash: entry.hash,
+                          shortHash: entry.shortHash,
+                          author: "",
+                          date: entry.date,
+                          subject: entry.subject,
+                        })}
+                      >
+                        检出
+                      </button>
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--danger pane-btn--sm"
+                        disabled={props.busy}
+                        onClick={() =>
+                          props.onResetCommit({
+                            hash: entry.hash,
+                            shortHash: entry.shortHash,
+                            author: "",
+                            date: entry.date,
+                            subject: entry.subject,
+                          })
+                        }
+                      >
+                        重置
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <>
+            {props.historyScope ? (
+              <div className="history-scope-bar">
+                <span className="muted small">文件历史：{props.historyScope}</span>
+                <button
+                  type="button"
+                  className="pane-btn pane-btn--sm"
+                  disabled={props.busy}
+                  onClick={props.onClearHistoryScope}
+                >
+                  显示全部
+                </button>
+              </div>
+            ) : null}
+            <div className="history-search-row">
+              <input
+                value={commitSearch}
+                onChange={(e) => setCommitSearch(e.target.value)}
+                placeholder="搜索提交（说明 / 哈希 / 作者）"
+                disabled={props.busy}
+              />
+            </div>
+            <div className="history-compare-row">
+              <input
+                value={props.compareLeft}
+                onChange={(e) => props.onCompareLeft(e.target.value)}
+                placeholder="比较：左（如 main）"
+                disabled={props.busy}
+              />
+              <input
+                value={props.compareRight}
+                onChange={(e) => props.onCompareRight(e.target.value)}
+                placeholder="右（如 HEAD）"
+                disabled={props.busy}
+              />
+              <button
+                type="button"
+                className="pane-btn pane-btn--sm"
+                disabled={
+                  props.busy ||
+                  !props.compareLeft.trim() ||
+                  !props.compareRight.trim()
+                }
+                onClick={props.onCompare}
+              >
+                比较
+              </button>
+            </div>
+            {props.compareResult ? (
+              <DiffLines
+                className="diff patch history-compare-result"
+                text={props.compareResult}
+                empty="无差异"
+              />
+            ) : null}
             <ul className="record-list commit-graph-list history-commit-list">
-              {props.commits.length === 0 && (
+              {filteredCommits.length === 0 && (
                 <li className="history-empty muted">
-                  还没有提交。先在左侧暂存文件，填写说明后点「提交」。
+                  {props.commits.length === 0
+                    ? "还没有提交。先在左侧暂存文件，填写说明后点「提交」。"
+                    : "没有匹配的提交。"}
                 </li>
               )}
               {graphRows.map((row) => {
@@ -213,6 +450,24 @@ export function ExtraPane(props: Props) {
                       </button>
                       <button
                         type="button"
+                        className="pane-btn pane-btn--soft pane-btn--sm"
+                        disabled={props.busy}
+                        title="生成还原该提交的新提交"
+                        onClick={() => props.onRevert(row.commit.hash)}
+                      >
+                        还原
+                      </button>
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--soft pane-btn--sm"
+                        disabled={props.busy}
+                        title="检出到此提交（可新建分支）"
+                        onClick={() => props.onCheckoutCommit(row.commit)}
+                      >
+                        检出
+                      </button>
+                      <button
+                        type="button"
                         className="pane-btn pane-btn--danger pane-btn--sm"
                         disabled={props.busy}
                         title="把当前分支重置到此提交"
@@ -225,6 +480,8 @@ export function ExtraPane(props: Props) {
                 );
               })}
             </ul>
+              </>
+            )}
           </div>
           <div className="history-detail-pane">
             {props.patchLoading ? (
@@ -233,7 +490,9 @@ export function ExtraPane(props: Props) {
               <>
                 <div className="history-detail-head">
                   <strong>改动内容</strong>
-                  <span className="hash commit-hash">{props.selectedHash.slice(0, 7)}</span>
+                  <span className="hash commit-hash">
+                    {props.selectedHash.slice(0, 7)}
+                  </span>
                 </div>
                 <DiffLines
                   className="diff patch history-patch"
@@ -276,6 +535,25 @@ export function ExtraPane(props: Props) {
             />
             同时储藏未跟踪的新文件
           </label>
+          {props.stashPreview ? (
+            <div className="stash-preview">
+              <div className="history-detail-head">
+                <strong>储藏内容</strong>
+                <button
+                  type="button"
+                  className="pane-btn pane-btn--sm"
+                  onClick={props.onClearStashPreview}
+                >
+                  关闭
+                </button>
+              </div>
+              <DiffLines
+                className="diff patch"
+                text={props.stashPreview}
+                empty="（空）"
+              />
+            </div>
+          ) : null}
           <ul className="record-list">
             {props.stashes.length === 0 && (
               <li className="muted pad">
@@ -288,6 +566,22 @@ export function ExtraPane(props: Props) {
                   stash@{`{${stash.index}}`} {stash.message}
                 </span>
                 <span className="row-actions">
+                  <button
+                    type="button"
+                    disabled={props.busy}
+                    title="查看差异（不应用）"
+                    onClick={() => props.onShowStash(stash.index)}
+                  >
+                    查看
+                  </button>
+                  <button
+                    type="button"
+                    disabled={props.busy}
+                    title="应用后仍保留储藏"
+                    onClick={() => props.onApplyStash(stash.index)}
+                  >
+                    应用
+                  </button>
                   <button
                     type="button"
                     disabled={props.busy}
@@ -334,6 +628,13 @@ export function ExtraPane(props: Props) {
               推送全部
             </button>
           </div>
+          <input
+            className="tag-message-input"
+            value={props.tagMessage}
+            onChange={(e) => props.onTagMessage(e.target.value)}
+            placeholder="附注说明（可选；填写后创建附注标签）"
+            disabled={props.busy}
+          />
           <ul className="record-list">
             {props.tags.length === 0 && (
               <li className="muted pad">还没有标签。</li>

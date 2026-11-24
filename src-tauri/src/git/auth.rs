@@ -1553,7 +1553,7 @@ pub fn auth_browser_begin(provider_raw: &str) -> Result<OauthBegin, GitError> {
             "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope={}&state={}",
             url_encode(&client_id),
             url_encode(&redirect_uri),
-            url_encode("repo"),
+            url_encode("repo workflow"),
             url_encode(&state),
         ),
         Provider::Gitee => format!(
@@ -1640,7 +1640,7 @@ pub fn auth_device_start() -> Result<GithubDeviceStart, GitError> {
         .post("https://github.com/login/device/code")
         .set("Accept", "application/json")
         .set("User-Agent", "qingzhi")
-        .send_form(&[("client_id", client_id.as_str()), ("scope", "repo")])
+        .send_form(&[("client_id", client_id.as_str()), ("scope", "repo workflow")])
         .map_err(|e| GitError::InvalidInput(format!("申请设备码失败：{e}")))?;
     if !(200..300).contains(&response.status()) {
         return Err(GitError::InvalidInput(format!(

@@ -1,0 +1,45 @@
+# 由青枝写入：推送到 GitHub 后，用 Actions 镜像到 Gitee。
+# 需要仓库 Secrets：GITEE_TOKEN、GITEE_USER，可选 GITEE_REPO（owner/repo）。
+name: Qingzhi mirror to Gitee
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_USER: ${{ secrets.GITEE_USER }}
+      GITEE_REPO: ${{ secrets.GITEE_REPO }}
+    steps:
+      - name: Guard
+        id: guard
+        run: |
+          if [ -z "$GITEE_TOKEN" ] || [ -z "$GITEE_USER" ]; then
+            echo "未配置 GITEE_TOKEN / GITEE_USER，跳过镜像。"
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.guard.outputs.ok == '1'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to Gitee
+        if: steps.guard.outputs.ok == '1'
+        run: |
+          set -euo pipefail
+          REPO="${GITEE_REPO:-$GITHUB_REPOSITORY}"
+          REMOTE="https://${GITEE_USER}:${GITEE_TOKEN}@gitee.com/${REPO}.git"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            git push --force "$REMOTE" "refs/tags/${GITHUB_REF_NAME}"
+          else
+            git push --force "$REMOTE" "HEAD:refs/heads/${GITHUB_REF_NAME}"
+          fi
+          git push --force --tags "$REMOTE" || true
+          echo "已镜像到 Gitee：${REPO}"

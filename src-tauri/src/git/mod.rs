@@ -1,8 +1,12 @@
+mod actions_mirror;
 mod auth;
 mod runner;
 mod status;
 mod types;
 
+pub use actions_mirror::{
+    actions_mirror_status, setup_actions_mirror, ActionsMirrorSetup, ActionsMirrorStatus,
+};
 pub use auth::{
     auth_accounts, auth_browser_begin, auth_browser_finish, auth_device_poll, auth_device_start,
     auth_ensure_credentials, auth_login_token, auth_logout, auth_manager_login, auth_save_config,
@@ -16,7 +20,7 @@ pub use runner::{
 pub use status::{repo_status, repo_status_light_nonblocking};
 pub use types::*;
 
-use runner::{run_git, run_git_timeout};
+use runner::{run_git, run_git_timeout, run_git_with_env};
 use std::path::Path;
 
 pub fn is_repository(git: &GitBinary, repo: &Path) -> Result<bool, GitError> {
@@ -272,7 +276,13 @@ pub fn amend_commit(git: &GitBinary, repo: &Path, message: &str) -> Result<Strin
     Ok(output.stdout)
 }
 
-pub fn clone_repository(git: &GitBinary, url: &str, destination: &Path) -> Result<String, GitError> {
+pub fn clone_repository(
+    git: &GitBinary,
+    url: &str,
+    destination: &Path,
+    branch: Option<&str>,
+    depth: Option<u32>,
+) -> Result<String, GitError> {
     let url = url.trim();
     if !(url.starts_with("https://")
         || url.starts_with("http://")
@@ -282,6 +292,20 @@ pub fn clone_repository(git: &GitBinary, url: &str, destination: &Path) -> Resul
         return Err(GitError::InvalidInput(
             "请填写有效的仓库地址（https:// 或 git@）".to_string(),
         ));
+    }
+
+    let branch = branch.map(str::trim).filter(|s| !s.is_empty());
+    let depth = depth.filter(|d| *d > 0);
+    let depth_str = depth.map(|d| d.to_string());
+
+    let mut args: Vec<&str> = vec!["clone", "--progress"];
+    if let Some(b) = branch {
+        args.push("--branch");
+        args.push(b);
+    }
+    if let Some(ref d) = depth_str {
+        args.push("--depth");
+        args.push(d.as_str());
     }
 
     if destination.exists() {
@@ -297,7 +321,9 @@ pub fn clone_repository(git: &GitBinary, url: &str, destination: &Path) -> Resul
                 "目标文件夹不是空的，请换一个空目录。".to_string(),
             ));
         }
-        let output = run_git_timeout(git, destination, &["clone", url, "."], 300)?;
+        args.push(url);
+        args.push(".");
+        let output = run_git_timeout(git, destination, &args, 300)?;
         return Ok(combine_output(&output));
     }
 
@@ -314,7 +340,9 @@ pub fn clone_repository(git: &GitBinary, url: &str, destination: &Path) -> Resul
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or_else(|| GitError::InvalidPath(destination.display().to_string()))?;
-    let output = run_git_timeout(git, parent, &["clone", url, folder_name], 300)?;
+    args.push(url);
+    args.push(folder_name);
+    let output = run_git_timeout(git, parent, &args, 300)?;
     Ok(combine_output(&output))
 }
 
@@ -395,6 +423,162 @@ pub fn cherry_pick(git: &GitBinary, repo: &Path, hash: &str) -> Result<String, G
     }
 }
 
+pub fn revert_commit(git: &GitBinary, repo: &Path, hash: &str) -> Result<String, GitError> {
+    if !is_hex_hash(hash) {
+        return Err(GitError::InvalidInput("提交哈希无效".to_string()));
+    }
+    match run_git(git, repo, &["revert", "--no-edit", hash]) {
+        Ok(output) => {
+            let text = combine_output(&output);
+            if text.trim().is_empty() {
+                Ok(format!("已还原提交 {}", short_hash(hash)))
+            } else {
+                Ok(text)
+            }
+        }
+        Err(GitError::CommandFailed { stderr, stdout, code }) => {
+            let text = format!("{stderr}\n{stdout}");
+            if text.contains("CONFLICT") || text.contains("conflict") {
+                Err(GitError::InvalidInput(format!(
+                    "还原产生冲突。请在左侧处理冲突文件并暂存，然后点「继续」，或点「放弃」。\n{text}"
+                )))
+            } else {
+                Err(GitError::CommandFailed { code, stderr, stdout })
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn short_hash(hash: &str) -> &str {
+    let h = hash.trim();
+    if h.len() > 7 {
+        &h[..7]
+    } else {
+        h
+    }
+}
+
+pub fn rename_branch(
+    git: &GitBinary,
+    repo: &Path,
+    old_name: &str,
+    new_name: &str,
+) -> Result<String, GitError> {
+    let old_name = old_name.trim();
+    let new_name = new_name.trim();
+    if old_name.is_empty() || new_name.is_empty() {
+        return Err(GitError::InvalidInput("请填写原分支名和新分支名".to_string()));
+    }
+    if old_name == new_name {
+        return Err(GitError::InvalidInput("新分支名与原名相同".to_string()));
+    }
+    run_git(git, repo, &["branch", "-m", old_name, new_name])?;
+    Ok(format!("已将分支「{old_name}」重命名为「{new_name}」"))
+}
+
+pub fn checkout_commit(
+    git: &GitBinary,
+    repo: &Path,
+    hash: &str,
+    new_branch: Option<&str>,
+) -> Result<String, GitError> {
+    if !is_hex_hash(hash) {
+        return Err(GitError::InvalidInput("提交哈希无效".to_string()));
+    }
+    let branch = new_branch.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(name) = branch {
+        run_git(git, repo, &["checkout", "-b", name, hash])?;
+        Ok(format!("已从 {} 创建并切换到分支「{name}」", short_hash(hash)))
+    } else {
+        run_git(git, repo, &["checkout", "--detach", hash])?;
+        Ok(format!(
+            "已检出到 {}（游离 HEAD）。可再从此点新建分支。",
+            short_hash(hash)
+        ))
+    }
+}
+
+pub fn add_to_gitignore(git: &GitBinary, repo: &Path, paths: &[String]) -> Result<String, GitError> {
+    let _ = git;
+    let mut entries: Vec<String> = Vec::new();
+    for raw in paths {
+        let p = raw.trim().replace('\\', "/");
+        if p.is_empty() || p.contains('\0') {
+            continue;
+        }
+        entries.push(p);
+    }
+    if entries.is_empty() {
+        return Err(GitError::InvalidInput("请选择要忽略的路径".to_string()));
+    }
+    let ignore_path = repo.join(".gitignore");
+    let existing = if ignore_path.is_file() {
+        std::fs::read_to_string(&ignore_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let existing_set: std::collections::HashSet<&str> = existing
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let mut added = Vec::new();
+    let mut block = String::new();
+    for entry in &entries {
+        if existing_set.contains(entry.as_str()) {
+            continue;
+        }
+        block.push_str(entry);
+        block.push('\n');
+        added.push(entry.clone());
+    }
+    if added.is_empty() {
+        return Ok("所选路径已在 .gitignore 中".to_string());
+    }
+    let mut out = existing;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&block);
+    std::fs::write(&ignore_path, out).map_err(|e| {
+        GitError::Io {
+            path: ignore_path.display().to_string(),
+            message: e.to_string(),
+        }
+    })?;
+    Ok(format!("已写入 .gitignore：{}", added.join("、")))
+}
+
+pub fn list_file_commits(
+    git: &GitBinary,
+    repo: &Path,
+    file: &str,
+    limit: u32,
+) -> Result<Vec<CommitInfo>, GitError> {
+    let file = file.trim().replace('\\', "/");
+    if file.is_empty() {
+        return Err(GitError::InvalidInput("请指定文件路径".to_string()));
+    }
+    let limit = limit.clamp(1, 200).to_string();
+    let output = run_git(
+        git,
+        repo,
+        &[
+            "log",
+            "-n",
+            &limit,
+            "--follow",
+            "--decorate=short",
+            "--date=short",
+            "--pretty=format:%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1f%P%x1f%d%x1e",
+            "--",
+            &file,
+        ],
+    )?;
+    Ok(parse_commits(&output.stdout))
+}
+
 fn rebase_in_progress(git: &GitBinary, repo: &Path) -> Result<bool, GitError> {
     let git_dir = match run_git(git, repo, &["rev-parse", "--git-dir"]) {
         Ok(out) => {
@@ -421,6 +605,11 @@ fn ongoing_operation(git: &GitBinary, repo: &Path) -> Result<Option<&'static str
         Err(GitError::CommandFailed { .. }) => {}
         Err(err) => return Err(err),
     }
+    match run_git(git, repo, &["rev-parse", "--verify", "--quiet", "REVERT_HEAD"]) {
+        Ok(_) => return Ok(Some("revert")),
+        Err(GitError::CommandFailed { .. }) => {}
+        Err(err) => return Err(err),
+    }
     match run_git(git, repo, &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]) {
         Ok(_) => Ok(Some("merge")),
         Err(GitError::CommandFailed { .. }) => Ok(None),
@@ -438,19 +627,23 @@ pub fn abort_operation(git: &GitBinary, repo: &Path) -> Result<String, GitError>
             let output = run_git(git, repo, &["cherry-pick", "--abort"])?;
             Ok(combine_output(&output))
         }
+        Some("revert") => {
+            let output = run_git(git, repo, &["revert", "--abort"])?;
+            Ok(combine_output(&output))
+        }
         Some("merge") => {
             let output = run_git(git, repo, &["merge", "--abort"])?;
             Ok(combine_output(&output))
         }
         _ => Err(GitError::InvalidInput(
-            "当前没有进行中的合并、拣选或变基。".to_string(),
+            "当前没有进行中的合并、拣选、还原或变基。".to_string(),
         )),
     }
 }
 
 pub fn continue_operation(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
     let op = ongoing_operation(git, repo)?.ok_or_else(|| {
-        GitError::InvalidInput("当前没有进行中的合并、拣选或变基。".to_string())
+        GitError::InvalidInput("当前没有进行中的合并、拣选、还原或变基。".to_string())
     })?;
 
     let status = repo_status(git, repo)?;
@@ -463,6 +656,7 @@ pub fn continue_operation(git: &GitBinary, repo: &Path) -> Result<String, GitErr
     let output = match op {
         "rebase" => run_git(git, repo, &["rebase", "--continue"])?,
         "cherry-pick" => run_git(git, repo, &["cherry-pick", "--continue"])?,
+        "revert" => run_git(git, repo, &["revert", "--continue"])?,
         // Merge: finish with the prepared merge message, no editor.
         _ => run_git(git, repo, &["commit", "--no-edit"])?,
     };
@@ -471,6 +665,7 @@ pub fn continue_operation(git: &GitBinary, repo: &Path) -> Result<String, GitErr
         match op {
             "rebase" => "变基已完成。".to_string(),
             "cherry-pick" => "拣选已完成。".to_string(),
+            "revert" => "还原已完成。".to_string(),
             _ => "合并已完成。".to_string(),
         }
     } else {
@@ -508,11 +703,265 @@ pub fn rebase_branch(git: &GitBinary, repo: &Path, onto: &str) -> Result<String,
     }
 }
 
+/// Commits that would be replayed by `git rebase <onto>` (oldest first).
+pub fn list_rebase_todo(
+    git: &GitBinary,
+    repo: &Path,
+    onto: &str,
+) -> Result<Vec<CommitInfo>, GitError> {
+    let onto = onto.trim();
+    if onto.is_empty() {
+        return Err(GitError::InvalidInput("请选择变基目标分支".to_string()));
+    }
+    let range = format!("{onto}..HEAD");
+    match run_git(
+        git,
+        repo,
+        &[
+            "log",
+            "--reverse",
+            "--date=short",
+            "--pretty=format:%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1f%P%x1f%d%x1e",
+            &range,
+        ],
+    ) {
+        Ok(output) => Ok(parse_commits(&output.stdout)),
+        Err(GitError::CommandFailed { stderr, stdout, .. })
+            if format!("{stderr}{stdout}").contains("unknown revision")
+                || format!("{stderr}{stdout}").contains("Invalid revision") =>
+        {
+            Err(GitError::InvalidInput(format!(
+                "找不到分支或提交「{onto}」"
+            )))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebaseTodoItem {
+    pub action: String,
+    pub hash: String,
+    pub subject: String,
+}
+
+/// Interactive rebase driven by a UI-planned todo (pick/squash/fixup/drop + order).
+pub fn rebase_interactive(
+    git: &GitBinary,
+    repo: &Path,
+    onto: &str,
+    items: &[RebaseTodoItem],
+) -> Result<String, GitError> {
+    let onto = onto.trim();
+    if onto.is_empty() {
+        return Err(GitError::InvalidInput("请选择要变基到的分支".to_string()));
+    }
+    if items.is_empty() {
+        return Err(GitError::InvalidInput("没有可回放的提交".to_string()));
+    }
+    if ongoing_operation(git, repo)?.is_some() {
+        return Err(GitError::InvalidInput(
+            "已有进行中的合并/拣选/变基，请先继续或放弃。".to_string(),
+        ));
+    }
+
+    let mut todo_body = String::new();
+    let mut kept = 0u32;
+    for item in items {
+        let action = item.action.trim().to_ascii_lowercase();
+        let action = match action.as_str() {
+            "pick" | "p" => "pick",
+            "squash" | "s" => "squash",
+            "fixup" | "f" => "fixup",
+            "drop" | "d" => "drop",
+            other => {
+                return Err(GitError::InvalidInput(format!(
+                    "不支持的变基动作：{other}（可用 pick / squash / fixup / drop）"
+                )));
+            }
+        };
+        let hash = item.hash.trim();
+        if hash.is_empty() {
+            return Err(GitError::InvalidInput("提交哈希无效".to_string()));
+        }
+        if action != "drop" {
+            kept += 1;
+        }
+        let subject = item.subject.replace(['\r', '\n'], " ");
+        todo_body.push_str(&format!("{action} {hash} {subject}\n"));
+    }
+    if kept == 0 {
+        return Err(GitError::InvalidInput(
+            "全部提交都被丢弃了，请至少保留一个 pick/squash/fixup".to_string(),
+        ));
+    }
+    // First non-drop must be pick (squash/fixup need a previous commit).
+    for item in items {
+        let a = item.action.trim().to_ascii_lowercase();
+        if a == "drop" || a == "d" {
+            continue;
+        }
+        if a != "pick" && a != "p" {
+            return Err(GitError::InvalidInput(
+                "第一条有效提交必须是 pick（不能以 squash/fixup 开头）".to_string(),
+            ));
+        }
+        break;
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let planned = std::env::temp_dir().join(format!(
+        "qingzhi-rebase-todo-{}-{}.txt",
+        std::process::id(),
+        stamp
+    ));
+    let editor_script = std::env::temp_dir().join(format!(
+        "qingzhi-rebase-editor-{}-{}.cmd",
+        std::process::id(),
+        stamp
+    ));
+    std::fs::write(&planned, todo_body.as_bytes()).map_err(|e| GitError::Io {
+        path: planned.display().to_string(),
+        message: e.to_string(),
+    })?;
+    // Windows: overwrite Git's todo path with our planned file.
+    let script = format!(
+        "@echo off\r\ncopy /Y \"{}\" \"%~1\" >nul\r\nexit /B %ERRORLEVEL%\r\n",
+        planned.display()
+    );
+    std::fs::write(&editor_script, script.as_bytes()).map_err(|e| GitError::Io {
+        path: editor_script.display().to_string(),
+        message: e.to_string(),
+    })?;
+
+    // Prefer Git-for-Windows `true.exe` next to git; fall back to cmd exit 0.
+    let true_editor = git
+        .path
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|root| root.join("usr").join("bin").join("true.exe"))
+        .filter(|p| p.is_file())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "cmd /C exit 0".to_string());
+
+    let seq_editor = editor_script.display().to_string();
+    let result = run_git_with_env(
+        git,
+        repo,
+        &["rebase", "-i", onto],
+        &[
+            ("GIT_SEQUENCE_EDITOR", seq_editor.as_str()),
+            ("GIT_EDITOR", true_editor.as_str()),
+            ("EDITOR", true_editor.as_str()),
+        ],
+        180,
+    );
+    let _ = std::fs::remove_file(&planned);
+    let _ = std::fs::remove_file(&editor_script);
+
+    match result {
+        Ok(output) => Ok(combine_output(&output)),
+        Err(GitError::CommandFailed { code, stderr, stdout }) => {
+            let text = format!("{stderr}\n{stdout}");
+            if text.to_ascii_lowercase().contains("conflict")
+                || repo_status(git, repo)
+                    .map(|s| s.changes.iter().any(|c| c.conflicted))
+                    .unwrap_or(false)
+            {
+                Err(GitError::InvalidInput(format!(
+                    "交互变基出现冲突，请解决并暂存后点「继续」。\n{text}"
+                )))
+            } else {
+                Err(GitError::CommandFailed { code, stderr, stdout })
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub fn apply_cached_patch(
     git: &GitBinary,
     repo: &Path,
     patch: &str,
     reverse: bool,
+) -> Result<String, GitError> {
+    apply_patch_internal(git, repo, patch, reverse, true)
+}
+
+/// Apply / reverse a hunk against the working tree (discard unstaged hunk).
+pub fn apply_workdir_patch(
+    git: &GitBinary,
+    repo: &Path,
+    patch: &str,
+    reverse: bool,
+) -> Result<String, GitError> {
+    apply_patch_internal(git, repo, patch, reverse, false)
+}
+
+/// Resolve a repo-relative path and ensure it stays inside the work tree.
+fn resolve_workdir_path(repo: &Path, relative: &str) -> Result<std::path::PathBuf, GitError> {
+    let relative = relative.trim().replace('\\', "/");
+    if relative.is_empty()
+        || relative.starts_with('/')
+        || relative.starts_with("../")
+        || relative.contains("/../")
+        || relative == ".."
+    {
+        return Err(GitError::InvalidInput("文件路径无效".to_string()));
+    }
+    let repo = repo
+        .canonicalize()
+        .map_err(|e| GitError::Io {
+            path: repo.display().to_string(),
+            message: e.to_string(),
+        })?;
+    let full = repo.join(&relative);
+    let parent = full.parent().unwrap_or(repo.as_path());
+    // Canonicalize parent when the file may not exist yet (write).
+    let canon_parent = if parent.exists() {
+        parent.canonicalize().map_err(|e| GitError::Io {
+            path: parent.display().to_string(),
+            message: e.to_string(),
+        })?
+    } else {
+        return Err(GitError::InvalidInput("文件目录不存在".to_string()));
+    };
+    if !canon_parent.starts_with(&repo) {
+        return Err(GitError::InvalidInput("文件路径越界".to_string()));
+    }
+    Ok(canon_parent.join(full.file_name().unwrap_or_default()))
+}
+
+/// Read a UTF-8 (lossy) worktree file for conflict editing etc.
+pub fn read_workdir_file(repo: &Path, relative: &str) -> Result<String, GitError> {
+    let path = resolve_workdir_path(repo, relative)?;
+    let bytes = std::fs::read(&path).map_err(|e| GitError::Io {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Write text into a worktree file (conflict resolution).
+pub fn write_workdir_file(repo: &Path, relative: &str, content: &str) -> Result<(), GitError> {
+    let path = resolve_workdir_path(repo, relative)?;
+    std::fs::write(&path, content.as_bytes()).map_err(|e| GitError::Io {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+    Ok(())
+}
+
+fn apply_patch_internal(
+    git: &GitBinary,
+    repo: &Path,
+    patch: &str,
+    reverse: bool,
+    cached: bool,
 ) -> Result<String, GitError> {
     let patch = patch.trim_start_matches('\u{feff}');
     if patch.trim().is_empty() {
@@ -531,7 +980,10 @@ pub fn apply_cached_patch(
         message: e.to_string(),
     })?;
     let path_arg = file.to_string_lossy().to_string();
-    let mut args = vec!["apply", "--cached", "--whitespace=nowarn"];
+    let mut args = vec!["apply", "--whitespace=nowarn"];
+    if cached {
+        args.push("--cached");
+    }
     if reverse {
         args.push("--reverse");
     }
@@ -594,6 +1046,37 @@ pub fn create_branch(git: &GitBinary, repo: &Path, name: &str) -> Result<(), Git
     }
     run_git(git, repo, &["branch", name])?;
     Ok(())
+}
+
+pub fn set_upstream(
+    git: &GitBinary,
+    repo: &Path,
+    remote: &str,
+    branch: &str,
+    local_branch: Option<&str>,
+) -> Result<String, GitError> {
+    let remote = remote.trim();
+    let branch = branch.trim();
+    if remote.is_empty() || branch.is_empty() {
+        return Err(GitError::InvalidInput("请填写远程名和分支名".to_string()));
+    }
+    let upstream = format!("{remote}/{branch}");
+    let local = local_branch.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(local) = local {
+        run_git(
+            git,
+            repo,
+            &["branch", "--set-upstream-to", &upstream, local],
+        )?;
+        Ok(format!("已将「{local}」的上游设为 {upstream}"))
+    } else {
+        run_git(
+            git,
+            repo,
+            &["branch", "--set-upstream-to", &upstream],
+        )?;
+        Ok(format!("已设置上游为 {upstream}"))
+    }
 }
 
 pub fn checkout_branch(git: &GitBinary, repo: &Path, name: &str) -> Result<(), GitError> {
@@ -897,15 +1380,33 @@ fn default_remote(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
     Ok(remotes[0].name.clone())
 }
 
-pub fn fetch(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
-    let remote = default_remote(git, repo)?;
-    let output = run_git_timeout(
-        git,
-        repo,
-        &["fetch", "--prune", "--progress", &remote],
-        180,
-    )?;
-    Ok(combine_output(&output))
+pub fn fetch(git: &GitBinary, repo: &Path, remote: Option<&str>) -> Result<String, GitError> {
+    let remote = remote.map(str::trim).filter(|s| !s.is_empty());
+    let output = if remote.map(|r| r.eq_ignore_ascii_case("all")).unwrap_or(false) {
+        run_git_timeout(
+            git,
+            repo,
+            &["fetch", "--all", "--prune", "--progress"],
+            180,
+        )?
+    } else {
+        let name = match remote {
+            Some(r) => r.to_string(),
+            None => default_remote(git, repo)?,
+        };
+        run_git_timeout(
+            git,
+            repo,
+            &["fetch", "--prune", "--progress", &name],
+            180,
+        )?
+    };
+    let text = combine_output(&output);
+    if text.trim().is_empty() {
+        Ok("获取完成。".to_string())
+    } else {
+        Ok(text)
+    }
 }
 
 fn remote_branch_exists(git: &GitBinary, repo: &Path, remote: &str, branch: &str) -> Result<bool, GitError> {
@@ -977,7 +1478,12 @@ fn resolve_pull_branch(git: &GitBinary, repo: &Path, remote: &str) -> Result<Str
     )))
 }
 
-pub fn pull(git: &GitBinary, repo: &Path, allow_unrelated: bool) -> Result<String, GitError> {
+pub fn pull(
+    git: &GitBinary,
+    repo: &Path,
+    allow_unrelated: bool,
+    rebase: bool,
+) -> Result<String, GitError> {
     let remote = default_remote(git, repo)?;
     let fetch_out = run_git_timeout(
         git,
@@ -1011,6 +1517,10 @@ pub fn pull(git: &GitBinary, repo: &Path, allow_unrelated: bool) -> Result<Strin
 
     if allow_unrelated {
         return pull_allow_unrelated(git, repo, &remote, &fetch_out);
+    }
+
+    if rebase {
+        return pull_with_rebase(git, repo, &remote, &fetch_out);
     }
 
     if upstream_of_head(git, repo)?.is_some() {
@@ -1049,6 +1559,51 @@ pub fn pull(git: &GitBinary, repo: &Path, allow_unrelated: bool) -> Result<Strin
     ];
     match finalize_pull(git, repo, &fetch_out, &ff_args, &merge_args) {
         Ok(text) => Ok(format!("已从 {remote}/{local} 拉取\n{text}")),
+        Err(err) => Err(err),
+    }
+}
+
+fn pull_with_rebase(
+    git: &GitBinary,
+    repo: &Path,
+    remote: &str,
+    fetch_out: &runner::GitOutput,
+) -> Result<String, GitError> {
+    let mut args = vec!["pull", "--rebase", "--progress"];
+    let local;
+    let upstream = upstream_of_head(git, repo)?;
+    if upstream.is_none() {
+        local = current_branch(git, repo)?.ok_or_else(|| {
+            GitError::InvalidInput("当前不在分支上，无法拉取。".to_string())
+        })?;
+        if !remote_branch_exists(git, repo, remote, &local)? {
+            return Err(GitError::InvalidInput(format!(
+                "远程「{remote}」上没有与当前分支同名的「{local}」，无法变基拉取。"
+            )));
+        }
+        args.push("--set-upstream");
+        args.push(remote);
+        args.push(local.as_str());
+    }
+    match run_git_timeout(git, repo, &args, 180) {
+        Ok(output) => Ok(format!(
+            "{}\n已变基拉取。\n{}",
+            combine_output(fetch_out),
+            combine_output(&output)
+        )),
+        Err(GitError::CommandFailed { stderr, stdout, code }) => {
+            let text = format!("{stderr}\n{stdout}");
+            if text.contains("CONFLICT")
+                || text.contains("conflict")
+                || text.contains("could not apply")
+            {
+                Err(GitError::InvalidInput(format!(
+                    "变基拉取产生冲突。请在左侧处理冲突文件并暂存，然后点「继续」，或点「放弃」。\n{text}"
+                )))
+            } else {
+                Err(GitError::CommandFailed { code, stderr, stdout })
+            }
+        }
         Err(err) => Err(err),
     }
 }
@@ -1175,19 +1730,24 @@ fn has_commits(git: &GitBinary, repo: &Path) -> Result<bool, GitError> {
     }
 }
 
-/// sync_mirror: "gitee" | "github" — 先推默认远程，再同步到另一平台。
+/// remote: 指定推送远程；空则用默认。
+/// sync_mirror: "gitee" | "github" — 先推默认/指定远程，再同步到另一平台。
 pub fn push_with_options(
     git: &GitBinary,
     repo: &Path,
     force: bool,
     sync_mirror: Option<&str>,
+    remote: Option<&str>,
 ) -> Result<String, GitError> {
     if !has_commits(git, repo)? {
         return Err(GitError::InvalidInput(
             "还没有任何提交。请先在左侧写说明并点「提交」，再推送。".to_string(),
         ));
     }
-    let remote = default_remote(git, repo)?;
+    let remote = match remote.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(r) => r.to_string(),
+        None => default_remote(git, repo)?,
+    };
     let branch = current_branch(git, repo)?.ok_or_else(|| {
         GitError::InvalidInput("当前不在分支上，无法推送。请先提交一次。".to_string())
     })?;
@@ -1449,6 +2009,64 @@ fn is_non_fast_forward_push(text: &str) -> bool {
             && (lower.contains("behind") || lower.contains("tip of your current branch")))
 }
 
+pub fn blame_file(git: &GitBinary, repo: &Path, file: &str) -> Result<String, GitError> {
+    let file = file.trim().replace('\\', "/");
+    if file.is_empty() {
+        return Err(GitError::InvalidInput("请指定文件路径".to_string()));
+    }
+    let output = run_git(
+        git,
+        repo,
+        &[
+            "blame",
+            "--date=short",
+            "--",
+            &file,
+        ],
+    )?;
+    let text = combine_output(&output);
+    if text.trim().is_empty() {
+        Ok("（该文件没有可追溯内容）".to_string())
+    } else {
+        Ok(text)
+    }
+}
+
+pub fn list_reflog(git: &GitBinary, repo: &Path, limit: u32) -> Result<Vec<ReflogInfo>, GitError> {
+    let limit = limit.clamp(1, 200).to_string();
+    let output = run_git(
+        git,
+        repo,
+        &[
+            "reflog",
+            "-n",
+            &limit,
+            "--date=short",
+            "--pretty=format:%H%x1f%h%x1f%gd%x1f%ad%x1f%s%x1e",
+        ],
+    )?;
+    let mut items = Vec::new();
+    for (index, chunk) in output.stdout.split('\u{1e}').enumerate() {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = chunk.split('\u{1f}').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        items.push(ReflogInfo {
+            index: index as u32,
+            hash: parts[0].to_string(),
+            short_hash: parts[1].to_string(),
+            selector: parts[2].to_string(),
+            date: parts[3].to_string(),
+            subject: parts[4].to_string(),
+        });
+    }
+    Ok(items)
+}
+
 pub fn list_commits(git: &GitBinary, repo: &Path, limit: u32) -> Result<Vec<CommitInfo>, GitError> {
     let limit = limit.clamp(1, 200).to_string();
     match run_git(
@@ -1516,6 +2134,23 @@ pub fn stash_pop(git: &GitBinary, repo: &Path, index: u32) -> Result<String, Git
     Ok(combine_output(&output))
 }
 
+pub fn stash_apply(git: &GitBinary, repo: &Path, index: u32) -> Result<String, GitError> {
+    let reference = stash_ref(index);
+    let output = run_git(git, repo, &["stash", "apply", &reference])?;
+    Ok(combine_output(&output))
+}
+
+pub fn stash_show(git: &GitBinary, repo: &Path, index: u32) -> Result<String, GitError> {
+    let reference = stash_ref(index);
+    let output = run_git(git, repo, &["stash", "show", "-p", "--stat", &reference])?;
+    let text = combine_output(&output);
+    if text.trim().is_empty() {
+        Ok("（该储藏没有可显示的差异）".to_string())
+    } else {
+        Ok(text)
+    }
+}
+
 pub fn stash_drop(git: &GitBinary, repo: &Path, index: u32) -> Result<String, GitError> {
     let reference = stash_ref(index);
     let output = run_git(git, repo, &["stash", "drop", &reference])?;
@@ -1535,13 +2170,84 @@ pub fn list_tags(git: &GitBinary, repo: &Path) -> Result<Vec<TagInfo>, GitError>
     Ok(parse_tags(&output.stdout))
 }
 
-pub fn create_tag(git: &GitBinary, repo: &Path, name: &str) -> Result<(), GitError> {
+pub fn create_tag(
+    git: &GitBinary,
+    repo: &Path,
+    name: &str,
+    message: Option<&str>,
+) -> Result<(), GitError> {
     let name = name.trim();
     if name.is_empty() || name.contains([' ', '\t', '\n', '~', '^', ':', '?', '*', '[']) {
         return Err(GitError::InvalidInput("标签名无效".to_string()));
     }
-    run_git(git, repo, &["tag", name])?;
+    let msg = message.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(m) = msg {
+        run_git(git, repo, &["tag", "-a", name, "-m", m])?;
+    } else {
+        run_git(git, repo, &["tag", name])?;
+    }
     Ok(())
+}
+
+pub fn clean_files(
+    git: &GitBinary,
+    repo: &Path,
+    dry_run: bool,
+    include_ignored: bool,
+) -> Result<String, GitError> {
+    let mut args = vec!["clean".to_string(), "-fd".to_string()];
+    if dry_run {
+        args.push("-n".to_string());
+    }
+    if include_ignored {
+        args.push("-x".to_string());
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_git(git, repo, &arg_refs)?;
+    let text = combine_output(&output);
+    if text.trim().is_empty() {
+        Ok(if dry_run {
+            "没有可清理的未跟踪文件".to_string()
+        } else {
+            "已清理未跟踪文件".to_string()
+        })
+    } else {
+        Ok(text)
+    }
+}
+
+pub fn remove_remote(git: &GitBinary, repo: &Path, name: &str) -> Result<String, GitError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::InvalidInput("远程名不能为空".to_string()));
+    }
+    run_git(git, repo, &["remote", "remove", name])?;
+    Ok(format!("已删除远程「{name}」"))
+}
+
+pub fn compare_refs(
+    git: &GitBinary,
+    repo: &Path,
+    left: &str,
+    right: &str,
+) -> Result<String, GitError> {
+    let left = left.trim();
+    let right = right.trim();
+    if left.is_empty() || right.is_empty() {
+        return Err(GitError::InvalidInput("请填写要比较的两个引用".to_string()));
+    }
+    let range = format!("{left}...{right}");
+    let output = run_git(
+        git,
+        repo,
+        &["diff", "--stat", "--patch", "--find-renames", &range],
+    )?;
+    let text = combine_output(&output);
+    if text.trim().is_empty() {
+        Ok(format!("「{left}」与「{right}」没有差异"))
+    } else {
+        Ok(text)
+    }
 }
 
 pub fn push_tag(git: &GitBinary, repo: &Path, name: &str) -> Result<String, GitError> {

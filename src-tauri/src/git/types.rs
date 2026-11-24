@@ -104,6 +104,17 @@ pub struct TagInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReflogInfo {
+    pub index: u32,
+    pub hash: String,
+    pub short_hash: String,
+    pub selector: String,
+    pub date: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,

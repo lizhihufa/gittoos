@@ -670,6 +670,64 @@ html[data-scheme="dark"] .hunk-toolbar {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: ui-monospace, Consolas, monospace;
+  flex: 1;
+  min-width: 0;
+}
+
+.hunk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  flex: none;
+}
+
+.hunk-hint {
+  margin: 0;
+  padding: 0.35rem 0.65rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.hunk-lines {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  overflow: auto;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.diff-line-btn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0 0.25rem;
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: pre;
+  cursor: pointer;
+}
+
+.diff-line-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.diff-line-btn.diff-line--selected,
+.hunk-lines .diff-line--selected {
+  border-left-color: var(--accent, #2d6a4f);
+  outline: 1px solid rgba(45, 106, 79, 0.45);
+  background: rgba(45, 106, 79, 0.22);
+}
+
+html[data-scheme="dark"] .diff-line-btn.diff-line--selected,
+html[data-scheme="dark"] .hunk-lines .diff-line--selected {
+  background: rgba(125, 206, 160, 0.18);
+  border-left-color: #7dcea0;
 }
 
 .graph-cell {
@@ -1339,6 +1397,105 @@ html[data-scheme="dark"] .hunk-toolbar {
   padding: 0.55rem 0.75rem;
   border-bottom: 1px solid var(--line);
   background: var(--header-bg);
+}
+
+.blame-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.blame-panel .blame-text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-family: var(--mono, ui-monospace, Consolas, monospace);
+  font-size: 0.78rem;
+  white-space: pre;
+}
+
+.history-scope-bar,
+.history-search-row,
+.history-compare-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.history-search-row input,
+.history-compare-row input,
+.tag-message-input {
+  flex: 1;
+  min-width: 6rem;
+}
+
+.history-compare-result {
+  max-height: 180px;
+  overflow: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.stash-preview {
+  margin: 0.5rem 0 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+}
+
+.stash-preview .diff {
+  flex: 1;
+  overflow: auto;
+}
+
+.remote-list {
+  list-style: none;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.remote-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.35rem 0 0.75rem;
+}
+
+.remote-add-row input {
+  flex: 1;
+  min-width: 7rem;
+}
+
+.mirror-method-card h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+}
+
+.remote-list .stash-row {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.push-menu button.is-danger strong {
+  color: var(--danger, #9b2c2c);
+}
+
+.sync-group:has(.pull-split.is-open),
+.sync-group:has(.push-split.is-open),
+.sync-group:has(.fetch-split.is-open) {
+  overflow: visible;
 }
 
 .history-list-head strong,
@@ -3682,6 +3839,154 @@ html[data-scheme="dark"] .sync-progress {
   to {
     opacity: 1;
   }
+}
+
+.conflict-open-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(192, 57, 43, 0.08);
+}
+
+.conflict-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.conflict-editor-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.5rem 0.75rem 1rem;
+}
+
+.conflict-editor-foot {
+  flex: none;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--line);
+  gap: 0.5rem;
+}
+
+.conflict-text {
+  margin: 0 0 0.5rem;
+  padding: 0.35rem 0.5rem;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  background: var(--surface, #f7f4ef);
+  border-radius: 4px;
+}
+
+.conflict-block {
+  margin-bottom: 0.85rem;
+  padding: 0.55rem;
+  border: 1px solid rgba(192, 57, 43, 0.35);
+  border-radius: 6px;
+  background: rgba(192, 57, 43, 0.05);
+}
+
+.conflict-block.is-resolved {
+  border-color: rgba(45, 106, 79, 0.45);
+  background: rgba(45, 106, 79, 0.06);
+}
+
+.conflict-block-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+
+.conflict-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.45rem;
+  margin-bottom: 0.45rem;
+}
+
+.conflict-col {
+  min-width: 0;
+  padding: 0.35rem;
+  border-radius: 4px;
+  background: var(--panel, #fff);
+  border: 1px solid var(--line);
+}
+
+.conflict-col pre {
+  margin: 0.25rem 0 0;
+  max-height: 10rem;
+  overflow: auto;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.conflict-manual {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.conflict-manual textarea {
+  width: 100%;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  resize: vertical;
+  min-height: 3.5rem;
+}
+
+.conflict-resolved-flag {
+  margin-top: 0.25rem;
+}
+
+.rebase-interactive-modal {
+  width: min(640px, 94vw);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+}
+
+.rebase-todo-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  overflow: auto;
+  max-height: 50vh;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.rebase-todo-row {
+  display: grid;
+  grid-template-columns: 6.5rem 4.5rem 1fr auto;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.4rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.rebase-todo-row:last-child {
+  border-bottom: none;
+}
+
+.rebase-todo-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
+.error-text {
+  color: #c0392b;
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
 }
 
 @keyframes mark-float {

@@ -4,22 +4,27 @@ mod update;
 mod webview2;
 
 use git::{
-    abort_operation, amend_commit, apply_cached_patch, auth_accounts, auth_browser_begin,
-    auth_browser_finish, auth_device_poll, auth_device_start, auth_ensure_credentials,
-    auth_login_token, auth_logout, auth_manager_login as do_auth_manager_login, auth_save_config,
-    auth_ssh_generate, auth_ssh_status, auth_ssh_test, auth_switch_account, checkout_branch,
-    checkout_remote_branch, cherry_pick, clone_repository, commit, commit_patch, continue_operation,
-    create_branch, create_or_get_hosting_repo, create_tag, delete_branch, delete_remote_branch,
-    delete_remote_tag, delete_tag, discard_paths, ensure_git, fetch, file_diff, git_info,
-    init_repository, is_repository, list_branches, list_commits, list_remote_branches,
-    list_remotes, list_stashes, list_tags, merge_branch, publish_hosting_remotes, pull,
-    push_all_tags, push_tag, push_with_options, read_identity, rebase_branch, repo_status,
-    repo_status_light_nonblocking, reset_to_commit, run_shell, set_app_handle, set_remote_url,
-    stage_paths, staged_large_files, stash_drop, stash_pop, stash_push, undo_last_commit,
-    unstage_paths, with_git_quiet, write_identity, AuthAccounts, BranchInfo, CommitInfo,
-    GitBinary, GitError, GitInfo, GithubDevicePollResult, GithubDeviceStart, HostingRepo,
-    Identity, LargeFileInfo, OauthBegin, ProviderStatus, RemoteBranchInfo, RemoteInfo, RepoCore,
-    RepoExtras, RepoSnapshot, RepoStatus, SshStatus, SshTestResult, StashInfo, TagInfo,
+    abort_operation, actions_mirror_status, add_to_gitignore, amend_commit, apply_cached_patch,
+    apply_workdir_patch, auth_accounts, auth_browser_begin, auth_browser_finish, auth_device_poll,
+    auth_device_start, auth_ensure_credentials, auth_login_token, auth_logout,
+    auth_manager_login as do_auth_manager_login, auth_save_config, auth_ssh_generate,
+    auth_ssh_status, auth_ssh_test, auth_switch_account, checkout_branch, checkout_commit,
+    checkout_remote_branch, cherry_pick, clean_files, clone_repository, commit, commit_patch,
+    compare_refs, continue_operation, create_branch, create_or_get_hosting_repo, create_tag,
+    delete_branch, delete_remote_branch, delete_remote_tag, delete_tag, discard_paths, ensure_git,
+    blame_file, fetch, file_diff, git_info, init_repository, is_repository, list_branches,
+    list_commits, list_file_commits, list_reflog, list_remote_branches, list_remotes, list_stashes,
+    list_rebase_todo, list_tags, merge_branch, publish_hosting_remotes, pull, push_all_tags,
+    push_tag, push_with_options, read_identity, read_workdir_file, rebase_branch,
+    rebase_interactive, remove_remote, rename_branch, repo_status, repo_status_light_nonblocking,
+    reset_to_commit, revert_commit, run_shell, set_app_handle, set_remote_url, setup_actions_mirror,
+    set_upstream, stage_paths, staged_large_files, stash_apply, stash_drop, stash_pop, stash_push,
+    stash_show, undo_last_commit, unstage_paths, with_git_quiet, write_identity, write_workdir_file,
+    ActionsMirrorSetup, ActionsMirrorStatus, AuthAccounts, BranchInfo, CommitInfo, GitBinary,
+    GitError, GitInfo, RebaseTodoItem,
+    GithubDevicePollResult, GithubDeviceStart, HostingRepo, Identity, LargeFileInfo, OauthBegin,
+    ProviderStatus, ReflogInfo, RemoteBranchInfo, RemoteInfo, RepoCore, RepoExtras, RepoSnapshot,
+    RepoStatus, SshStatus, SshTestResult, StashInfo, TagInfo,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -407,10 +412,44 @@ async fn clone_repo(
     state: State<'_, AppState>,
     url: String,
     destination: String,
+    branch: Option<String>,
+    depth: Option<u32>,
 ) -> Result<String, String> {
     let dest = PathBuf::from(&destination);
-    with_git_async(&state, move |git| clone_repository(git, &url, &dest)).await?;
+    let branch = branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let depth = depth.filter(|d| *d > 0);
+    with_git_async(&state, move |git| {
+        clone_repository(git, &url, &dest, branch.as_deref(), depth)
+    })
+    .await?;
     Ok(destination)
+}
+
+#[tauri::command]
+async fn setup_actions_mirror_cmd(
+    state: State<'_, AppState>,
+    path: String,
+    configure_secret: Option<bool>,
+) -> Result<ActionsMirrorSetup, String> {
+    let repo = repo_path(&path)?;
+    let configure_secret = configure_secret.unwrap_or(true);
+    with_git_async(&state, move |git| {
+        setup_actions_mirror(git, &repo, configure_secret)
+    })
+    .await
+}
+
+#[tauri::command]
+fn get_actions_mirror_status(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ActionsMirrorStatus, String> {
+    let repo = repo_path(&path)?;
+    with_git_quiet(|| with_git(&state, |git| actions_mirror_status(git, &repo)))
 }
 
 #[tauri::command]
@@ -490,6 +529,30 @@ async fn branch_rebase(
 }
 
 #[tauri::command]
+async fn get_rebase_todo(
+    state: State<'_, AppState>,
+    path: String,
+    onto: String,
+) -> Result<Vec<CommitInfo>, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| list_rebase_todo(git, &repo, &onto)).await
+}
+
+#[tauri::command]
+async fn branch_rebase_interactive(
+    state: State<'_, AppState>,
+    path: String,
+    onto: String,
+    items: Vec<RebaseTodoItem>,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| {
+        rebase_interactive(git, &repo, &onto, &items)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn commit_cherry_pick(
     state: State<'_, AppState>,
     path: String,
@@ -497,6 +560,182 @@ async fn commit_cherry_pick(
 ) -> Result<String, String> {
     let repo = repo_path(&path)?;
     with_git_async(&state, move |git| cherry_pick(git, &repo, &hash)).await
+}
+
+#[tauri::command]
+async fn commit_revert(
+    state: State<'_, AppState>,
+    path: String,
+    hash: String,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| revert_commit(git, &repo, &hash)).await
+}
+
+#[tauri::command]
+async fn commit_checkout(
+    state: State<'_, AppState>,
+    path: String,
+    hash: String,
+    new_branch: Option<String>,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    let new_branch = new_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    with_git_async(&state, move |git| {
+        checkout_commit(git, &repo, &hash, new_branch.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn branch_rename(
+    state: State<'_, AppState>,
+    path: String,
+    old_name: String,
+    new_name: String,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| rename_branch(git, &repo, &old_name, &new_name)).await
+}
+
+#[tauri::command]
+async fn branch_set_upstream(
+    state: State<'_, AppState>,
+    path: String,
+    remote: String,
+    branch: String,
+    local_branch: Option<String>,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    let local_branch = local_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    with_git_async(&state, move |git| {
+        set_upstream(git, &repo, &remote, &branch, local_branch.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn add_gitignore(
+    state: State<'_, AppState>,
+    path: String,
+    paths: Vec<String>,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| add_to_gitignore(git, &repo, &paths)).await
+}
+
+#[tauri::command]
+fn get_file_commits(
+    state: State<'_, AppState>,
+    path: String,
+    file: String,
+    limit: Option<u32>,
+) -> Result<Vec<CommitInfo>, String> {
+    let repo = repo_path(&path)?;
+    let limit = limit.unwrap_or(50);
+    with_git_quiet(|| with_git(&state, |git| list_file_commits(git, &repo, &file, limit)))
+}
+
+#[tauri::command]
+async fn get_file_blame(
+    state: State<'_, AppState>,
+    path: String,
+    file: String,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| {
+        with_git_quiet(|| blame_file(git, &repo, &file))
+    })
+    .await
+}
+
+#[tauri::command]
+fn get_reflog(
+    state: State<'_, AppState>,
+    path: String,
+    limit: Option<u32>,
+) -> Result<Vec<ReflogInfo>, String> {
+    let repo = repo_path(&path)?;
+    let limit = limit.unwrap_or(80);
+    with_git_quiet(|| with_git(&state, |git| list_reflog(git, &repo, limit)))
+}
+
+#[tauri::command]
+async fn git_clean(
+    state: State<'_, AppState>,
+    path: String,
+    dry_run: Option<bool>,
+    include_ignored: Option<bool>,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    let dry_run = dry_run.unwrap_or(false);
+    let include_ignored = include_ignored.unwrap_or(false);
+    with_git_async(&state, move |git| {
+        clean_files(git, &repo, dry_run, include_ignored)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn compare_refs_cmd(
+    state: State<'_, AppState>,
+    path: String,
+    left: String,
+    right: String,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| compare_refs(git, &repo, &left, &right)).await
+}
+
+#[tauri::command]
+async fn remove_remote_cmd(
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| remove_remote(git, &repo, &name)).await
+}
+
+#[tauri::command]
+async fn apply_workdir_hunk(
+    state: State<'_, AppState>,
+    path: String,
+    patch: String,
+    reverse: Option<bool>,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    let reverse = reverse.unwrap_or(true);
+    with_git_async(&state, move |git| {
+        apply_workdir_patch(git, &repo, &patch, reverse)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn read_repo_file(path: String, file: String) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || read_workdir_file(&repo, &file))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn write_repo_file(path: String, file: String, content: String) -> Result<(), String> {
+    let repo = repo_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || write_workdir_file(&repo, &file, &content))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -535,9 +774,18 @@ async fn save_remote(
 }
 
 #[tauri::command]
-async fn git_fetch(state: State<'_, AppState>, path: String) -> Result<String, String> {
+async fn git_fetch(
+    state: State<'_, AppState>,
+    path: String,
+    remote: Option<String>,
+) -> Result<String, String> {
     let repo = repo_path(&path)?;
-    with_git_async(&state, move |git| fetch(git, &repo)).await
+    let remote = remote
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    with_git_async(&state, move |git| fetch(git, &repo, remote.as_deref())).await
 }
 
 #[tauri::command]
@@ -545,10 +793,12 @@ async fn git_pull(
     state: State<'_, AppState>,
     path: String,
     allow_unrelated: Option<bool>,
+    rebase: Option<bool>,
 ) -> Result<String, String> {
     let repo = repo_path(&path)?;
     let allow_unrelated = allow_unrelated.unwrap_or(false);
-    with_git_async(&state, move |git| pull(git, &repo, allow_unrelated)).await
+    let rebase = rebase.unwrap_or(false);
+    with_git_async(&state, move |git| pull(git, &repo, allow_unrelated, rebase)).await
 }
 
 #[tauri::command]
@@ -557,6 +807,7 @@ async fn git_push(
     path: String,
     force: Option<bool>,
     sync_mirror: Option<String>,
+    remote: Option<String>,
 ) -> Result<String, String> {
     let repo = repo_path(&path)?;
     let force = force.unwrap_or(false);
@@ -565,8 +816,19 @@ async fn git_push(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+    let remote = remote
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     with_git_async(&state, move |git| {
-        push_with_options(git, &repo, force, sync_mirror.as_deref())
+        push_with_options(
+            git,
+            &repo,
+            force,
+            sync_mirror.as_deref(),
+            remote.as_deref(),
+        )
     })
     .await
 }
@@ -653,6 +915,26 @@ async fn pop_stash(
 }
 
 #[tauri::command]
+async fn apply_stash(
+    state: State<'_, AppState>,
+    path: String,
+    index: u32,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| stash_apply(git, &repo, index)).await
+}
+
+#[tauri::command]
+async fn show_stash(
+    state: State<'_, AppState>,
+    path: String,
+    index: u32,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| stash_show(git, &repo, index)).await
+}
+
+#[tauri::command]
 async fn drop_stash(
     state: State<'_, AppState>,
     path: String,
@@ -673,9 +955,18 @@ async fn tag_create(
     state: State<'_, AppState>,
     path: String,
     name: String,
+    message: Option<String>,
 ) -> Result<(), String> {
     let repo = repo_path(&path)?;
-    with_git_async(&state, move |git| create_tag(git, &repo, &name)).await
+    let message = message
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    with_git_async(&state, move |git| {
+        create_tag(git, &repo, &name, message.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -941,6 +1232,8 @@ pub fn run() {
             create_commit,
             amend_last_commit,
             clone_repo,
+            setup_actions_mirror_cmd,
+            get_actions_mirror_status,
             get_branches,
             get_remote_branches,
             branch_create,
@@ -949,7 +1242,23 @@ pub fn run() {
             branch_delete,
             branch_merge,
             branch_rebase,
+            get_rebase_todo,
+            branch_rebase_interactive,
             commit_cherry_pick,
+            commit_revert,
+            commit_checkout,
+            branch_rename,
+            branch_set_upstream,
+            add_gitignore,
+            get_file_commits,
+            get_file_blame,
+            get_reflog,
+            git_clean,
+            compare_refs_cmd,
+            remove_remote_cmd,
+            apply_workdir_hunk,
+            read_repo_file,
+            write_repo_file,
             undo_commit,
             reset_commit,
             remote_branch_delete,
@@ -965,6 +1274,8 @@ pub fn run() {
             get_stashes,
             create_stash,
             pop_stash,
+            apply_stash,
+            show_stash,
             drop_stash,
             get_tags,
             tag_create,

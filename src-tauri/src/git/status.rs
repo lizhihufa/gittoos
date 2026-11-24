@@ -98,6 +98,9 @@ fn detect_operation_fs(repo: &Path) -> String {
     if dir.join("CHERRY_PICK_HEAD").is_file() {
         return "cherry-pick".to_string();
     }
+    if dir.join("REVERT_HEAD").is_file() {
+        return "revert".to_string();
+    }
     if dir.join("MERGE_HEAD").is_file() {
         return "merge".to_string();
     }

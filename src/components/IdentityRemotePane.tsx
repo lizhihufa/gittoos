@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { RemoteInfo } from "../types";
 
 export type IdentityRemoteDraft = {
   name: string;
@@ -11,6 +12,7 @@ export type IdentityRemoteDraft = {
 type Props = {
   repoPath: string | null;
   remotesCount: number;
+  remotes?: RemoteInfo[];
   initialName: string;
   initialEmail: string;
   initialRemote: string;
@@ -20,6 +22,8 @@ type Props = {
   onSaveGloballyChange: (value: boolean) => void;
   onDraftChange?: (draft: IdentityRemoteDraft) => void;
   onSave: (draft: IdentityRemoteDraft) => void;
+  onRemoveRemote?: (name: string) => void;
+  onAddRemote?: (name: string, url: string) => void;
 };
 
 /**
@@ -28,6 +32,7 @@ type Props = {
 export function IdentityRemotePane({
   repoPath,
   remotesCount,
+  remotes = [],
   initialName,
   initialEmail,
   initialRemote,
@@ -37,11 +42,15 @@ export function IdentityRemotePane({
   onSaveGloballyChange,
   onDraftChange,
   onSave,
+  onRemoveRemote,
+  onAddRemote,
 }: Props) {
   const [name, setName] = useState(initialName);
   const [email, setEmail] = useState(initialEmail);
   const [remote, setRemote] = useState(initialRemote);
   const [clone, setClone] = useState(initialClone);
+  const [extraName, setExtraName] = useState("");
+  const [extraUrl, setExtraUrl] = useState("");
 
   useEffect(() => {
     setName(initialName);
@@ -64,6 +73,11 @@ export function IdentityRemotePane({
     Boolean(repoPath) && name.trim().length > 0 && email.includes("@");
   const canSaveRemote = Boolean(repoPath) && remote.trim().length > 0;
   const canSave = canSaveIdentity || canSaveRemote || clone.trim().length > 0;
+  const canAddExtra =
+    Boolean(repoPath) &&
+    Boolean(onAddRemote) &&
+    extraName.trim().length > 0 &&
+    extraUrl.trim().length > 0;
 
   return (
     <section className="settings-section">
@@ -125,9 +139,60 @@ export function IdentityRemotePane({
           {repoPath
             ? remotesCount === 0
               ? "填写后点下方「保存」写入 origin。"
-              : "修改后点下方「保存」覆盖保存。"
+              : "修改后点下方「保存」覆盖保存 origin。"
             : "打开仓库后可设置远程地址。"}
         </p>
+        {repoPath && remotes.length > 0 && (
+          <ul className="remote-list">
+            {remotes.map((r) => (
+              <li key={r.name} className="stash-row">
+                <span>
+                  <strong>{r.name}</strong>{" "}
+                  <span className="muted small">{r.url}</span>
+                </span>
+                {onRemoveRemote && (
+                  <span className="row-actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={busy}
+                      onClick={() => onRemoveRemote(r.name)}
+                    >
+                      删除
+                    </button>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {repoPath && onAddRemote && (
+          <div className="remote-add-row">
+            <input
+              value={extraName}
+              onChange={(e) => setExtraName(e.target.value)}
+              placeholder="远程名（如 upstream）"
+              disabled={busy}
+            />
+            <input
+              value={extraUrl}
+              onChange={(e) => setExtraUrl(e.target.value)}
+              placeholder="https://… 或 git@…"
+              disabled={busy}
+            />
+            <button
+              type="button"
+              disabled={busy || !canAddExtra}
+              onClick={() => {
+                onAddRemote(extraName.trim(), extraUrl.trim());
+                setExtraName("");
+                setExtraUrl("");
+              }}
+            >
+              添加远程
+            </button>
+          </div>
+        )}
         <label className="settings-field">
           <span>克隆地址</span>
           <input

@@ -56,6 +56,12 @@ export interface AppPrefs {
    * 留空则用当前打开仓库的 GitHub origin。
    */
   releaseRepoOverride: string;
+  /**
+   * 同步推送到另一平台的方式：
+   * - app：本机再推一次（原始同步推送）
+   * - actions：只推 GitHub，由 GitHub Actions 镜像到 Gitee
+   */
+  mirrorSyncMethod: "app" | "actions";
 }
 
 const DEFAULT_PREFS: AppPrefs = {
@@ -71,6 +77,7 @@ const DEFAULT_PREFS: AppPrefs = {
   terminalWallpaperKind: "none",
   terminalWallpaperScrim: 55,
   releaseRepoOverride: "",
+  mirrorSyncMethod: "app",
 };
 
 function clampPercent(value: unknown, fallback: number): number {
@@ -136,6 +143,8 @@ export function loadPrefs(): AppPrefs {
         typeof parsed.releaseRepoOverride === "string"
           ? parsed.releaseRepoOverride.trim()
           : "",
+      mirrorSyncMethod:
+        parsed.mirrorSyncMethod === "actions" ? "actions" : "app",
     };
   } catch {
     return { ...DEFAULT_PREFS };

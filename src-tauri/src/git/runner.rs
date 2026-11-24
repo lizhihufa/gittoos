@@ -249,6 +249,23 @@ pub fn run_git(git: &GitBinary, repo: &Path, args: &[&str]) -> Result<GitOutput,
     run_git_timeout(git, repo, args, 45)
 }
 
+/// Run git with extra environment variables (e.g. GIT_SEQUENCE_EDITOR for interactive rebase).
+pub fn run_git_with_env(
+    git: &GitBinary,
+    repo: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    timeout_secs: u64,
+) -> Result<GitOutput, GitError> {
+    if !repo.exists() {
+        return Err(GitError::InvalidPath(repo.display().to_string()));
+    }
+    let _guard = GIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    run_git_timeout_locked_env(git, repo, args, timeout_secs, env)
+}
+
 /// Like `run_git_timeout`, but skips immediately if another git op holds the lock.
 /// Used by background polling so the UI never waits behind a long push/delete.
 pub fn run_git_timeout_nonblocking(
@@ -288,6 +305,16 @@ fn run_git_timeout_locked(
     args: &[&str],
     timeout_secs: u64,
 ) -> Result<GitOutput, GitError> {
+    run_git_timeout_locked_env(git, repo, args, timeout_secs, &[])
+}
+
+fn run_git_timeout_locked_env(
+    git: &GitBinary,
+    repo: &Path,
+    args: &[&str],
+    timeout_secs: u64,
+    extra_env: &[(&str, &str)],
+) -> Result<GitOutput, GitError> {
     let display = format_command(repo, args);
     emit_terminal("cmd", &format!("$ {display}"));
 
@@ -297,6 +324,9 @@ fn run_git_timeout_locked(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C.UTF-8")
         .env("LANG", "C.UTF-8");
+    for (k, v) in extra_env {
+        command.env(k, v);
+    }
     if let Some(proxy) = local_proxy() {
         command
             .env("http_proxy", &proxy)

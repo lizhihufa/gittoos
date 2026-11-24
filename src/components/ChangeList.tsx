@@ -16,6 +16,8 @@ interface Props {
   onStage?: (paths: string[]) => void;
   onUnstage?: (paths: string[]) => void;
   onDiscard?: (paths: string[]) => void;
+  onIgnore?: (paths: string[]) => void;
+  onFileHistory?: (path: string) => void;
 }
 
 function collapseKey(sectionId: string) {
@@ -50,6 +52,8 @@ export function ChangeList({
   onStage,
   onUnstage,
   onDiscard,
+  onIgnore,
+  onFileHistory,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() => loadCollapsed(sectionId));
 
@@ -145,6 +149,26 @@ export function ChangeList({
                       onClick={() => onUnstage([file.path])}
                     >
                       取消
+                    </button>
+                  )}
+                  {onIgnore && !file.conflicted && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title="写入 .gitignore"
+                      onClick={() => onIgnore([file.path])}
+                    >
+                      忽略
+                    </button>
+                  )}
+                  {onFileHistory && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title="查看该文件的提交历史"
+                      onClick={() => onFileHistory(file.path)}
+                    >
+                      历史
                     </button>
                   )}
                   {onDiscard && !file.conflicted && (
