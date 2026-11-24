@@ -499,7 +499,12 @@ fn status_of(provider: Provider, slot: &ProviderStore) -> ProviderStatus {
 fn http_agent() -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new().timeout(Duration::from_secs(45));
     if let Some(proxy) = local_proxy() {
-        emit_terminal("info", &format!("登录请求使用代理 {proxy}"));
+        // Log once per process — every API call used to spam the terminal.
+        static PROXY_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !PROXY_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            emit_terminal("info", &format!("登录请求使用代理 {proxy}"));
+        }
         if let Ok(p) = ureq::Proxy::new(&proxy) {
             builder = builder.proxy(p);
         }
@@ -1253,19 +1258,31 @@ pub fn auth_accounts() -> Result<AuthAccounts, GitError> {
 
 /// Re-write active tokens into git credential (startup / auth-fail retry).
 pub fn auth_ensure_credentials() -> Result<AuthAccounts, GitError> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static GITHUB_CRED_LOGGED: AtomicBool = AtomicBool::new(false);
+    static GITEE_CRED_LOGGED: AtomicBool = AtomicBool::new(false);
+
     let store = load_store()?;
     for provider in [Provider::Github, Provider::Gitee] {
         if let Some(acc) = active_account(provider_slot(&store, provider)) {
             if !acc.token.is_empty() && !acc.login.is_empty() {
                 match approve_credential(provider, &acc.login, &acc.token) {
-                    Ok(()) => emit_terminal(
-                        "info",
-                        &format!(
-                            "已同步 {} 凭据到 git credential（{}）",
-                            provider.label(),
-                            acc.login
-                        ),
-                    ),
+                    Ok(()) => {
+                        let flag = match provider {
+                            Provider::Github => &GITHUB_CRED_LOGGED,
+                            Provider::Gitee => &GITEE_CRED_LOGGED,
+                        };
+                        if !flag.swap(true, Ordering::Relaxed) {
+                            emit_terminal(
+                                "info",
+                                &format!(
+                                    "已同步 {} 凭据到 git credential（{}）",
+                                    provider.label(),
+                                    acc.login
+                                ),
+                            );
+                        }
+                    }
                     Err(e) => emit_terminal(
                         "err",
                         &format!("同步 {} 凭据失败：{e}", provider.label()),

@@ -4,6 +4,10 @@ export type ConfirmOptions = {
   danger?: boolean;
   confirmLabel?: string;
   cancelLabel?: string;
+  /** User must type this exact phrase before confirm is enabled. */
+  requirePhrase?: string;
+  /** Shown under the input, e.g. 请输入「重置设置」 */
+  phraseHint?: string;
 };
 
 type PendingConfirm = {
@@ -13,6 +17,8 @@ type PendingConfirm = {
   danger: boolean;
   confirmLabel: string;
   cancelLabel: string;
+  requirePhrase: string | null;
+  phraseHint: string | null;
   resolve: (ok: boolean) => void;
 };
 
@@ -70,8 +76,11 @@ export function confirmAction(
       title: options.title?.trim() || "请确认",
       message,
       danger: Boolean(options.danger),
-      confirmLabel: options.confirmLabel?.trim() || (options.danger ? "确定" : "确定"),
+      confirmLabel:
+        options.confirmLabel?.trim() || (options.danger ? "确定" : "确定"),
       cancelLabel: options.cancelLabel?.trim() || "取消",
+      requirePhrase: options.requirePhrase?.trim() || null,
+      phraseHint: options.phraseHint?.trim() || null,
       resolve,
     };
     notify();

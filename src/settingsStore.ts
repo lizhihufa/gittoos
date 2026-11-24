@@ -2,70 +2,93 @@ const CLONE_KEY = "gittool.cloneUrl";
 const PREFS_KEY = "gittool.prefs";
 const TABS_KEY = "gittool.openRepos";
 
+/** Six curated themes + custom. */
 export type ThemeId =
-  | "light"
-  | "dark"
-  | "forest"
-  | "nord"
-  | "solar"
-  | "tokyo"
-  | "mocha";
+  | "ink"
+  | "night"
+  | "bamboo"
+  | "ember"
+  | "mist"
+  | "tide"
+  | "custom";
+
 export type FontSizeId = "normal" | "large";
 export type WallpaperKind = "none" | "image" | "video";
 export type ColorScheme = "light" | "dark";
 
 export const THEME_OPTIONS: {
-  id: ThemeId;
+  id: Exclude<ThemeId, "custom">;
   label: string;
   scheme: ColorScheme;
+  /** Swatch accent for picker. */
+  swatch: string;
 }[] = [
-  { id: "light", label: "暖纸浅色", scheme: "light" },
-  { id: "dark", label: "墨蓝深色", scheme: "dark" },
-  { id: "forest", label: "青枝绿", scheme: "light" },
-  { id: "nord", label: "Nord 极光", scheme: "dark" },
-  { id: "solar", label: "Solarized 日光", scheme: "light" },
-  { id: "tokyo", label: "Tokyo Night", scheme: "dark" },
-  { id: "mocha", label: "Catppuccin 摩卡", scheme: "dark" },
+  { id: "ink", label: "青砚", scheme: "light", swatch: "#1a7a62" },
+  { id: "night", label: "夜航", scheme: "dark", swatch: "#5eb0ff" },
+  { id: "bamboo", label: "竹雾", scheme: "light", swatch: "#3d8b5a" },
+  { id: "ember", label: "朱砂", scheme: "dark", swatch: "#e07a5f" },
+  { id: "mist", label: "云灰", scheme: "light", swatch: "#5b6b7c" },
+  { id: "tide", label: "海礁", scheme: "dark", swatch: "#3db8a0" },
 ];
 
-const THEME_IDS = new Set<string>(THEME_OPTIONS.map((t) => t.id));
+const THEME_IDS = new Set<string>([
+  ...THEME_OPTIONS.map((t) => t.id),
+  "custom",
+]);
 
-export function themeScheme(theme: ThemeId): ColorScheme {
+/** Map legacy theme ids → new ones. */
+const LEGACY_THEME: Record<string, ThemeId> = {
+  light: "ink",
+  dark: "night",
+  forest: "bamboo",
+  nord: "tide",
+  solar: "mist",
+  tokyo: "night",
+  mocha: "ember",
+};
+
+export function themeScheme(
+  theme: ThemeId,
+  customScheme: ColorScheme = "light",
+): ColorScheme {
+  if (theme === "custom") return customScheme;
   return THEME_OPTIONS.find((t) => t.id === theme)?.scheme ?? "light";
 }
 
 export interface AppPrefs {
   theme: ThemeId;
+  /** Used when theme === "custom". */
+  customScheme: ColorScheme;
+  customAccent: string;
+  customBg: string;
   fontSize: FontSizeId;
   rememberRecent: boolean;
   showCommitGraph: boolean;
-  /** Use last-open cache to enter the repo UI faster. */
   useRepoCache: boolean;
-  /** Welcome / loading wallpaper. */
   wallpaperPath: string;
   wallpaperKind: WallpaperKind;
-  /** Loading/welcome scrim strength 0–100 (higher = less wallpaper). */
   wallpaperLoadScrim: number;
-  /** Terminal wallpaper (separate from load wallpaper). */
   terminalWallpaperPath: string;
-  terminalWallpaperKind: WallpaperKind;
-  /** Terminal overlay opacity 0–100 (higher = less wallpaper). */
+  /** Terminal only supports static image (or none). */
+  terminalWallpaperKind: "none" | "image";
   terminalWallpaperScrim: number;
-  /**
-   * Manual Release 仓库，格式 owner/repo。
-   * 留空则用当前打开仓库的 GitHub origin。
-   */
   releaseRepoOverride: string;
-  /**
-   * 同步推送到另一平台的方式：
-   * - app：本机再推一次（原始同步推送）
-   * - actions：只推 GitHub，由 GitHub Actions 镜像到 Gitee
-   */
   mirrorSyncMethod: "app" | "actions";
+  locale: string;
+  /** Enabled locale codes chosen from the built-in catalog. */
+  enabledLocales: string[];
+  githubMirrorId: string;
+  githubMirrorCustom: string;
+  hostsText: string;
+  /** When true, Hosts are managed automatically (resolve + write). */
+  hostsAuto: boolean;
 }
 
-const DEFAULT_PREFS: AppPrefs = {
-  theme: "light",
+export const DEFAULT_PREFS: AppPrefs = {
+  theme: "ink",
+  customScheme: "light",
+  customAccent: "#1a7a62",
+  customBg: "#f2f5f3",
   fontSize: "normal",
   rememberRecent: true,
   showCommitGraph: true,
@@ -78,6 +101,12 @@ const DEFAULT_PREFS: AppPrefs = {
   terminalWallpaperScrim: 55,
   releaseRepoOverride: "",
   mirrorSyncMethod: "app",
+  locale: "zh-CN",
+  enabledLocales: ["zh-CN", "en"],
+  githubMirrorId: "off",
+  githubMirrorCustom: "",
+  hostsText: "",
+  hostsAuto: false,
 };
 
 function clampPercent(value: unknown, fallback: number): number {
@@ -88,6 +117,46 @@ function clampPercent(value: unknown, fallback: number): number {
 
 function parseWallpaperKind(value: unknown): WallpaperKind {
   return value === "image" || value === "video" ? value : "none";
+}
+
+function parseHexColor(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const v = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(v)) {
+    const r = v[1]!;
+    const g = v[2]!;
+    const b = v[3]!;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return fallback;
+}
+
+function parseEnabledLocales(value: unknown, locale: string): string[] {
+  const raw = Array.isArray(value)
+    ? value.filter((x): x is string => typeof x === "string" && !!x.trim())
+    : [];
+  // Migrate old customLocales shape
+  const fromCustom =
+    Array.isArray(value) &&
+    value.some((x) => x && typeof x === "object" && "code" in (x as object))
+      ? (value as { code?: string }[])
+          .map((x) => String(x.code ?? "").trim())
+          .filter(Boolean)
+      : [];
+  let list = (raw.length ? raw : fromCustom).map((s) => s.trim());
+  if (!list.length) list = [...DEFAULT_PREFS.enabledLocales];
+  if (locale && !list.includes(locale)) list = [...list, locale];
+  // unique
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of list) {
+    const key = c.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out.slice(0, 32);
 }
 
 export function loadCloneUrl(): string {
@@ -102,23 +171,38 @@ export function saveCloneUrl(url: string) {
   try {
     localStorage.setItem(CLONE_KEY, url);
   } catch {
-    // ignore quota / private mode
+    // ignore
   }
 }
 
 function parseTheme(value: unknown): ThemeId {
-  return typeof value === "string" && THEME_IDS.has(value)
-    ? (value as ThemeId)
-    : "light";
+  if (typeof value !== "string") return "ink";
+  if (THEME_IDS.has(value)) return value as ThemeId;
+  return LEGACY_THEME[value] ?? "ink";
 }
 
 export function loadPrefs(): AppPrefs {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
-    if (!raw) return { ...DEFAULT_PREFS };
-    const parsed = JSON.parse(raw) as Partial<AppPrefs>;
+    if (!raw) return { ...DEFAULT_PREFS, enabledLocales: [...DEFAULT_PREFS.enabledLocales] };
+    const parsed = JSON.parse(raw) as Partial<AppPrefs> & {
+      customLocales?: unknown;
+    };
+    const locale =
+      typeof parsed.locale === "string" && parsed.locale.trim()
+        ? parsed.locale.trim()
+        : "zh-CN";
+    const termKindRaw = parseWallpaperKind(parsed.terminalWallpaperKind);
+    const terminalWallpaperKind: "none" | "image" =
+      termKindRaw === "image" ? "image" : "none";
     return {
       theme: parseTheme(parsed.theme),
+      customScheme: parsed.customScheme === "dark" ? "dark" : "light",
+      customAccent: parseHexColor(
+        parsed.customAccent,
+        DEFAULT_PREFS.customAccent,
+      ),
+      customBg: parseHexColor(parsed.customBg, DEFAULT_PREFS.customBg),
       fontSize: parsed.fontSize === "large" ? "large" : "normal",
       rememberRecent: parsed.rememberRecent !== false,
       showCommitGraph: parsed.showCommitGraph !== false,
@@ -134,7 +218,7 @@ export function loadPrefs(): AppPrefs {
         typeof parsed.terminalWallpaperPath === "string"
           ? parsed.terminalWallpaperPath
           : "",
-      terminalWallpaperKind: parseWallpaperKind(parsed.terminalWallpaperKind),
+      terminalWallpaperKind,
       terminalWallpaperScrim: clampPercent(
         parsed.terminalWallpaperScrim,
         DEFAULT_PREFS.terminalWallpaperScrim,
@@ -145,9 +229,27 @@ export function loadPrefs(): AppPrefs {
           : "",
       mirrorSyncMethod:
         parsed.mirrorSyncMethod === "actions" ? "actions" : "app",
+      locale,
+      enabledLocales: parseEnabledLocales(
+        parsed.enabledLocales ?? parsed.customLocales,
+        locale,
+      ),
+      githubMirrorId:
+        typeof parsed.githubMirrorId === "string" && parsed.githubMirrorId.trim()
+          ? parsed.githubMirrorId.trim()
+          : "off",
+      githubMirrorCustom:
+        typeof parsed.githubMirrorCustom === "string"
+          ? parsed.githubMirrorCustom.trim()
+          : "",
+      hostsText: typeof parsed.hostsText === "string" ? parsed.hostsText : "",
+      hostsAuto: parsed.hostsAuto === true,
     };
   } catch {
-    return { ...DEFAULT_PREFS };
+    return {
+      ...DEFAULT_PREFS,
+      enabledLocales: [...DEFAULT_PREFS.enabledLocales],
+    };
   }
 }
 
@@ -159,11 +261,22 @@ export function savePrefs(prefs: AppPrefs) {
   }
 }
 
+function shade(hex: string, amount: number): string {
+  const n = hex.replace("#", "");
+  if (n.length !== 6) return hex;
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  const r = clamp(parseInt(n.slice(0, 2), 16) + amount);
+  const g = clamp(parseInt(n.slice(2, 4), 16) + amount);
+  const b = clamp(parseInt(n.slice(4, 6), 16) + amount);
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+
 export function applyPrefsToDocument(prefs: AppPrefs) {
   const root = document.documentElement;
   root.dataset.theme = prefs.theme;
-  root.dataset.scheme = themeScheme(prefs.theme);
+  root.dataset.scheme = themeScheme(prefs.theme, prefs.customScheme);
   root.dataset.fontSize = prefs.fontSize;
+  root.lang = prefs.locale || "zh-CN";
   root.style.setProperty(
     "--wallpaper-load-scrim",
     String(clampPercent(prefs.wallpaperLoadScrim, 42) / 100),
@@ -172,6 +285,66 @@ export function applyPrefsToDocument(prefs: AppPrefs) {
     "--terminal-wallpaper-scrim",
     String(clampPercent(prefs.terminalWallpaperScrim, 55) / 100),
   );
+
+  if (prefs.theme === "custom") {
+    const accent = prefs.customAccent || DEFAULT_PREFS.customAccent;
+    const bg = prefs.customBg || DEFAULT_PREFS.customBg;
+    const dark = prefs.customScheme === "dark";
+    root.style.setProperty("--accent", accent);
+    root.style.setProperty("--accent-hover", shade(accent, dark ? 18 : -18));
+    root.style.setProperty("--bg", bg);
+    root.style.setProperty("--panel", shade(bg, dark ? 14 : 10));
+    root.style.setProperty("--surface", shade(bg, dark ? 8 : 6));
+    root.style.setProperty("--header-bg", shade(bg, dark ? 18 : -6));
+    root.style.setProperty("--tab-bg", shade(bg, dark ? 18 : -6));
+    root.style.setProperty("--control-bg", shade(bg, dark ? -8 : 14));
+    root.style.setProperty("--btn-bg", shade(bg, dark ? 18 : 14));
+    root.style.setProperty("--line", shade(bg, dark ? 36 : -28));
+    root.style.setProperty("--text", dark ? "#e8eef4" : "#1a1f24");
+    root.style.setProperty("--muted", dark ? "#8b97a8" : "#5c6570");
+    root.style.setProperty("--add", accent);
+    root.style.setProperty("--hunk", accent);
+  } else {
+    for (const key of [
+      "--accent",
+      "--accent-hover",
+      "--bg",
+      "--panel",
+      "--surface",
+      "--header-bg",
+      "--tab-bg",
+      "--control-bg",
+      "--btn-bg",
+      "--line",
+      "--text",
+      "--muted",
+      "--add",
+      "--hunk",
+    ]) {
+      root.style.removeProperty(key);
+    }
+  }
+}
+
+export function resolveGithubMirrorPrefix(prefs: AppPrefs): string {
+  if (prefs.githubMirrorId === "custom") {
+    return prefs.githubMirrorCustom.trim();
+  }
+  if (prefs.githubMirrorId === "ghproxy") return "https://ghproxy.net/";
+  if (prefs.githubMirrorId === "ghproxy-mirror")
+    return "https://mirror.ghproxy.com/";
+  if (prefs.githubMirrorId === "gitclone") return "https://gitclone.com/";
+  return "";
+}
+
+/** Clear all gittool.* keys in localStorage (prefs, recent, cache, …). */
+export function clearAllLocalAppData() {
+  const keys: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith("gittool.")) keys.push(k);
+  }
+  for (const k of keys) localStorage.removeItem(k);
 }
 
 export function loadOpenRepos(): string[] {

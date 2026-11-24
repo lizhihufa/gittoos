@@ -673,6 +673,41 @@ pub fn continue_operation(git: &GitBinary, repo: &Path) -> Result<String, GitErr
     })
 }
 
+/// Skip the current commit during an in-progress rebase (`git rebase --skip`).
+pub fn skip_rebase(git: &GitBinary, repo: &Path) -> Result<String, GitError> {
+    let op = ongoing_operation(git, repo)?;
+    if op != Some("rebase") {
+        return Err(GitError::InvalidInput(
+            "当前没有进行中的变基，无法跳过。".to_string(),
+        ));
+    }
+    match run_git(git, repo, &["rebase", "--skip"]) {
+        Ok(output) => {
+            let text = combine_output(&output);
+            Ok(if text.trim().is_empty() {
+                "已跳过当前提交，变基继续。".to_string()
+            } else {
+                text
+            })
+        }
+        Err(GitError::CommandFailed { code, stderr, stdout }) => {
+            let text = format!("{stderr}\n{stdout}");
+            if text.to_ascii_lowercase().contains("conflict")
+                || repo_status(git, repo)
+                    .map(|s| s.changes.iter().any(|c| c.conflicted))
+                    .unwrap_or(false)
+            {
+                Err(GitError::InvalidInput(format!(
+                    "跳过后仍有冲突，请解决并暂存后点「继续」。\n{text}"
+                )))
+            } else {
+                Err(GitError::CommandFailed { code, stderr, stdout })
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub fn rebase_branch(git: &GitBinary, repo: &Path, onto: &str) -> Result<String, GitError> {
     let onto = onto.trim();
     if onto.is_empty() {

@@ -7,10 +7,15 @@ import {
 
 export function ConfirmDialog() {
   const [, bump] = useState(0);
+  const [phrase, setPhrase] = useState("");
 
   useEffect(() => subscribeConfirm(() => bump((n) => n + 1)), []);
 
   const pending = getPendingConfirm();
+
+  useEffect(() => {
+    setPhrase("");
+  }, [pending?.id]);
 
   useEffect(() => {
     if (!pending) return;
@@ -18,19 +23,37 @@ export function ConfirmDialog() {
       if (e.key === "Escape") {
         e.preventDefault();
         resolveConfirm(false);
-      } else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-        // Don't steal Enter from nested inputs — this dialog has none.
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        if (pending.requirePhrase && phrase.trim() !== pending.requirePhrase) {
+          return;
+        }
+        // Don't steal Enter while typing in the phrase box unless phrase matches
+        // (handled above). Still prevent default for confirm.
+        if (
+          e.target instanceof HTMLInputElement &&
+          pending.requirePhrase &&
+          phrase.trim() !== pending.requirePhrase
+        ) {
+          return;
+        }
         e.preventDefault();
         resolveConfirm(true);
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [pending?.id]);
+  }, [pending, phrase]);
 
   if (!pending) return null;
 
-  const lines = pending.message.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const lines = pending.message
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const phraseOk =
+    !pending.requirePhrase || phrase.trim() === pending.requirePhrase;
 
   return (
     <div
@@ -54,10 +77,29 @@ export function ConfirmDialog() {
         </div>
         <div id="confirm-dialog-body" className="confirm-dialog-body">
           {lines.map((line, i) => (
-            <p key={`${pending.id}-${i}`} className={i === 0 ? "" : "muted small"}>
+            <p
+              key={`${pending.id}-${i}`}
+              className={i === 0 ? "" : "muted small"}
+            >
               {line}
             </p>
           ))}
+          {pending.requirePhrase && (
+            <label className="confirm-phrase">
+              <span className="muted small">
+                {pending.phraseHint ||
+                  `请输入「${pending.requirePhrase}」以确认`}
+              </span>
+              <input
+                autoFocus
+                value={phrase}
+                onChange={(e) => setPhrase(e.target.value)}
+                placeholder={pending.requirePhrase}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </label>
+          )}
         </div>
         <div className="modal-actions">
           <button type="button" onClick={() => resolveConfirm(false)}>
@@ -66,8 +108,9 @@ export function ConfirmDialog() {
           <button
             type="button"
             className={pending.danger ? "danger confirm-danger-btn" : "primary"}
+            disabled={!phraseOk}
             onClick={() => resolveConfirm(true)}
-            autoFocus
+            autoFocus={!pending.requirePhrase}
           >
             {pending.confirmLabel}
           </button>

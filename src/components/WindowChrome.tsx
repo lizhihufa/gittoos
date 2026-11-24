@@ -4,7 +4,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 type Props = {
   /** Transparent chrome so wallpaper can show through (welcome / boot). */
   overlay?: boolean;
-  title?: string;
+  /** App version string, e.g. "1.6.1" */
+  version?: string;
+  /** When true, show upgrade arrow; otherwise show refresh to re-check. */
+  updateAvailable?: boolean;
+  updateBusy?: boolean;
+  onCheckUpdate?: () => void;
+  /** Click when an update is available (e.g. open About). */
+  onUpdateClick?: () => void;
 };
 
 function IconMinimize() {
@@ -71,7 +78,51 @@ function IconClose() {
   );
 }
 
-export function WindowChrome({ overlay = false, title = "青枝" }: Props) {
+function IconArrowUp() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+      <path
+        d="M6 9.5V2.8M3.2 5.2L6 2.5l2.8 2.7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconRefresh() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+      <path
+        d="M9.6 4.2A3.9 3.9 0 1 0 10 6.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+      />
+      <path
+        d="M9.6 2.2v2.4H7.2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function WindowChrome({
+  overlay = false,
+  version,
+  updateAvailable = false,
+  updateBusy = false,
+  onCheckUpdate,
+  onUpdateClick,
+}: Props) {
   const [maximized, setMaximized] = useState(false);
 
   const refreshMaximized = useCallback(async () => {
@@ -107,10 +158,55 @@ export function WindowChrome({ overlay = false, title = "青枝" }: Props) {
     };
   }, [refreshMaximized]);
 
+  const versionLabel =
+    version && version !== "…" ? `v${version.replace(/^v/i, "")}` : "";
+  const titleText = versionLabel ? `青枝 ${versionLabel}` : "青枝";
+
   return (
     <div className={`window-chrome${overlay ? " is-overlay" : ""}`}>
+      <div className="window-chrome-brand">
+        <div
+          className="window-chrome-drag"
+          data-tauri-drag-region
+          onDoubleClick={() => {
+            void (async () => {
+              await getCurrentWindow().toggleMaximize();
+              await refreshMaximized();
+            })();
+          }}
+        >
+          <span className="window-chrome-title">{titleText}</span>
+        </div>
+        {(onCheckUpdate || onUpdateClick) && (
+          <button
+            type="button"
+            className={
+              "window-chrome-update" +
+              (updateAvailable ? " is-update" : "") +
+              (updateBusy ? " is-busy" : "")
+            }
+            disabled={updateBusy}
+            aria-label={
+              updateAvailable
+                ? "有新版本可用"
+                : "检查更新"
+            }
+            title={
+              updateAvailable
+                ? "有新版本，点击查看"
+                : "检查是否有更新"
+            }
+            onClick={() => {
+              if (updateAvailable) onUpdateClick?.();
+              else onCheckUpdate?.();
+            }}
+          >
+            {updateAvailable ? <IconArrowUp /> : <IconRefresh />}
+          </button>
+        )}
+      </div>
       <div
-        className="window-chrome-drag"
+        className="window-chrome-drag window-chrome-drag-fill"
         data-tauri-drag-region
         onDoubleClick={() => {
           void (async () => {
@@ -118,9 +214,7 @@ export function WindowChrome({ overlay = false, title = "青枝" }: Props) {
             await refreshMaximized();
           })();
         }}
-      >
-        <span className="window-chrome-title">{title}</span>
-      </div>
+      />
       <div className="window-chrome-controls">
         <button
           type="button"

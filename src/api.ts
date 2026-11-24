@@ -54,6 +54,18 @@ export const api = {
     invoke<string>("import_wallpaper", { source, slot }),
   clearWallpaper: (slot: "load" | "terminal" = "load") =>
     invoke<void>("clear_wallpaper", { slot }),
+  listSystemWallpapers: () =>
+    invoke<
+      { path: string; kind: string; label: string; source: string }[]
+    >("list_system_wallpapers"),
+  clearAppWallpaperFiles: () => invoke<void>("clear_app_wallpaper_files"),
+  getSystemHostsPath: () => invoke<string>("get_system_hosts_path"),
+  revealSystemHosts: () => invoke<void>("reveal_system_hosts"),
+  applySystemHosts: (block: string) =>
+    invoke<string>("apply_system_hosts", { block }),
+  resolveGithubHosts: () => invoke<string>("resolve_github_hosts"),
+  getHostsStatus: () =>
+    invoke<{ path: string; managed: boolean }>("get_hosts_status"),
   checkRepository: (path: string) =>
     invoke<boolean>("check_repository", { path }),
   initRepo: (path: string) => invoke<void>("init_repo", { path }),
@@ -162,6 +174,7 @@ export const api = {
     invoke<string>("git_abort_operation", { path }),
   continueOperation: (path: string) =>
     invoke<string>("git_continue_operation", { path }),
+  skipRebase: (path: string) => invoke<string>("git_skip_rebase", { path }),
   getRemotes: (path: string) => invoke<RemoteInfo[]>("get_remotes", { path }),
   saveRemote: (path: string, name: string, url: string) =>
     invoke<void>("save_remote", { path, name, url }),

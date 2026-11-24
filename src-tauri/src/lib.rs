@@ -18,8 +18,9 @@ use git::{
     push_tag, push_with_options, read_identity, read_workdir_file, rebase_branch,
     rebase_interactive, remove_remote, rename_branch, repo_status, repo_status_light_nonblocking,
     reset_to_commit, revert_commit, run_shell, set_app_handle, set_remote_url, setup_actions_mirror,
-    set_upstream, stage_paths, staged_large_files, stash_apply, stash_drop, stash_pop, stash_push,
-    stash_show, undo_last_commit, unstage_paths, with_git_quiet, write_identity, write_workdir_file,
+    set_upstream, skip_rebase, stage_paths, staged_large_files, stash_apply, stash_drop, stash_pop,
+    stash_push, stash_show, undo_last_commit, unstage_paths, with_git_quiet, write_identity,
+    write_workdir_file,
     ActionsMirrorSetup, ActionsMirrorStatus, AuthAccounts, BranchInfo, CommitInfo, GitBinary,
     GitError, GitInfo, RebaseTodoItem,
     GithubDevicePollResult, GithubDeviceStart, HostingRepo, Identity, LargeFileInfo, OauthBegin,
@@ -176,6 +177,525 @@ fn clear_wallpaper(app: AppHandle, slot: Option<String>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SystemWallpaperItem {
+    path: String,
+    kind: String, // "image" | "video"
+    label: String,
+    source: String,
+}
+
+fn wallpaper_kind_from_path(path: &Path) -> Option<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" => Some("image"),
+        "mp4" | "webm" | "mov" => Some("video"),
+        // Windows TranscodedWallpaper often has no extension but is an image blob
+        "" => {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if name.contains("wallpaper") || name == "transcodedwallpaper" {
+                Some("image")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn push_wallpaper_if_valid(
+    out: &mut Vec<SystemWallpaperItem>,
+    seen: &mut std::collections::HashSet<String>,
+    path: PathBuf,
+    source: &str,
+) {
+    if !path.is_file() {
+        return;
+    }
+    let Some(kind) = wallpaper_kind_from_path(&path) else {
+        return;
+    };
+    // Skip tiny spotlight junk (< 20KB) that aren't real wallpapers
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() < 20_000 {
+            return;
+        }
+    }
+    let key = path.to_string_lossy().to_ascii_lowercase();
+    if !seen.insert(key) {
+        return;
+    }
+    let label = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("wallpaper")
+        .to_string();
+    out.push(SystemWallpaperItem {
+        path: path.to_string_lossy().to_string(),
+        kind: kind.to_string(),
+        label,
+        source: source.to_string(),
+    });
+}
+
+fn collect_dir_wallpapers(
+    out: &mut Vec<SystemWallpaperItem>,
+    seen: &mut std::collections::HashSet<String>,
+    dir: &Path,
+    source: &str,
+    recursive: bool,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            push_wallpaper_if_valid(out, seen, path, source);
+        } else if recursive && path.is_dir() {
+            collect_dir_wallpapers(out, seen, &path, source, false);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn desktop_wallpaper_from_registry() -> Option<PathBuf> {
+    use std::os::windows::process::CommandExt;
+    // Avoid flashing a console window.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Control Panel\Desktop",
+            "/v",
+            "WallPaper",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        if let Some(idx) = line.find("REG_SZ") {
+            let path = line[idx + "REG_SZ".len()..].trim();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn desktop_wallpaper_from_registry() -> Option<PathBuf> {
+    None
+}
+
+/// List wallpapers from the current desktop wallpaper and common Windows Wallpaper folders.
+#[tauri::command]
+fn list_system_wallpapers() -> Result<Vec<SystemWallpaperItem>, String> {
+    let mut out: Vec<SystemWallpaperItem> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(desk) = desktop_wallpaper_from_registry() {
+        push_wallpaper_if_valid(&mut out, &mut seen, desk, "desktop");
+    }
+
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let themes = PathBuf::from(&appdata).join(r"Microsoft\Windows\Themes");
+        push_wallpaper_if_valid(
+            &mut out,
+            &mut seen,
+            themes.join("TranscodedWallpaper"),
+            "themes",
+        );
+        collect_dir_wallpapers(
+            &mut out,
+            &mut seen,
+            &themes.join("CachedFiles"),
+            "themes",
+            false,
+        );
+    }
+
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let local = PathBuf::from(local);
+        collect_dir_wallpapers(
+            &mut out,
+            &mut seen,
+            &local.join(r"Microsoft\Windows\Themes\CachedFiles"),
+            "cached",
+            false,
+        );
+        // Windows Spotlight / Content Delivery assets
+        let spotlight = local.join(
+            r"Packages\Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy\LocalState\Assets",
+        );
+        if let Ok(entries) = std::fs::read_dir(&spotlight) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    // Spotlight lock-screen candidates are usually large JPEGs
+                    if meta.len() < 80_000 {
+                        continue;
+                    }
+                }
+                let key = path.to_string_lossy().to_ascii_lowercase();
+                if !seen.insert(key) {
+                    continue;
+                }
+                out.push(SystemWallpaperItem {
+                    path: path.to_string_lossy().to_string(),
+                    kind: "image".into(),
+                    label: path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("spotlight")
+                        .to_string(),
+                    source: "spotlight".into(),
+                });
+            }
+        }
+    }
+
+    // Public / Windows wallpaper folders
+    for (dir, source) in [
+        (
+            PathBuf::from(r"C:\Windows\Web\Wallpaper"),
+            "windows",
+        ),
+        (
+            PathBuf::from(r"C:\Windows\Web\Screen"),
+            "windows",
+        ),
+    ] {
+        collect_dir_wallpapers(&mut out, &mut seen, &dir, source, true);
+    }
+
+    // Prefer desktop first; then cap list size for UI
+    out.sort_by(|a, b| {
+        let rank = |s: &str| match s {
+            "desktop" => 0,
+            "themes" => 1,
+            "cached" => 2,
+            "spotlight" => 3,
+            _ => 4,
+        };
+        rank(&a.source)
+            .cmp(&rank(&b.source))
+            .then(a.label.cmp(&b.label))
+    });
+    out.truncate(48);
+    Ok(out)
+}
+
+#[tauri::command]
+fn clear_app_wallpaper_files(app: AppHandle) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("wallpaper.") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
+const HOSTS_MARKER_BEGIN: &str = "# qingzhi-github-hosts BEGIN";
+const HOSTS_MARKER_END: &str = "# qingzhi-github-hosts END";
+
+fn system_hosts_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(r"C:\Windows\System32\drivers\etc\hosts")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/etc/hosts")
+    }
+}
+
+fn strip_managed_hosts_block(content: &str) -> String {
+    let mut out = String::new();
+    let mut skipping = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == HOSTS_MARKER_BEGIN {
+            skipping = true;
+            continue;
+        }
+        if trimmed == HOSTS_MARKER_END {
+            skipping = false;
+            continue;
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn wrap_hosts_block(block: &str) -> String {
+    let body = block
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            t != HOSTS_MARKER_BEGIN && t != HOSTS_MARKER_END
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{HOSTS_MARKER_BEGIN}\n{body}\n{HOSTS_MARKER_END}\n")
+}
+
+#[tauri::command]
+fn get_system_hosts_path() -> String {
+    system_hosts_path().to_string_lossy().to_string()
+}
+
+#[tauri::command]
+fn reveal_system_hosts() -> Result<(), String> {
+    let path = system_hosts_path();
+    let dir = path
+        .parent()
+        .ok_or_else(|| "无法定位 Hosts 目录".to_string())?;
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("无法打开资源管理器: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("无法打开目录: {e}"))?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("无法打开目录: {e}"))?;
+        Ok(())
+    }
+}
+
+fn build_hosts_file_content(block: &str) -> String {
+    let path = system_hosts_path();
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let cleaned = strip_managed_hosts_block(&existing);
+    let trimmed = block.trim();
+    if trimmed.is_empty() {
+        cleaned
+    } else {
+        format!("{}\n{}", cleaned.trim_end(), wrap_hosts_block(trimmed))
+    }
+}
+
+#[cfg(windows)]
+fn write_hosts_elevated(next_content: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let temp = std::env::temp_dir().join(format!(
+        "qingzhi-hosts-{}.txt",
+        std::process::id()
+    ));
+    std::fs::write(&temp, next_content).map_err(|e| format!("写入临时文件失败: {e}"))?;
+
+    let hosts = system_hosts_path();
+    let temp_s = temp.to_string_lossy().replace('\'', "''");
+    let hosts_s = hosts.to_string_lossy().replace('\'', "''");
+    // Nested elevated powershell: UAC prompt once, then copy over hosts.
+    let inner = format!(
+        "Copy-Item -LiteralPath '{temp_s}' -Destination '{hosts_s}' -Force; if (-not $?) {{ exit 1 }}"
+    );
+    let inner_escaped = inner.replace('\'', "''");
+    let outer = format!(
+        "Start-Process -FilePath powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','{inner_escaped}'; exit $LASTEXITCODE"
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &outer])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("无法请求管理员权限写入 Hosts: {e}"))?;
+
+    let _ = std::fs::remove_file(&temp);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "管理员写入 Hosts 失败或已取消 UAC 授权。{}",
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!("\n{stderr}")
+            }
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn write_hosts_elevated(next_content: &str) -> Result<(), String> {
+    let path = system_hosts_path();
+    std::fs::write(&path, next_content).map_err(|e| {
+        format!(
+            "写入 Hosts 失败（通常需要管理员/root 权限）: {e}\n路径: {}",
+            path.display()
+        )
+    })
+}
+
+/// Replace the managed `# qingzhi-github-hosts` block in the system hosts file.
+/// Empty `block` removes the managed section. Tries direct write, then elevates (UAC) on Windows.
+#[tauri::command]
+fn apply_system_hosts(block: String) -> Result<String, String> {
+    let path = system_hosts_path();
+    let next = build_hosts_file_content(&block);
+    match std::fs::write(&path, &next) {
+        Ok(()) => Ok(path.to_string_lossy().to_string()),
+        Err(e) => {
+            // Permission denied → try UAC elevation on Windows.
+            let kind = e.kind();
+            if kind == std::io::ErrorKind::PermissionDenied
+                || kind == std::io::ErrorKind::Other
+                || format!("{e}").to_ascii_lowercase().contains("access")
+                || format!("{e}").contains("拒绝")
+            {
+                write_hosts_elevated(&next)?;
+                Ok(path.to_string_lossy().to_string())
+            } else {
+                Err(format!(
+                    "写入 Hosts 失败: {e}\n路径: {}",
+                    path.display()
+                ))
+            }
+        }
+    }
+}
+
+fn doh_resolve_a(name: &str) -> Option<String> {
+    // Prefer AliDNS DoH — usually reachable in CN; fall back to Cloudflare.
+    for base in [
+        "https://dns.alidns.com/resolve",
+        "https://cloudflare-dns.com/dns-query",
+    ] {
+        let url = format!("{base}?name={name}&type=A");
+        let mut req = ureq::get(&url);
+        if base.contains("cloudflare") {
+            req = req.set("Accept", "application/dns-json");
+        }
+        let Ok(resp) = req.call() else {
+            continue;
+        };
+        let Ok(v) = resp.into_json::<serde_json::Value>() else {
+            continue;
+        };
+        if let Some(arr) = v.get("Answer").and_then(|a| a.as_array()) {
+            for ans in arr {
+                let ty = ans.get("type").and_then(|t| t.as_u64()).unwrap_or(0);
+                if ty != 1 {
+                    continue;
+                }
+                if let Some(ip) = ans.get("data").and_then(|d| d.as_str()) {
+                    let ip = ip.trim();
+                    // Basic IPv4 sanity
+                    if ip.split('.').count() == 4 {
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+const GITHUB_HOST_NAMES: &[&str] = &[
+    "github.com",
+    "api.github.com",
+    "codeload.github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "gist.githubusercontent.com",
+];
+
+/// Resolve GitHub-related domains to A records and build a hosts snippet.
+#[tauri::command]
+fn resolve_github_hosts() -> Result<String, String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut ok = 0usize;
+    for name in GITHUB_HOST_NAMES {
+        if let Some(ip) = doh_resolve_a(name) {
+            lines.push(format!("{ip} {name}"));
+            ok += 1;
+        }
+    }
+    if ok == 0 {
+        return Err(
+            "未能解析到 GitHub IP（网络或 DNS 不可用）。可稍后重试，或改用镜像加速。"
+                .into(),
+        );
+    }
+    // Fill missing with first successful github.com IP when possible
+    let fallback_ip = lines
+        .iter()
+        .find(|l| l.contains("github.com"))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or("140.82.121.3")
+        .to_string();
+    for name in GITHUB_HOST_NAMES {
+        if !lines.iter().any(|l| l.ends_with(name)) {
+            lines.push(format!("{fallback_ip} {name}"));
+        }
+    }
+    Ok(format!(
+        "{HOSTS_MARKER_BEGIN}\n{}\n{HOSTS_MARKER_END}\n",
+        lines.join("\n")
+    ))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostsStatus {
+    path: String,
+    managed: bool,
+}
+
+#[tauri::command]
+fn get_hosts_status() -> HostsStatus {
+    let path = system_hosts_path();
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    HostsStatus {
+        path: path.to_string_lossy().to_string(),
+        managed: content.contains(HOSTS_MARKER_BEGIN),
+    }
 }
 
 #[tauri::command]
@@ -757,6 +1277,15 @@ async fn git_continue_operation(
 }
 
 #[tauri::command]
+async fn git_skip_rebase(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| skip_rebase(git, &repo)).await
+}
+
+#[tauri::command]
 fn get_remotes(state: State<'_, AppState>, path: String) -> Result<Vec<RemoteInfo>, String> {
     let repo = repo_path(&path)?;
     with_git_quiet(|| with_git(&state, |git| list_remotes(git, &repo)))
@@ -1212,6 +1741,13 @@ pub fn run() {
             path_exists,
             import_wallpaper,
             clear_wallpaper,
+            list_system_wallpapers,
+            clear_app_wallpaper_files,
+            get_system_hosts_path,
+            reveal_system_hosts,
+            apply_system_hosts,
+            resolve_github_hosts,
+            get_hosts_status,
             check_repository,
             init_repo,
             get_status,
@@ -1264,6 +1800,7 @@ pub fn run() {
             remote_branch_delete,
             git_abort_operation,
             git_continue_operation,
+            git_skip_rebase,
             git_fetch,
             git_pull,
             git_push,

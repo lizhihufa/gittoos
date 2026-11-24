@@ -37,17 +37,38 @@ import {
 } from "./recent";
 import { clearRepoCache, loadRepoCache, saveRepoCache } from "./repoCache";
 import { formatGithubOwnerRepo, parseGithubOwnerRepo } from "./githubRepo";
+import { applyGithubMirror } from "./githubNetwork";
+import { t as i18n } from "./i18n";
+import {
+  SettingsAboutPage,
+  SettingsLanguagePage,
+  SettingsNetworkPage,
+  SettingsResetPage,
+} from "./components/SettingsExtraPages";
 import {
   applyPrefsToDocument,
+  clearAllLocalAppData,
+  DEFAULT_PREFS,
   loadCloneUrl,
   loadOpenRepos,
   loadPrefs,
+  resolveGithubMirrorPrefix,
   saveCloneUrl,
   saveOpenRepos,
   savePrefs,
   THEME_OPTIONS,
   type AppPrefs,
 } from "./settingsStore";
+
+type SettingsPage =
+  | "auth"
+  | "identity"
+  | "appearance"
+  | "behavior"
+  | "language"
+  | "network"
+  | "reset"
+  | "about";
 import {
   failureLine,
   isAuthFailure,
@@ -188,14 +209,16 @@ export default function App() {
   const [rebaseTarget, setRebaseTarget] = useState("");
   const [terminal, setTerminal] = useState("");
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsPage, setSettingsPage] = useState<
-    "appearance" | "auth" | "identity"
-  >("appearance");
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>("auth");
+  const [loadWpMode, setLoadWpMode] = useState<"static" | "dynamic">("static");
+  const [systemWallpapers, setSystemWallpapers] = useState<
+    { path: string; kind: string; label: string; source: string }[]
+  >([]);
+  const [systemWpBusy, setSystemWpBusy] = useState(false);
   const [appVersion, setAppVersion] = useState(
     typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "…",
   );
   const [showHelp, setShowHelp] = useState(false);
-  const [showAbout, setShowAbout] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<{
@@ -491,6 +514,15 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [notice, noticeSticky]);
 
+  useEffect(() => {
+    if (!error || authHint) return;
+    const current = error;
+    const timer = window.setTimeout(() => {
+      setError((prev) => (prev === current ? null : prev));
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [error, authHint]);
+
   const repoPathRef = useRef<string | null>(null);
   repoPathRef.current = repoPath;
 
@@ -590,15 +622,6 @@ export default function App() {
       return null;
     }
   }, [prefs.terminalWallpaperKind, prefs.terminalWallpaperPath]);
-
-  function mediaKindFromPath(path: string): "image" | "video" {
-    const lower = path.toLowerCase();
-    return lower.endsWith(".mp4") ||
-      lower.endsWith(".webm") ||
-      lower.endsWith(".mov")
-      ? "video"
-      : "image";
-  }
 
   const releaseTarget = useMemo(() => {
     const fromPrefs = parseGithubOwnerRepo(prefs.releaseRepoOverride);
@@ -874,6 +897,50 @@ export default function App() {
     });
   }, []);
 
+  const refreshSystemWallpapers = useCallback(async () => {
+    setSystemWpBusy(true);
+    try {
+      const list = await api.listSystemWallpapers();
+      setSystemWallpapers(list);
+    } catch (e) {
+      setError(failureLine(e));
+    } finally {
+      setSystemWpBusy(false);
+    }
+  }, []);
+
+  const applySystemWallpaper = useCallback(
+    async (
+      item: { path: string; kind: string },
+      slot: "load" | "terminal",
+    ) => {
+      try {
+        if (slot === "terminal" && item.kind === "video") {
+          setError("终端仅支持静态壁纸（图片）");
+          return;
+        }
+        const saved = await api.importWallpaper(item.path, slot);
+        if (slot === "terminal") {
+          updatePrefs({
+            terminalWallpaperPath: saved,
+            terminalWallpaperKind: "image",
+          });
+          setNotice("已设置终端静态壁纸");
+          return;
+        }
+        const kind = item.kind === "video" ? "video" : "image";
+        updatePrefs({ wallpaperPath: saved, wallpaperKind: kind });
+        setLoadWpMode(kind === "video" ? "dynamic" : "static");
+        setNotice(kind === "video" ? "已设置动态壁纸" : "已设置静态壁纸");
+      } catch (e) {
+        setError(failureLine(e));
+      }
+    },
+    [updatePrefs],
+  );
+
+
+
   const pickFolder = useCallback(async () => {
     const selectedPath = await open({
       directory: true,
@@ -919,8 +986,16 @@ export default function App() {
     setBusy(true);
     setError(null);
     setNotice("正在克隆…");
+    const mirrorPrefix = resolveGithubMirrorPrefix(prefs);
+    const cloneUrlEffective = applyGithubMirror(url, mirrorPrefix);
+    if (cloneUrlEffective !== url) {
+      setNotice(`正在经镜像克隆…\n${cloneUrlEffective}`);
+    }
     try {
-      const dest = await api.cloneRepo(url, selectedPath, { branch, depth });
+      const dest = await api.cloneRepo(cloneUrlEffective, selectedPath, {
+        branch,
+        depth,
+      });
       setNotice("克隆完成");
       setShowSettings(false);
       await openFolder(dest);
@@ -929,7 +1004,7 @@ export default function App() {
       setError(failureLine(e));
       setBusy(false);
     }
-  }, [cloneDialog, openFolder]);
+  }, [cloneDialog, openFolder, prefs]);
 
   async function runMirrorPush() {
     if (!repoPath || !mirrorTarget) return;
@@ -942,7 +1017,7 @@ export default function App() {
         const status = await api.getActionsMirrorStatus(repoPath);
         if (!status.workflowExists) {
           throw new Error(
-            "尚未安装 Actions 工作流。请到设置 → 外观与行为，点「安装 Actions 镜像」。",
+            "尚未安装 Actions 工作流。请到设置 → 行为，点「安装 Actions 镜像」。",
           );
         }
         const text = await api.push(repoPath, false, null);
@@ -1098,7 +1173,7 @@ export default function App() {
 
   useEffect(() => () => stopDevicePoll(), [stopDevicePoll]);
 
-  function openSettings(page: "appearance" | "auth" | "identity" = "appearance") {
+  function openSettings(page: SettingsPage = "auth") {
     setSettingsPage(page);
     setShowSettings(true);
   }
@@ -1812,8 +1887,9 @@ export default function App() {
   }
 
   function renderRebaseInteractiveDialog() {
-    if (!rebaseInteractive) return null;
+    if (!rebaseInteractive || !repoPath) return null;
     const { onto, rows } = rebaseInteractive;
+    const path = repoPath;
     return (
       <RebaseInteractiveModal
         onto={onto}
@@ -1831,7 +1907,7 @@ export default function App() {
             () => {
               void runAction(async () => {
                 const text = await api.branchRebaseInteractive(
-                  repoPath,
+                  path,
                   onto,
                   rows.map((r) => ({
                     action: r.action,
@@ -2002,7 +2078,7 @@ export default function App() {
               placeholder="如 main"
               disabled={busy}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.isComposing) {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   submit();
                 }
@@ -2139,7 +2215,7 @@ export default function App() {
               )
             }
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.isComposing) {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 submit();
               } else if (e.key === "Escape") {
@@ -2215,7 +2291,7 @@ export default function App() {
               )
             }
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.isComposing) {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 submit();
               } else if (e.key === "Escape") {
@@ -3014,10 +3090,67 @@ export default function App() {
     );
   }
 
+  function renderFloatingToasts() {
+    if (!notice && !error) return null;
+    return (
+      <div className="toast-stack" aria-live="polite">
+        {notice && (
+          <button
+            type="button"
+            className={`toast toast-notice${noticeSticky ? " is-sticky" : ""}`}
+            title={
+              noticeSticky
+                ? `${notice}（点击关闭，不会自动消失）`
+                : `${notice}（点击关闭）`
+            }
+            onClick={() => setNotice(null)}
+          >
+            {notice}
+          </button>
+        )}
+        {error && (
+          <div className="toast toast-error">
+            <button
+              type="button"
+              className="toast-error-text"
+              title={`${error}（点击关闭）`}
+              onClick={() => {
+                setError(null);
+                setAuthHint(false);
+              }}
+            >
+              {error}
+            </button>
+            {authHint && (
+              <button
+                type="button"
+                className="primary toast-error-action"
+                onClick={() => openSettingsAuth()}
+              >
+                去登录
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (!repoPath) {
     return (
       <>
-        <WindowChrome overlay={Boolean(wallpaperUrl) || Boolean(boot)} />
+        {renderFloatingToasts()}
+        <WindowChrome
+          overlay={Boolean(wallpaperUrl) || Boolean(boot)}
+          version={appVersion}
+          updateAvailable={Boolean(
+            updateInfo?.updateAvailable &&
+              updateInfo.latestVersion !== dismissedUpdateTag,
+          )}
+          updateBusy={updateBusy}
+          onCheckUpdate={() => void checkForUpdate(false)}
+          onUpdateClick={() => openSettings("about")}
+        />
         {boot && (
           <LoadingScreen
             folderName={folderName(boot.path)}
@@ -3071,7 +3204,7 @@ export default function App() {
             <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
               说明书
             </button>
-            <button type="button" onClick={() => setShowAbout(true)} disabled={busy}>
+            <button type="button" onClick={() => openSettings("about")} disabled={busy}>
               关于
             </button>
             <button type="button" onClick={() => void cloneRepo()} disabled={busy || !gitInfo}>
@@ -3149,7 +3282,6 @@ export default function App() {
               </ul>
             </div>
           )}
-          {error && <div className="error-box" title={error}>{error}</div>}
           {updateInfo?.updateAvailable &&
             updateInfo.tagName !== dismissedUpdateTag && (
             <div className="update-banner" role="status">
@@ -3165,7 +3297,7 @@ export default function App() {
                 >
                   下载并安装
                 </button>
-                <button type="button" onClick={() => setShowAbout(true)}>
+                <button type="button" onClick={() => openSettings("about")}>
                   关于
                 </button>
               </div>
@@ -3183,146 +3315,9 @@ export default function App() {
         </div>
         {showSettings && renderSettings()}
         {showHelp && renderHelp()}
-        {showAbout && renderAbout()}
+        {/* about moved into settings */}
       </div>
       </>
-    );
-  }
-
-  function renderAbout() {
-    const hasUpdate = Boolean(updateInfo?.updateAvailable);
-    return (
-      <div className="modal-mask" onClick={() => setShowAbout(false)}>
-        <div
-          className="modal about-modal"
-          onClick={(event) => event.stopPropagation()}
-          role="dialog"
-          aria-modal="true"
-          aria-label="关于青枝"
-        >
-          <header className="about-modal-head">
-            <div>
-              <h3>关于青枝</h3>
-              <p className="muted small">本地 Git 桌面工具 · 开源，禁止商用</p>
-            </div>
-            <button
-              type="button"
-              className="settings-close"
-              onClick={() => setShowAbout(false)}
-              aria-label="关闭"
-            >
-              关闭
-            </button>
-          </header>
-          <div className="settings-card about-card">
-            <div className="about-brand">青枝</div>
-            <p className="about-line">
-              <span>当前版本</span>
-              <strong>v{appVersion}</strong>
-            </p>
-            <p className="about-line">
-              <span>作者</span>
-              <strong>理智护发</strong>
-            </p>
-            <p className="about-line">
-              <span>邮箱</span>
-              <button
-                type="button"
-                className="linkish about-mail"
-                onClick={() => void openUrl("mailto:lizhihufa@163.com")}
-              >
-                lizhihufa@163.com
-              </button>
-            </p>
-          </div>
-
-          <div className="settings-card about-feedback">
-            <h5>软件更新</h5>
-            <p className="muted small">
-              从 GitHub（{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}）检测最新 Release。
-            </p>
-            {hasUpdate ? (
-              <p className="about-update-tip">
-                发现新版本 <strong>v{updateInfo!.latestVersion}</strong>
-                {updateInfo!.name ? ` · ${updateInfo!.name}` : ""}
-              </p>
-            ) : updateInfo ? (
-              <p className="muted small">当前已是最新版本。</p>
-            ) : null}
-            {updateInfo?.body ? (
-              <pre className="about-release-notes">{updateInfo.body}</pre>
-            ) : null}
-            {updateProgress && (
-              <div className="about-progress">
-                <div className="about-progress-head">
-                  <span>{updateProgress.label}</span>
-                  <span>{updateProgress.percent}%</span>
-                </div>
-                <div className="about-progress-bar">
-                  <i style={{ width: `${updateProgress.percent}%` }} />
-                </div>
-              </div>
-            )}
-            <div className="about-actions">
-              <button
-                type="button"
-                disabled={updateBusy || busy}
-                onClick={() => void checkForUpdate(false)}
-              >
-                检查更新
-              </button>
-              {hasUpdate && (
-              <button
-                type="button"
-                  className="primary"
-                  disabled={updateBusy || busy}
-                  onClick={() => void downloadAndInstallUpdate()}
-              >
-                  下载并安装
-              </button>
-              )}
-              {updateInfo?.htmlUrl && (
-                <button
-                  type="button"
-                  className="linkish"
-                  disabled={updateBusy}
-                  onClick={() => void openUrl(updateInfo.htmlUrl)}
-                >
-                  打开 Release 页面
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="settings-card about-feedback">
-            <h5>遇到问题？</h5>
-            <p className="muted small">
-              请截图界面，并简要说明操作步骤与报错内容，发送到作者邮箱。收到后会尽快回复。
-            </p>
-            <button
-              type="button"
-              className="primary about-feedback-btn"
-              onClick={() =>
-                void openUrl(
-                  "mailto:lizhihufa@163.com?subject=%E9%9D%92%E6%9E%9D%E9%97%AE%E9%A2%98%E5%8F%8D%E9%A6%88&body=%E8%AF%B7%E9%99%84%E4%B8%8A%E6%88%AA%E5%9B%BE%EF%BC%8C%E5%B9%B6%E8%AF%B4%E6%98%8E%EF%BC%9A%0A1.%20%E5%81%9A%E4%BA%86%E4%BB%80%E4%B9%88%0A2.%20%E5%87%BA%E7%8E%B0%E4%BA%86%E4%BB%80%E4%B9%88%0A3.%20%E6%9C%9F%E6%9C%9B%E7%BB%93%E6%9E%9C%0A",
-                )
-              }
-            >
-              写邮件反馈
-            </button>
-            <button
-              type="button"
-              className="about-copy-mail"
-              onClick={() => {
-                void navigator.clipboard.writeText("lizhihufa@163.com");
-                setNotice("已复制邮箱");
-              }}
-            >
-              复制邮箱
-            </button>
-          </div>
-        </div>
-      </div>
     );
   }
 
@@ -3346,7 +3341,7 @@ export default function App() {
             <h4>工具栏</h4>
             <ul>
               <li>打开 / 刷新：换项目或重新读取状态（F5、Ctrl+R）。</li>
-              <li>关于：当前版本、检查更新、下载安装。</li>
+              <li>关于：在设置 → 关于中查看版本、检查更新、下载安装。</li>
               <li>下方「Release」页：管理 GitHub Release 附件（上传/删除安装包）。</li>
               <li>获取：只下载远程，不改本地文件。</li>
               <li>拉取：合并拉取或变基拉取（▾ 切换；Ctrl+Shift+L）。</li>
@@ -3380,12 +3375,11 @@ export default function App() {
               <li>标签：创建（可填附注）、推送、推送全部、删本地、删远程。</li>
               <li>终端（默认页）：显示界面对应的 git 输出，也可手输命令。</li>
             </ul>
-            <h4>设置</h4>
+            <h4>设置（全屏）</h4>
             <ul>
-              <li>主题、字体、最近打开、提交图、仓库缓存加速。</li>
-              <li>壁纸：欢迎页/加载页与终端可分别设置背景。</li>
-              <li>GitHub / Gitee：Git 登录、浏览器 OAuth、Token；工具栏可看登录状态。</li>
-              <li>身份与远程：名字邮箱、origin、克隆地址；点「保存」一并写入。</li>
+              <li>账号登录 / 身份与远程 / 外观 / 行为 / 语言 / 网络 / 重置 / 关于。</li>
+              <li>外观：主题、字体、壁纸；行为：最近打开、提交图、缓存、同步方式、Release 仓库。</li>
+              <li>网络：GitHub 克隆镜像与 Hosts 片段；语言：中文 / English，可添加自定义语言代码。</li>
             </ul>
             <h4>多仓库与安全</h4>
             <ul>
@@ -3408,44 +3402,46 @@ export default function App() {
   }
 
   function renderSettings() {
-    const navItems: {
-      id: "appearance" | "auth" | "identity";
-      title: string;
-      desc: string;
-    }[] = [
-      { id: "appearance", title: "外观与行为", desc: "主题、壁纸与习惯" },
-      { id: "auth", title: "账号登录", desc: "GitHub / Gitee" },
-      { id: "identity", title: "身份与远程", desc: "名字、邮箱、地址" },
+    const loc = prefs.locale || "zh-CN";
+    const navItems: { id: SettingsPage; title: string; desc: string }[] = [
+      { id: "auth", title: i18n(loc, "nav.auth"), desc: i18n(loc, "nav.auth.desc") },
+      { id: "identity", title: i18n(loc, "nav.identity"), desc: i18n(loc, "nav.identity.desc") },
+      { id: "appearance", title: i18n(loc, "nav.appearance"), desc: i18n(loc, "nav.appearance.desc") },
+      { id: "behavior", title: i18n(loc, "nav.behavior"), desc: i18n(loc, "nav.behavior.desc") },
+      { id: "language", title: i18n(loc, "nav.language"), desc: i18n(loc, "nav.language.desc") },
+      { id: "network", title: i18n(loc, "nav.network"), desc: i18n(loc, "nav.network.desc") },
+      { id: "reset", title: i18n(loc, "nav.reset"), desc: i18n(loc, "nav.reset.desc") },
+      { id: "about", title: i18n(loc, "nav.about"), desc: i18n(loc, "nav.about.desc") },
     ];
     const authLogged =
       (accounts?.github.loggedIn ? 1 : 0) + (accounts?.gitee.loggedIn ? 1 : 0);
 
     return (
-      <div className="modal-mask" onClick={() => setShowSettings(false)}>
+      <div className="modal-mask settings-mask" onClick={() => setShowSettings(false)}>
         <div
-          className="modal settings-modal settings-shell"
+          className="modal settings-modal settings-shell settings-shell-fullscreen"
           onClick={(event) => event.stopPropagation()}
           role="dialog"
           aria-modal="true"
-          aria-label="设置"
+          aria-label={i18n(loc, "settings.title")}
         >
           <header className="settings-shell-head">
             <div>
-              <h3>设置</h3>
-              <p className="muted small">按分类管理外观、登录与仓库身份</p>
+              <h3>{i18n(loc, "settings.title")}</h3>
+              <p className="muted small">{i18n(loc, "settings.subtitle")}</p>
             </div>
             <button
               type="button"
               className="settings-close"
               onClick={() => setShowSettings(false)}
-              aria-label="关闭设置"
+              aria-label={i18n(loc, "settings.close")}
             >
-              关闭
+              {i18n(loc, "settings.close")}
             </button>
           </header>
 
           <div className="settings-shell-body">
-            <nav className="settings-nav" aria-label="设置分类">
+            <nav className="settings-nav" aria-label={i18n(loc, "settings.title")}>
               {navItems.map((item) => (
                 <button
                   key={item.id}
@@ -3473,28 +3469,85 @@ export default function App() {
               {settingsPage === "appearance" && (
                 <section className="settings-section">
                   <div className="settings-pane-intro">
-                    <h4>外观与行为</h4>
-                    <p className="muted small">调整界面观感与打开仓库时的习惯。</p>
+                    <h4>外观</h4>
+                    <p className="muted small">主题色板、字体与壁纸。</p>
                   </div>
-                  <div className="settings-grid-2">
-          <label className="settings-field">
-                      <span>主题</span>
-                      <select
-                        value={prefs.theme}
-                        onChange={(e) =>
-                          updatePrefs({
-                            theme: e.target.value as AppPrefs["theme"],
-                          })
-                        }
+
+                  <div className="settings-card">
+                    <h5>主题</h5>
+                    <div className="theme-swatch-grid" role="listbox" aria-label="主题">
+                      {THEME_OPTIONS.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          role="option"
+                          aria-selected={prefs.theme === t.id}
+                          className={`theme-swatch${prefs.theme === t.id ? " is-active" : ""}`}
+                          onClick={() => updatePrefs({ theme: t.id })}
+                        >
+                          <span
+                            className="theme-swatch-chip"
+                            style={{ background: t.swatch }}
+                          />
+                          <span className="theme-swatch-label">{t.label}</span>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={prefs.theme === "custom"}
+                        className={`theme-swatch${prefs.theme === "custom" ? " is-active" : ""}`}
+                        onClick={() => updatePrefs({ theme: "custom" })}
                       >
-                        {THEME_OPTIONS.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="settings-field">
+                        <span
+                          className="theme-swatch-chip"
+                          style={{
+                            background: `linear-gradient(135deg, ${prefs.customAccent}, ${prefs.customBg})`,
+                          }}
+                        />
+                        <span className="theme-swatch-label">自定义</span>
+                      </button>
+                    </div>
+                    {prefs.theme === "custom" && (
+                      <div className="theme-custom-row">
+                        <label className="settings-field">
+                          <span>明暗</span>
+                          <select
+                            value={prefs.customScheme}
+                            onChange={(e) =>
+                              updatePrefs({
+                                customScheme:
+                                  e.target.value === "dark" ? "dark" : "light",
+                              })
+                            }
+                          >
+                            <option value="light">浅色</option>
+                            <option value="dark">深色</option>
+                          </select>
+                        </label>
+                        <label className="settings-field">
+                          <span>强调色</span>
+                          <input
+                            type="color"
+                            value={prefs.customAccent}
+                            onChange={(e) =>
+                              updatePrefs({ customAccent: e.target.value })
+                            }
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>背景色</span>
+                          <input
+                            type="color"
+                            value={prefs.customBg}
+                            onChange={(e) =>
+                              updatePrefs({ customBg: e.target.value })
+                            }
+                          />
+                        </label>
+                      </div>
+                    )}
+                    <label className="settings-field" style={{ marginTop: "0.75rem" }}>
                       <span>字体大小</span>
                       <select
                         value={prefs.fontSize}
@@ -3510,6 +3563,388 @@ export default function App() {
                     </label>
                   </div>
 
+                  <div className="wallpaper-panel">
+                    <div className="wallpaper-panel-head">
+                      <h4>加载页壁纸</h4>
+                      <p className="muted small">
+                        可选用系统 Wallpaper，或本地文件。支持静态（图片）与动态（视频）。
+                      </p>
+                    </div>
+                    <div className="wallpaper-mode-tabs" role="tablist">
+                      <button
+                        type="button"
+                        className={loadWpMode === "static" ? "is-active" : ""}
+                        onClick={() => setLoadWpMode("static")}
+                      >
+                        静态壁纸
+                      </button>
+                      <button
+                        type="button"
+                        className={loadWpMode === "dynamic" ? "is-active" : ""}
+                        onClick={() => setLoadWpMode("dynamic")}
+                      >
+                        动态壁纸
+                      </button>
+                    </div>
+                    <div className="wallpaper-preview-frame">
+                      {prefs.wallpaperKind === "image" && wallpaperUrl ? (
+                        <img
+                          className="wallpaper-preview-media"
+                          src={wallpaperUrl}
+                          alt="加载页壁纸预览"
+                        />
+                      ) : prefs.wallpaperKind === "video" && wallpaperUrl ? (
+                        <video
+                          className="wallpaper-preview-media"
+                          src={wallpaperUrl}
+                          muted
+                          autoPlay
+                          loop
+                          playsInline
+                        />
+                      ) : (
+                        <div className="wallpaper-preview-empty">
+                          <span>暂未设置加载页壁纸</span>
+                          <span className="muted small">
+                            {loadWpMode === "dynamic"
+                              ? "选择视频作为动态壁纸"
+                              : "选择图片作为静态壁纸"}
+                          </span>
+                        </div>
+                      )}
+                      {prefs.wallpaperKind !== "none" && (
+                        <span className="wallpaper-preview-badge">
+                          {prefs.wallpaperKind === "video" ? "动态" : "静态"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="row-actions wallpaper-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={busy || systemWpBusy}
+                        onClick={() => void refreshSystemWallpapers()}
+                      >
+                        {systemWpBusy ? "读取中…" : "获取 Wallpaper"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          void (async () => {
+                            const selected = await open({
+                              multiple: false,
+                              title:
+                                loadWpMode === "dynamic"
+                                  ? "选择动态壁纸（视频）"
+                                  : "选择静态壁纸（图片）",
+                              filters: [
+                                loadWpMode === "dynamic"
+                                  ? {
+                                      name: "视频",
+                                      extensions: ["mp4", "webm", "mov"],
+                                    }
+                                  : {
+                                      name: "图片",
+                                      extensions: [
+                                        "png",
+                                        "jpg",
+                                        "jpeg",
+                                        "webp",
+                                        "gif",
+                                        "bmp",
+                                      ],
+                                    },
+                              ],
+                            });
+                            if (typeof selected !== "string") return;
+                            try {
+                              const saved = await api.importWallpaper(
+                                selected,
+                                "load",
+                              );
+                              const kind =
+                                loadWpMode === "dynamic" ? "video" : "image";
+                              updatePrefs({
+                                wallpaperPath: saved,
+                                wallpaperKind: kind,
+                              });
+                              setNotice(
+                                kind === "video"
+                                  ? "已设置动态壁纸"
+                                  : "已设置静态壁纸",
+                              );
+                            } catch (e) {
+                              setError(failureLine(e));
+                            }
+                          })();
+                        }}
+                      >
+                        本地文件
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy || prefs.wallpaperKind === "none"}
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await api.clearWallpaper("load");
+                            } catch {
+                              /* ignore */
+                            }
+                            updatePrefs({
+                              wallpaperPath: "",
+                              wallpaperKind: "none",
+                            });
+                            setNotice("已清除加载页壁纸");
+                          })();
+                        }}
+                      >
+                        清除
+                      </button>
+                    </div>
+                    {systemWallpapers.length > 0 && (
+                      <div className="wallpaper-system-grid">
+                        {systemWallpapers
+                          .filter((w) =>
+                            loadWpMode === "dynamic"
+                              ? w.kind === "video"
+                              : w.kind === "image",
+                          )
+                          .map((w) => {
+                            let preview = "";
+                            try {
+                              preview = convertFileSrc(w.path);
+                            } catch {
+                              preview = "";
+                            }
+                            return (
+                              <button
+                                key={w.path}
+                                type="button"
+                                className="wallpaper-system-item"
+                                title={`${w.label} · ${w.source}`}
+                                disabled={busy}
+                                onClick={() =>
+                                  void applySystemWallpaper(w, "load")
+                                }
+                              >
+                                {preview ? (
+                                  w.kind === "video" ? (
+                                    <video src={preview} muted />
+                                  ) : (
+                                    <img src={preview} alt="" />
+                                  )
+                                ) : (
+                                  <span className="muted small">{w.label}</span>
+                                )}
+                                <span className="wp-kind">
+                                  {w.kind === "video" ? "动态" : "静态"}
+                                </span>
+                              </button>
+                            );
+                          })}
+                      </div>
+                    )}
+                    <div
+                      className={`wallpaper-sliders${
+                        prefs.wallpaperKind === "none" ? " is-disabled" : ""
+                      }`}
+                    >
+                      <label className="wallpaper-slider-row">
+                        <span>
+                          <em>加载页蒙层</em>
+                          <strong>{prefs.wallpaperLoadScrim}%</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={90}
+                          value={prefs.wallpaperLoadScrim}
+                          disabled={prefs.wallpaperKind === "none"}
+                          onChange={(e) =>
+                            updatePrefs({
+                              wallpaperLoadScrim: Number(e.target.value),
+                            })
+                          }
+                        />
+                        <span className="muted small">
+                          数值越大，欢迎页/加载页壁纸越淡
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="wallpaper-panel">
+                    <div className="wallpaper-panel-head">
+                      <h4>终端背景</h4>
+                      <p className="muted small">
+                        仅支持静态壁纸（图片），与加载页互不影响。
+                      </p>
+                    </div>
+                    <div className="wallpaper-preview-frame">
+                      {prefs.terminalWallpaperKind === "image" &&
+                      terminalWallpaperUrl ? (
+                        <img
+                          className="wallpaper-preview-media"
+                          src={terminalWallpaperUrl}
+                          alt="终端背景预览"
+                        />
+                      ) : (
+                        <div className="wallpaper-preview-empty">
+                          <span>暂未设置终端背景</span>
+                          <span className="muted small">仅图片</span>
+                        </div>
+                      )}
+                      {prefs.terminalWallpaperKind === "image" && (
+                        <span className="wallpaper-preview-badge">静态</span>
+                      )}
+                    </div>
+                    <div className="row-actions wallpaper-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={busy || systemWpBusy}
+                        onClick={() => void refreshSystemWallpapers()}
+                      >
+                        {systemWpBusy ? "读取中…" : "获取 Wallpaper"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          void (async () => {
+                            const selected = await open({
+                              multiple: false,
+                              title: "选择终端静态壁纸",
+                              filters: [
+                                {
+                                  name: "图片",
+                                  extensions: [
+                                    "png",
+                                    "jpg",
+                                    "jpeg",
+                                    "webp",
+                                    "gif",
+                                    "bmp",
+                                  ],
+                                },
+                              ],
+                            });
+                            if (typeof selected !== "string") return;
+                            try {
+                              const saved = await api.importWallpaper(
+                                selected,
+                                "terminal",
+                              );
+                              updatePrefs({
+                                terminalWallpaperPath: saved,
+                                terminalWallpaperKind: "image",
+                              });
+                              setNotice("已设置终端静态壁纸");
+                            } catch (e) {
+                              setError(failureLine(e));
+                            }
+                          })();
+                        }}
+                      >
+                        本地图片
+                      </button>
+                      <button
+                        type="button"
+                        disabled={
+                          busy || prefs.terminalWallpaperKind === "none"
+                        }
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await api.clearWallpaper("terminal");
+                            } catch {
+                              /* ignore */
+                            }
+                            updatePrefs({
+                              terminalWallpaperPath: "",
+                              terminalWallpaperKind: "none",
+                            });
+                            setNotice("已清除终端背景");
+                          })();
+                        }}
+                      >
+                        清除
+                      </button>
+                    </div>
+                    {systemWallpapers.some((w) => w.kind === "image") && (
+                      <div className="wallpaper-system-grid">
+                        {systemWallpapers
+                          .filter((w) => w.kind === "image")
+                          .map((w) => {
+                            let preview = "";
+                            try {
+                              preview = convertFileSrc(w.path);
+                            } catch {
+                              preview = "";
+                            }
+                            return (
+                              <button
+                                key={`term-${w.path}`}
+                                type="button"
+                                className="wallpaper-system-item"
+                                title={`${w.label} · ${w.source}`}
+                                disabled={busy}
+                                onClick={() =>
+                                  void applySystemWallpaper(w, "terminal")
+                                }
+                              >
+                                {preview ? (
+                                  <img src={preview} alt="" />
+                                ) : (
+                                  <span className="muted small">{w.label}</span>
+                                )}
+                                <span className="wp-kind">静态</span>
+                              </button>
+                            );
+                          })}
+                      </div>
+                    )}
+                    <div
+                      className={`wallpaper-sliders${
+                        prefs.terminalWallpaperKind === "none"
+                          ? " is-disabled"
+                          : ""
+                      }`}
+                    >
+                      <label className="wallpaper-slider-row">
+                        <span>
+                          <em>终端蒙层</em>
+                          <strong>{prefs.terminalWallpaperScrim}%</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={90}
+                          value={prefs.terminalWallpaperScrim}
+                          disabled={prefs.terminalWallpaperKind === "none"}
+                          onChange={(e) =>
+                            updatePrefs({
+                              terminalWallpaperScrim: Number(e.target.value),
+                            })
+                          }
+                        />
+                        <span className="muted small">
+                          数值越大，终端背景越淡、文字越清晰
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {settingsPage === "behavior" && (
+                <section className="settings-section">
+                  <div className="settings-pane-intro">
+                    <h4>行为</h4>
+                    <p className="muted small">打开习惯、同步方式与 Release 仓库。</p>
+                  </div>
                   <div className="pref-cards" role="group" aria-label="行为选项">
                     <label
                       className={`pref-card${prefs.rememberRecent ? " is-on" : ""}`}
@@ -3668,284 +4103,6 @@ export default function App() {
                     </p>
                   </div>
 
-                  <div className="wallpaper-panel">
-                    <div className="wallpaper-panel-head">
-                      <h4>加载页壁纸</h4>
-                      <p className="muted small">
-                        用于欢迎页与打开仓库时的加载页（与终端背景分开设置）。
-                      </p>
-                    </div>
-                    <div className="wallpaper-preview-frame">
-                      {prefs.wallpaperKind === "image" && wallpaperUrl ? (
-                        <img
-                          className="wallpaper-preview-media"
-                          src={wallpaperUrl}
-                          alt="加载页壁纸预览"
-                        />
-                      ) : prefs.wallpaperKind === "video" && wallpaperUrl ? (
-                        <video
-                          className="wallpaper-preview-media"
-                          src={wallpaperUrl}
-                          muted
-                          autoPlay
-                          loop
-                          playsInline
-                        />
-                      ) : (
-                        <div className="wallpaper-preview-empty">
-                          <span>暂未设置加载页壁纸</span>
-                          <span className="muted small">选择图片或视频</span>
-                        </div>
-                      )}
-                      {prefs.wallpaperKind !== "none" && (
-                        <span className="wallpaper-preview-badge">
-                          {prefs.wallpaperKind === "video" ? "视频" : "图片"}
-                        </span>
-                      )}
-                    </div>
-                    <div className="row-actions wallpaper-actions">
-                      <button
-                        type="button"
-                        className="primary"
-                        disabled={busy}
-                        onClick={() => {
-                          void (async () => {
-                            const selected = await open({
-                              multiple: false,
-                              title: "选择加载页壁纸",
-                              filters: [
-                                {
-                                  name: "媒体",
-                                  extensions: [
-                                    "png",
-                                    "jpg",
-                                    "jpeg",
-                                    "webp",
-                                    "gif",
-                                    "mp4",
-                                    "webm",
-                                    "mov",
-                                  ],
-                                },
-                              ],
-                            });
-                            if (typeof selected !== "string") return;
-                            try {
-                              const saved = await api.importWallpaper(
-                                selected,
-                                "load",
-                              );
-                              const kind = mediaKindFromPath(saved);
-                              updatePrefs({
-                                wallpaperPath: saved,
-                                wallpaperKind: kind,
-                              });
-                              setNotice(
-                                kind === "video"
-                                  ? "已设置加载页视频壁纸"
-                                  : "已设置加载页图片壁纸",
-                              );
-                            } catch (e) {
-                              setError(failureLine(e));
-                            }
-                          })();
-                        }}
-                      >
-                        选择壁纸
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy || prefs.wallpaperKind === "none"}
-                        onClick={() => {
-                          void (async () => {
-                            try {
-                              await api.clearWallpaper("load");
-                            } catch {
-                              /* ignore */
-                            }
-                            updatePrefs({
-                              wallpaperPath: "",
-                              wallpaperKind: "none",
-                            });
-                            setNotice("已清除加载页壁纸");
-                          })();
-                        }}
-                      >
-                        清除
-              </button>
-                    </div>
-                    <div
-                      className={`wallpaper-sliders${
-                        prefs.wallpaperKind === "none" ? " is-disabled" : ""
-                      }`}
-                    >
-                      <label className="wallpaper-slider-row">
-                        <span>
-                          <em>加载页蒙层</em>
-                          <strong>{prefs.wallpaperLoadScrim}%</strong>
-                        </span>
-                        <input
-                          type="range"
-                          min={0}
-                          max={90}
-                          value={prefs.wallpaperLoadScrim}
-                          disabled={prefs.wallpaperKind === "none"}
-                          onChange={(e) =>
-                            updatePrefs({
-                              wallpaperLoadScrim: Number(e.target.value),
-                            })
-                          }
-                        />
-                        <span className="muted small">
-                          数值越大，欢迎页/加载页壁纸越淡
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="wallpaper-panel">
-                    <div className="wallpaper-panel-head">
-                      <h4>终端背景</h4>
-                      <p className="muted small">
-                        仅作用于「终端」页，与加载页壁纸互不影响。
-                      </p>
-                    </div>
-                    <div className="wallpaper-preview-frame">
-                      {prefs.terminalWallpaperKind === "image" &&
-                      terminalWallpaperUrl ? (
-                        <img
-                          className="wallpaper-preview-media"
-                          src={terminalWallpaperUrl}
-                          alt="终端背景预览"
-                        />
-                      ) : prefs.terminalWallpaperKind === "video" &&
-                        terminalWallpaperUrl ? (
-                        <video
-                          className="wallpaper-preview-media"
-                          src={terminalWallpaperUrl}
-                          muted
-                          autoPlay
-                          loop
-                          playsInline
-                        />
-                      ) : (
-                        <div className="wallpaper-preview-empty">
-                          <span>暂未设置终端背景</span>
-                          <span className="muted small">选择图片或视频</span>
-                        </div>
-                      )}
-                      {prefs.terminalWallpaperKind !== "none" && (
-                        <span className="wallpaper-preview-badge">
-                          {prefs.terminalWallpaperKind === "video"
-                            ? "视频"
-                            : "图片"}
-                        </span>
-                      )}
-                    </div>
-                    <div className="row-actions wallpaper-actions">
-                      <button
-                        type="button"
-                        className="primary"
-                        disabled={busy}
-                        onClick={() => {
-                          void (async () => {
-                            const selected = await open({
-                              multiple: false,
-                              title: "选择终端背景",
-                              filters: [
-                                {
-                                  name: "媒体",
-                                  extensions: [
-                                    "png",
-                                    "jpg",
-                                    "jpeg",
-                                    "webp",
-                                    "gif",
-                                    "mp4",
-                                    "webm",
-                                    "mov",
-                                  ],
-                                },
-                              ],
-                            });
-                            if (typeof selected !== "string") return;
-                            try {
-                              const saved = await api.importWallpaper(
-                                selected,
-                                "terminal",
-                              );
-                              const kind = mediaKindFromPath(saved);
-                              updatePrefs({
-                                terminalWallpaperPath: saved,
-                                terminalWallpaperKind: kind,
-                              });
-                              setNotice(
-                                kind === "video"
-                                  ? "已设置终端视频背景"
-                                  : "已设置终端图片背景",
-                              );
-                            } catch (e) {
-                              setError(failureLine(e));
-                            }
-                          })();
-                        }}
-                      >
-                        选择背景
-                      </button>
-                      <button
-                        type="button"
-                        disabled={
-                          busy || prefs.terminalWallpaperKind === "none"
-                        }
-                        onClick={() => {
-                          void (async () => {
-                            try {
-                              await api.clearWallpaper("terminal");
-                            } catch {
-                              /* ignore */
-                            }
-                            updatePrefs({
-                              terminalWallpaperPath: "",
-                              terminalWallpaperKind: "none",
-                            });
-                            setNotice("已清除终端背景");
-                          })();
-                        }}
-                      >
-                        清除
-                      </button>
-                    </div>
-                    <div
-                      className={`wallpaper-sliders${
-                        prefs.terminalWallpaperKind === "none"
-                          ? " is-disabled"
-                          : ""
-                      }`}
-                    >
-                      <label className="wallpaper-slider-row">
-                        <span>
-                          <em>终端蒙层</em>
-                          <strong>{prefs.terminalWallpaperScrim}%</strong>
-                        </span>
-            <input
-                          type="range"
-                          min={0}
-                          max={90}
-                          value={prefs.terminalWallpaperScrim}
-                          disabled={prefs.terminalWallpaperKind === "none"}
-                          onChange={(e) =>
-                            updatePrefs({
-                              terminalWallpaperScrim: Number(e.target.value),
-                            })
-                          }
-                        />
-                        <span className="muted small">
-                          数值越大，终端背景越淡、文字越清晰
-                        </span>
-          </label>
-                    </div>
-                  </div>
-
                   <div className="settings-card">
                     <h5>Release 仓库</h5>
           <p className="muted small">
@@ -3979,6 +4136,70 @@ export default function App() {
                     </p>
                   </div>
                 </section>
+              )}
+
+              {settingsPage === "language" && (
+                <SettingsLanguagePage
+                  prefs={prefs}
+                  locale={loc}
+                  updatePrefs={updatePrefs}
+                  setNotice={setNotice}
+                />
+              )}
+
+              {settingsPage === "network" && (
+                <SettingsNetworkPage
+                  prefs={prefs}
+                  locale={loc}
+                  updatePrefs={updatePrefs}
+                  setNotice={setNotice}
+                  setError={setError}
+                  busy={busy}
+                />
+              )}
+
+              {settingsPage === "reset" && (
+                <SettingsResetPage
+                  locale={loc}
+                  updatePrefs={updatePrefs}
+                  setNotice={setNotice}
+                  onDeleteData={async () => {
+                    try {
+                      await api.clearAppWallpaperFiles();
+                    } catch {
+                      /* ignore */
+                    }
+                    clearAllLocalAppData();
+                    clearRepoCache();
+                    setRecent(clearRecent());
+                    setOpenRepos([]);
+                    setCloneUrl("");
+                    const next = {
+                      ...DEFAULT_PREFS,
+                      enabledLocales: [...DEFAULT_PREFS.enabledLocales],
+                    };
+                    savePrefs(next);
+                    setPrefs(next);
+                    applyPrefsToDocument(next);
+                    setSystemWallpapers([]);
+                  }}
+                />
+              )}
+
+              {settingsPage === "about" && (
+                <SettingsAboutPage
+                  locale={loc}
+                  appVersion={appVersion}
+                  updateRepoOwner={UPDATE_REPO_OWNER}
+                  updateRepoName={UPDATE_REPO_NAME}
+                  updateInfo={updateInfo}
+                  updateBusy={updateBusy}
+                  updateProgress={updateProgress}
+                  busy={busy}
+                  checkForUpdate={checkForUpdate}
+                  downloadAndInstallUpdate={downloadAndInstallUpdate}
+                  setNotice={setNotice}
+                />
               )}
 
               {settingsPage === "auth" && (
@@ -4070,9 +4291,17 @@ export default function App() {
 
   return (
     <>
+      {renderFloatingToasts()}
       <WindowChrome
         overlay={Boolean(boot && wallpaperUrl)}
-        title={repoPath ? `${folderName(repoPath)} — 青枝` : "青枝"}
+        version={appVersion}
+        updateAvailable={Boolean(
+          updateInfo?.updateAvailable &&
+            updateInfo.latestVersion !== dismissedUpdateTag,
+        )}
+        updateBusy={updateBusy}
+        onCheckUpdate={() => void checkForUpdate(false)}
+        onUpdateClick={() => openSettings("about")}
       />
       {boot && (
         <LoadingScreen
@@ -4112,7 +4341,7 @@ export default function App() {
           </button>
           <button
             type="button"
-            onClick={() => setShowAbout(true)}
+            onClick={() => openSettings("about")}
             disabled={busy}
             title={`关于青枝 v${appVersion}`}
           >
@@ -4517,40 +4746,6 @@ export default function App() {
         </div>
       )}
 
-      {notice && (
-        <button
-          type="button"
-          className={`notice-box status-dismiss${noticeSticky ? " is-sticky" : ""}`}
-          title={noticeSticky ? `${notice}（点击关闭，不会自动消失）` : `${notice}（点击关闭）`}
-          onClick={() => setNotice(null)}
-        >
-          {notice}
-        </button>
-      )}
-      {error && (
-        <div className="error-box error-banner-row">
-          <button
-            type="button"
-            className="status-dismiss error-banner-text"
-            title={`${error}（点击关闭）`}
-            onClick={() => {
-              setError(null);
-              setAuthHint(false);
-            }}
-          >
-            {error}
-          </button>
-          {authHint && (
-            <button
-              type="button"
-              className="primary error-login-btn"
-              onClick={() => openSettingsAuth()}
-            >
-              去登录
-            </button>
-          )}
-        </div>
-      )}
       {sessionWarnings.length > 0 && !error && (
         <div className="hint-box auth-warn-strip">
           {sessionWarnings.join("、")} 登录已失效。
@@ -4575,7 +4770,7 @@ export default function App() {
             >
               下载并安装
             </button>
-            <button type="button" onClick={() => setShowAbout(true)} disabled={busy}>
+            <button type="button" onClick={() => openSettings("about")} disabled={busy}>
               详情
             </button>
             <button
@@ -4746,7 +4941,7 @@ export default function App() {
       ) : null}
       {showSettings && renderSettings()}
       {showHelp && renderHelp()}
-      {showAbout && renderAbout()}
+      {/* about moved into settings */}
       {renderPublishDialog()}
       {renderSyncDialog()}
       {renderResetDialog()}
@@ -5481,7 +5676,7 @@ export default function App() {
           onNotice={setNotice}
           onError={setError}
           onOpenAuth={() => openSettingsAuth("github")}
-          onConfigureReleaseRepo={() => openSettings("appearance")}
+          onConfigureReleaseRepo={() => openSettings("behavior")}
           updateProgress={updateProgress}
           onRunCommand={(line) => {
             if (busyRef.current) return;

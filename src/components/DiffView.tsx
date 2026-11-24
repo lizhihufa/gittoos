@@ -17,9 +17,15 @@ interface Props {
   busy?: boolean;
   /** Whole-file untracked etc. — hide hunk actions. */
   allowHunks?: boolean;
-  onApplyHunk?: (patch: string, reverse: boolean) => void;
+  /** Return false (or throw) to keep line selection after failure. */
+  onApplyHunk?: (
+    patch: string,
+    reverse: boolean,
+  ) => void | boolean | Promise<void | boolean>;
   /** Discard an unstaged hunk / lines from the working tree. */
-  onDiscardHunk?: (patch: string) => void;
+  onDiscardHunk?: (
+    patch: string,
+  ) => void | boolean | Promise<void | boolean>;
   onBlame?: () => void;
 }
 
@@ -65,6 +71,7 @@ export function DiffView({
   }
 
   function toggleLine(hunkIndex: number, lineIndex: number, shift: boolean) {
+    if (busy) return;
     setSelected((prev) => {
       const next = { ...prev };
       const current = new Set(next[hunkIndex] ?? []);
@@ -98,22 +105,26 @@ export function DiffView({
     });
   }
 
-  function applyPartial(
+  async function applyPartial(
     hunkIndex: number,
     hunk: DiffHunk,
     action: "apply" | "discard",
   ) {
-    if (!parsed || !onApplyHunk) return;
+    if (!parsed || !onApplyHunk || busy) return;
     const indices = selected[hunkIndex];
     if (!indices || indices.size === 0) return;
     const patch = buildPartialHunkPatch(parsed.preamble, hunk, indices);
     if (!patch) return;
-    if (action === "discard") {
-      onDiscardHunk?.(patch);
-    } else {
-      onApplyHunk(patch, staged);
+    try {
+      const result =
+        action === "discard"
+          ? await onDiscardHunk?.(patch)
+          : await onApplyHunk(patch, staged);
+      if (result === false) return;
+      clearHunkSelection(hunkIndex);
+    } catch {
+      // Keep selection so the user can retry after fixing the error.
     }
-    clearHunkSelection(hunkIndex);
   }
 
   return (
@@ -159,7 +170,9 @@ export function DiffView({
                           type="button"
                           className={staged ? undefined : "primary"}
                           disabled={busy}
-                          onClick={() => applyPartial(hunkIndex, hunk, "apply")}
+                          onClick={() =>
+                            void applyPartial(hunkIndex, hunk, "apply")
+                          }
                         >
                           {staged
                             ? `取消所选 (${selCount})`
@@ -172,7 +185,7 @@ export function DiffView({
                             disabled={busy}
                             title="从工作区丢弃所选行"
                             onClick={() =>
-                              applyPartial(hunkIndex, hunk, "discard")
+                              void applyPartial(hunkIndex, hunk, "discard")
                             }
                           >
                             放弃所选
@@ -194,7 +207,7 @@ export function DiffView({
                           className={staged ? undefined : "primary"}
                           disabled={busy}
                           onClick={() =>
-                            onApplyHunk(
+                            void onApplyHunk(
                               buildHunkPatch(parsed.preamble, hunk),
                               staged,
                             )
@@ -209,7 +222,7 @@ export function DiffView({
                             disabled={busy}
                             title="从工作区丢弃此块改动"
                             onClick={() =>
-                              onDiscardHunk(
+                              void onDiscardHunk(
                                 buildHunkPatch(parsed.preamble, hunk),
                               )
                             }

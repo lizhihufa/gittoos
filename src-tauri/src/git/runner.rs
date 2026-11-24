@@ -680,7 +680,11 @@ fn download_dir() -> Result<PathBuf, GitError> {
 fn download_file(url: &str, destination: &Path) -> Result<(), String> {
     let proxy = local_proxy();
     if let Some(proxy) = proxy.as_deref() {
-        emit_terminal("info", &format!("使用本机代理 {proxy}"));
+        static PROXY_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !PROXY_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            emit_terminal("info", &format!("使用本机代理 {proxy}"));
+        }
     }
 
     if let Err(err) = download_with_curl(url, destination, proxy.as_deref()) {

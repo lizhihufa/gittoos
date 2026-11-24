@@ -24,8 +24,13 @@ interface Props {
   diffLoading: boolean;
   hasChanges?: boolean;
   allowHunks?: boolean;
-  onApplyHunk?: (patch: string, reverse: boolean) => void;
-  onDiscardHunk?: (patch: string) => void;
+  onApplyHunk?: (
+    patch: string,
+    reverse: boolean,
+  ) => void | boolean | Promise<void | boolean>;
+  onDiscardHunk?: (
+    patch: string,
+  ) => void | boolean | Promise<void | boolean>;
   onBlame?: () => void;
   showCommitGraph?: boolean;
   commits: CommitInfo[];
