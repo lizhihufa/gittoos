@@ -1,0 +1,49 @@
+# 由青枝写入：从 Gitee 拉代码并强制推到本 GitHub 仓库（反向镜像）。
+# 由青枝在「同步推送 GitHub」时触发 workflow_dispatch；也可手动 Run workflow。
+# Secrets：GITEE_TOKEN、GITEE_USER，可选 GITEE_REPO（owner/repo）。
+name: Qingzhi mirror from Gitee
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */6 * * *"
+  repository_dispatch:
+    types: [qingzhi-gitee-push]
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_USER: ${{ secrets.GITEE_USER }}
+      GITEE_REPO: ${{ secrets.GITEE_REPO }}
+    steps:
+      - name: Guard
+        id: guard
+        run: |
+          if [ -z "$GITEE_TOKEN" ] || [ -z "$GITEE_USER" ]; then
+            echo "未配置 GITEE_TOKEN / GITEE_USER，跳过。"
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mirror Gitee → GitHub
+        if: steps.guard.outputs.ok == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="${GITEE_REPO:-$GITHUB_REPOSITORY}"
+          SRC="https://${GITEE_USER}:${GITEE_TOKEN}@gitee.com/${REPO}.git"
+          DST="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          WORK="${RUNNER_TEMP}/qingzhi-mirror"
+          rm -rf "$WORK"
+          git clone --mirror "$SRC" "$WORK"
+          cd "$WORK"
+          git remote set-url --push origin "$DST"
+          git push --mirror origin
+          echo "已从 Gitee 镜像到 GitHub：${GITHUB_REPOSITORY}"
