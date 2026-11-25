@@ -42,6 +42,14 @@ import {
 } from "./githubRepo";
 import type { ReleasePlatform } from "./components/ReleaseManager";
 import {
+  loadMirrorInstalls,
+  mirrorInstallId,
+  removeMirrorInstall,
+  saveMirrorInstalls,
+  upsertMirrorInstall,
+  type MirrorInstallRecord,
+} from "./mirrorInstallStore";
+import {
   applyGithubMirror,
   DEFAULT_GITHUB_HOSTS,
 } from "./githubNetwork";
@@ -207,10 +215,23 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("auth");
   const [loadWpMode, setLoadWpMode] = useState<"static" | "dynamic">("static");
-  const [systemWallpapers, setSystemWallpapers] = useState<
-    { path: string; kind: string; label: string; source: string }[]
+  const [weWallpapers, setWeWallpapers] = useState<
+    {
+      path: string;
+      previewPath: string;
+      projectDir: string;
+      kind: string;
+      label: string;
+      source: string;
+      weType: string;
+    }[]
   >([]);
-  const [systemWpBusy, setSystemWpBusy] = useState(false);
+  const [weWpBusy, setWeWpBusy] = useState(false);
+  const [weApplyBusy, setWeApplyBusy] = useState(false);
+  /** Wallpaper Engine picker modal target slot. */
+  const [wePickerSlot, setWePickerSlot] = useState<"load" | "terminal" | null>(
+    null,
+  );
   const [appVersion, setAppVersion] = useState(
     typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "…",
   );
@@ -224,7 +245,6 @@ export default function App() {
   const [dismissedUpdateTag, setDismissedUpdateTag] = useState<string | null>(null);
   const [boot, setBoot] = useState<BootState | null>(null);
   const [entering, setEntering] = useState(false);
-  const [syncingCache, setSyncingCache] = useState(false);
   const [syncDialog, setSyncDialog] = useState<SyncConflictKind | null>(null);
   /** 推送主按钮模式：直接推送，或同步到另一平台 */
   const [pushMode, setPushMode] = useState<"direct" | "mirror">("direct");
@@ -348,6 +368,21 @@ export default function App() {
       "update-progress",
       (event) => {
         setUpdateProgress({
+          percent: Math.max(0, Math.min(100, event.payload.percent)),
+          label: event.payload.label,
+        });
+      },
+    );
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<{ percent: number; label: string }>(
+      "actions-mirror-progress",
+      (event) => {
+        setMirrorProgress({
           percent: Math.max(0, Math.min(100, event.payload.percent)),
           label: event.payload.label,
         });
@@ -592,11 +627,13 @@ export default function App() {
 
   const wallpaperUrl = useMemo(() => {
     if (prefs.wallpaperKind === "none" || !prefs.wallpaperPath) return null;
+    // Ignore legacy builtin: ids from older versions.
+    if (prefs.wallpaperPath.startsWith("builtin:")) return null;
     try {
       const src = convertFileSrc(prefs.wallpaperPath);
-      // Bust webview cache after re-importing the same filename.
+      // Path already unique per import; keep query for stubborn webview caches.
       const sep = src.includes("?") ? "&" : "?";
-      return `${src}${sep}t=${encodeURIComponent(prefs.wallpaperPath)}`;
+      return `${src}${sep}v=${encodeURIComponent(prefs.wallpaperPath)}`;
     } catch {
       return null;
     }
@@ -609,10 +646,11 @@ export default function App() {
     ) {
       return null;
     }
+    if (prefs.terminalWallpaperPath.startsWith("builtin:")) return null;
     try {
       const src = convertFileSrc(prefs.terminalWallpaperPath);
       const sep = src.includes("?") ? "&" : "?";
-      return `${src}${sep}t=${encodeURIComponent(prefs.terminalWallpaperPath)}`;
+      return `${src}${sep}v=${encodeURIComponent(prefs.terminalWallpaperPath)}`;
     } catch {
       return null;
     }
@@ -651,6 +689,14 @@ export default function App() {
 
   const [releasePlatform, setReleasePlatform] =
     useState<ReleasePlatform>("github");
+  const [mirrorInstalls, setMirrorInstalls] = useState<MirrorInstallRecord[]>(
+    () => loadMirrorInstalls(),
+  );
+  const [mirrorProgress, setMirrorProgress] = useState<{
+    percent: number;
+    label: string;
+  } | null>(null);
+  const [mirrorListBusy, setMirrorListBusy] = useState(false);
 
   const refreshStatusQuiet = useCallback(async (path: string) => {
     if (busyRef.current) return;
@@ -782,8 +828,8 @@ export default function App() {
         if (cached) {
           setBoot({
             path,
-            progress: 62,
-            label: "正在从缓存恢复界面…",
+            progress: 42,
+            label: "正在从缓存恢复…",
             fromCache: true,
           });
           applyCore(cached.core);
@@ -792,26 +838,42 @@ export default function App() {
             setStashes(cached.extras.stashes);
             setTags(cached.extras.tags);
           }
+          // Enter repo under the loading overlay, then sync before revealing UI.
+          repoPathRef.current = path;
           setRepoPath(path);
+          setBoot({
+            path,
+            progress: 58,
+            label: "正在同步最新状态…",
+            fromCache: true,
+          });
+          try {
+            await refresh(path, { background: true });
+            setBoot({
+              path,
+              progress: 92,
+              label: "同步完成，即将进入…",
+              fromCache: true,
+            });
+          } catch {
+            setBoot({
+              path,
+              progress: 88,
+              label: "同步未完成，将使用缓存进入…",
+              fromCache: true,
+            });
+          }
           setBoot({
             path,
             progress: 100,
             label: "即将进入…",
             fromCache: true,
           });
-          await sleep(320);
+          await sleep(280);
           setBoot(null);
           setEntering(true);
           busyRef.current = false;
           setBusy(false);
-          setSyncingCache(true);
-          try {
-            await refresh(path, { background: true });
-          } catch {
-            /* keep cached view; quiet errors */
-          } finally {
-            setSyncingCache(false);
-          }
           return;
         }
 
@@ -912,49 +974,87 @@ export default function App() {
     });
   }, []);
 
-  const refreshSystemWallpapers = useCallback(async () => {
-    setSystemWpBusy(true);
+  const refreshWallpaperEngine = useCallback(async () => {
+    setWeWpBusy(true);
     try {
-      const list = await api.listSystemWallpapers();
-      setSystemWallpapers(list);
+      const list = await api.listWallpaperEngineWallpapers();
+      setWeWallpapers(list);
+      return list;
     } catch (e) {
+      setWeWallpapers([]);
       setError(failureLine(e));
+      return [];
     } finally {
-      setSystemWpBusy(false);
+      setWeWpBusy(false);
     }
   }, []);
 
-  const applySystemWallpaper = useCallback(
+  const openWallpaperEnginePicker = useCallback(
+    async (slot: "load" | "terminal") => {
+      setWePickerSlot(slot);
+      const list = await refreshWallpaperEngine();
+      if (list.length > 0) {
+        setNotice(`已读取 Wallpaper Engine 壁纸 ${list.length} 项`);
+      }
+    },
+    [refreshWallpaperEngine],
+  );
+
+  const applyWallpaperEngineItem = useCallback(
     async (
-      item: { path: string; kind: string },
+      item: {
+        path: string;
+        previewPath: string;
+        projectDir: string;
+        kind: string;
+        label: string;
+      },
       slot: "load" | "terminal",
     ) => {
+      setWeApplyBusy(true);
       try {
-        if (slot === "terminal" && item.kind === "video") {
-          setError("终端仅支持静态壁纸（图片）");
-          return;
-        }
-        const saved = await api.importWallpaper(item.path, slot);
+        const preferMotion =
+          slot === "load" &&
+          (loadWpMode === "dynamic" || item.kind === "video");
+        // Dynamic → real video only; static → landscape / extracted HD still (not blurry gif).
+        const prepared = await api.prepareWallpaperEngineMedia(
+          item.projectDir,
+          preferMotion,
+        );
         if (slot === "terminal") {
+          // Terminal is still-only: prefer a still path, else preview.
+          const src =
+            prepared.kind === "video"
+              ? prepared.previewPath || item.previewPath || prepared.path
+              : prepared.path;
+          const saved = await api.importWallpaper(src, "terminal");
           updatePrefs({
             terminalWallpaperPath: saved,
             terminalWallpaperKind: "image",
           });
-          setNotice("已设置终端静态壁纸");
+          setNotice(`已设置终端壁纸「${prepared.label || item.label}」`);
+          setWePickerSlot(null);
           return;
         }
-        const kind = item.kind === "video" ? "video" : "image";
+        const saved = await api.importWallpaper(prepared.path, "load");
+        // gif stays "image" so <img> can animate; video uses <video>.
+        const kind = prepared.kind === "video" ? "video" : "image";
         updatePrefs({ wallpaperPath: saved, wallpaperKind: kind });
         setLoadWpMode(kind === "video" ? "dynamic" : "static");
-        setNotice(kind === "video" ? "已设置动态壁纸" : "已设置静态壁纸");
+        setNotice(
+          kind === "video"
+            ? `已设置动态壁纸「${prepared.label || item.label}」`
+            : `已设置壁纸「${prepared.label || item.label}」`,
+        );
+        setWePickerSlot(null);
       } catch (e) {
         setError(failureLine(e));
+      } finally {
+        setWeApplyBusy(false);
       }
     },
-    [updatePrefs],
+    [updatePrefs, loadWpMode],
   );
-
-
 
   const pickFolder = useCallback(async () => {
     const selectedPath = await open({
@@ -2951,11 +3051,20 @@ export default function App() {
             }
             onClick={() => setNotice(null)}
           >
-            {notice}
+            <span className="toast-mark" aria-hidden>
+              {noticeSticky ? "!" : "i"}
+            </span>
+            <span className="toast-body">{notice}</span>
+            <span className="toast-dismiss" aria-hidden>
+              ×
+            </span>
           </button>
         )}
         {error && (
           <div className="toast toast-error">
+            <span className="toast-mark" aria-hidden>
+              !
+            </span>
             <button
               type="button"
               className="toast-error-text"
@@ -2965,7 +3074,7 @@ export default function App() {
                 setAuthHint(false);
               }}
             >
-              {error}
+              <span className="toast-body">{error}</span>
             </button>
             {authHint && (
               <button
@@ -2976,6 +3085,17 @@ export default function App() {
                 去登录
               </button>
             )}
+            <button
+              type="button"
+              className="toast-dismiss-btn"
+              aria-label="关闭"
+              onClick={() => {
+                setError(null);
+                setAuthHint(false);
+              }}
+            >
+              ×
+            </button>
           </div>
         )}
       </div>
@@ -3247,6 +3367,125 @@ export default function App() {
     );
   }
 
+  function renderWallpaperEnginePicker() {
+    if (!wePickerSlot) return null;
+    const slot = wePickerSlot;
+    // Dynamic = real video only. GIF scene previews are low-res and look muddy fullscreen.
+    const isMotionItem = (w: { kind: string }) => w.kind === "video";
+    const filtered = weWallpapers.filter((w) => {
+      if (slot === "terminal") return true;
+      if (loadWpMode === "dynamic") return isMotionItem(w);
+      return !isMotionItem(w);
+    });
+    return (
+      <div
+        className="we-picker-mask"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!weApplyBusy) setWePickerSlot(null);
+        }}
+      >
+        <div
+          className="modal we-picker-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Wallpaper Engine 图库"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="we-picker-head">
+            <div>
+              <h3>Wallpaper Engine</h3>
+              <p className="muted small">
+                {slot === "terminal"
+                  ? "选择壁纸用作终端背景"
+                  : loadWpMode === "dynamic"
+                    ? "动态：仅含真实视频（mp4/webm）。场景 GIF 预览较糊，请用静态高清图"
+                    : "静态：高清静图（场景类会尽量解出宽幅图，不用糊的 GIF 预览）"}
+              </p>
+            </div>
+            <div className="row-actions">
+              <button
+                type="button"
+                disabled={weWpBusy || weApplyBusy}
+                onClick={() => void refreshWallpaperEngine()}
+              >
+                {weWpBusy ? "刷新中…" : "刷新"}
+              </button>
+              <button
+                type="button"
+                disabled={weApplyBusy}
+                onClick={() => setWePickerSlot(null)}
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+          {weApplyBusy && (
+            <p className="muted small we-picker-status">正在应用壁纸…</p>
+          )}
+          {weWpBusy && filtered.length === 0 ? (
+            <div className="we-picker-empty">正在读取 Wallpaper Engine 库…</div>
+          ) : filtered.length === 0 ? (
+            <div className="we-picker-empty">
+              {slot === "load" && loadWpMode === "dynamic"
+                ? "库中没有可用视频壁纸。场景动图请到「静态壁纸」选高清图，或点「本地文件」选视频。"
+                : slot === "load"
+                  ? "当前没有静态壁纸。"
+                  : "未找到可用壁纸。请确认已安装 Wallpaper Engine 并订阅了创意工坊内容。"}
+            </div>
+          ) : (
+            <div className="we-picker-grid">
+              {filtered.map((w) => {
+                let preview = "";
+                try {
+                  preview = convertFileSrc(w.previewPath || w.path);
+                } catch {
+                  preview = "";
+                }
+                return (
+                  <button
+                    key={w.projectDir || w.path}
+                    type="button"
+                    className="we-picker-item"
+                    title={`${w.label} · ${w.weType} · ${w.source}`}
+                    disabled={busy || weApplyBusy}
+                    onClick={() => void applyWallpaperEngineItem(w, slot)}
+                  >
+                    <span className="we-picker-thumb">
+                      {preview ? (
+                        <img
+                          src={preview}
+                          alt=""
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                          }}
+                        />
+                      ) : (
+                        <span className="muted small">无预览</span>
+                      )}
+                    </span>
+                    <span className="we-picker-meta">
+                      <span className="we-picker-title">{w.label}</span>
+                      <span className="we-picker-tag">
+                        {w.kind === "video"
+                          ? "视频"
+                          : w.weType === "web"
+                            ? "网页"
+                            : w.weType === "scene"
+                              ? "场景"
+                              : "静态"}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   function renderSettings() {
     const loc = prefs.locale || "zh-CN";
     const navItems: { id: SettingsPage; title: string; desc: string }[] = [
@@ -3413,7 +3652,7 @@ export default function App() {
                     <div className="wallpaper-panel-head">
                       <h4>加载页壁纸</h4>
                       <p className="muted small">
-                        可选用系统 Wallpaper，或本地文件。支持静态（图片）与动态（视频）。
+                        从 Wallpaper Engine 选取壁纸，或自行选择本地文件。
                       </p>
                     </div>
                     <div className="wallpaper-mode-tabs" role="tablist">
@@ -3452,9 +3691,7 @@ export default function App() {
                         <div className="wallpaper-preview-empty">
                           <span>暂未设置加载页壁纸</span>
                           <span className="muted small">
-                            {loadWpMode === "dynamic"
-                              ? "选择视频作为动态壁纸"
-                              : "选择图片作为静态壁纸"}
+                            点「获取 Wallpaper」打开图库，或选本地文件
                           </span>
                         </div>
                       )}
@@ -3468,10 +3705,12 @@ export default function App() {
                       <button
                         type="button"
                         className="primary"
-                        disabled={busy || systemWpBusy}
-                        onClick={() => void refreshSystemWallpapers()}
+                        disabled={busy || weWpBusy}
+                        onClick={() => void openWallpaperEnginePicker("load")}
                       >
-                        {systemWpBusy ? "读取中…" : "获取 Wallpaper"}
+                        {weWpBusy && wePickerSlot === "load"
+                          ? "读取中…"
+                          : "获取 Wallpaper"}
                       </button>
                       <button
                         type="button"
@@ -3549,61 +3788,6 @@ export default function App() {
                         清除
                       </button>
                     </div>
-                    {systemWallpapers.length > 0 &&
-                      systemWallpapers.some((w) =>
-                        loadWpMode === "dynamic"
-                          ? w.kind === "video"
-                          : w.kind === "image",
-                      ) && (
-                      <div className="wallpaper-system-grid">
-                        {systemWallpapers
-                          .filter((w) =>
-                            loadWpMode === "dynamic"
-                              ? w.kind === "video"
-                              : w.kind === "image",
-                          )
-                          .map((w) => {
-                            let preview = "";
-                            try {
-                              preview = convertFileSrc(w.path);
-                            } catch {
-                              preview = "";
-                            }
-                            return (
-                              <button
-                                key={w.path}
-                                type="button"
-                                className="wallpaper-system-item"
-                                title={`${w.label} · ${w.source}`}
-                                disabled={busy}
-                                onClick={() =>
-                                  void applySystemWallpaper(w, "load")
-                                }
-                              >
-                                {preview ? (
-                                  w.kind === "video" ? (
-                                    <video src={preview} muted />
-                                  ) : (
-                                    <img src={preview} alt="" />
-                                  )
-                                ) : (
-                                  <span className="muted small">{w.label}</span>
-                                )}
-                                <span className="wp-kind">
-                                  {w.kind === "video" ? "动态" : "静态"}
-                                </span>
-                              </button>
-                            );
-                          })}
-                      </div>
-                    )}
-                    {loadWpMode === "dynamic" &&
-                      !systemWallpapers.some((w) => w.kind === "video") && (
-                        <p className="muted small" style={{ marginTop: "0.45rem" }}>
-                          未在「视频」文件夹找到可用视频。可点「本地文件」选择
-                          mp4/webm/mov，或把视频放到用户目录下的 Videos。
-                        </p>
-                      )}
                     <div
                       className={`wallpaper-sliders${
                         prefs.wallpaperKind === "none" ? " is-disabled" : ""
@@ -3631,13 +3815,35 @@ export default function App() {
                         </span>
                       </label>
                     </div>
+                    <div className="wallpaper-sliders">
+                      <label className="wallpaper-slider-row">
+                        <span>
+                          <em>中间面板不透明度</em>
+                          <strong>{prefs.welcomePanelOpacity}%</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min={20}
+                          max={100}
+                          value={prefs.welcomePanelOpacity}
+                          onChange={(e) =>
+                            updatePrefs({
+                              welcomePanelOpacity: Number(e.target.value),
+                            })
+                          }
+                        />
+                        <span className="muted small">
+                          默认 70%。数值越大面板越实，越小越能透出壁纸
+                        </span>
+                      </label>
+                    </div>
                   </div>
 
                   <div className="wallpaper-panel">
                     <div className="wallpaper-panel-head">
                       <h4>终端背景</h4>
                       <p className="muted small">
-                        仅支持静态壁纸（图片），与加载页互不影响。
+                        仅静态图片：可从 Wallpaper Engine 选用，或本地自选。
                       </p>
                     </div>
                     <div className="wallpaper-preview-frame">
@@ -3651,7 +3857,9 @@ export default function App() {
                       ) : (
                         <div className="wallpaper-preview-empty">
                           <span>暂未设置终端背景</span>
-                          <span className="muted small">仅图片</span>
+                          <span className="muted small">
+                            点「获取 Wallpaper」打开图库，或选本地图片
+                          </span>
                         </div>
                       )}
                       {prefs.terminalWallpaperKind === "image" && (
@@ -3662,10 +3870,14 @@ export default function App() {
                       <button
                         type="button"
                         className="primary"
-                        disabled={busy || systemWpBusy}
-                        onClick={() => void refreshSystemWallpapers()}
+                        disabled={busy || weWpBusy}
+                        onClick={() =>
+                          void openWallpaperEnginePicker("terminal")
+                        }
                       >
-                        {systemWpBusy ? "读取中…" : "获取 Wallpaper"}
+                        {weWpBusy && wePickerSlot === "terminal"
+                          ? "读取中…"
+                          : "获取 Wallpaper"}
                       </button>
                       <button
                         type="button"
@@ -3731,39 +3943,6 @@ export default function App() {
                         清除
                       </button>
                     </div>
-                    {systemWallpapers.some((w) => w.kind === "image") && (
-                      <div className="wallpaper-system-grid">
-                        {systemWallpapers
-                          .filter((w) => w.kind === "image")
-                          .map((w) => {
-                            let preview = "";
-                            try {
-                              preview = convertFileSrc(w.path);
-                            } catch {
-                              preview = "";
-                            }
-                            return (
-                              <button
-                                key={`term-${w.path}`}
-                                type="button"
-                                className="wallpaper-system-item"
-                                title={`${w.label} · ${w.source}`}
-                                disabled={busy}
-                                onClick={() =>
-                                  void applySystemWallpaper(w, "terminal")
-                                }
-                              >
-                                {preview ? (
-                                  <img src={preview} alt="" />
-                                ) : (
-                                  <span className="muted small">{w.label}</span>
-                                )}
-                                <span className="wp-kind">静态</span>
-                              </button>
-                            );
-                          })}
-                      </div>
-                    )}
                     <div
                       className={`wallpaper-sliders${
                         prefs.terminalWallpaperKind === "none"
@@ -3917,20 +4096,56 @@ export default function App() {
                       <button
                         type="button"
                         className="primary"
-                        disabled={busy || !repoPath}
+                        disabled={busy || mirrorListBusy || !repoPath}
                         title="写入双向 workflow、自动配置 Secrets，并尽量提交推送到 GitHub"
                         onClick={() => {
                           if (!repoPath) return;
+                          setMirrorProgress({ percent: 2, label: "准备安装…" });
                           void runAction(async () => {
-                            const result = await api.setupActionsMirror(
-                              repoPath,
-                              true,
-                            );
-                            if (result.secretsUrl && !result.secretConfigured) {
-                              void openUrl(result.secretsUrl);
+                            try {
+                              const result = await api.setupActionsMirror(
+                                repoPath,
+                                true,
+                              );
+                              if (
+                                result.secretsUrl &&
+                                !result.secretConfigured
+                              ) {
+                                void openUrl(result.secretsUrl);
+                              }
+                              updatePrefs({ mirrorSyncMethod: "actions" });
+                              const id = mirrorInstallId(
+                                result.githubOwner,
+                                result.githubRepo,
+                              );
+                              const record: MirrorInstallRecord = {
+                                id,
+                                repoPath,
+                                githubOwner: result.githubOwner,
+                                githubRepo: result.githubRepo,
+                                giteeFullName: result.giteeFullName,
+                                giteeUrl: result.giteeUrl,
+                                installedAt: Date.now(),
+                                connection: result.secretConfigured
+                                  ? "ok"
+                                  : "warn",
+                                connectionDetail: result.secretConfigured
+                                  ? "已安装（Secrets 已写入）"
+                                  : "已安装（Secrets 未自动写入）",
+                                lastCheckedAt: Date.now(),
+                              };
+                              setMirrorInstalls((prev) => {
+                                const next = upsertMirrorInstall(prev, record);
+                                saveMirrorInstalls(next);
+                                return next;
+                              });
+                              return result.message;
+                            } finally {
+                              window.setTimeout(
+                                () => setMirrorProgress(null),
+                                800,
+                              );
                             }
-                            updatePrefs({ mirrorSyncMethod: "actions" });
-                            return result.message;
                           }, "正在一键安装双向 Actions 镜像…");
                         }}
                       >
@@ -3938,29 +4153,314 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={busy || !repoPath}
+                        disabled={
+                          busy ||
+                          mirrorListBusy ||
+                          !repoPath ||
+                          mirrorInstalls.length === 0
+                        }
                         onClick={() => {
                           if (!repoPath) return;
-                          void runAction(async () => {
-                            const status =
-                              await api.getActionsMirrorStatus(repoPath);
-                            const fwd = status.workflowExists
-                              ? `正向已装：${status.workflowPath}`
-                              : "正向未装";
-                            const rev = status.reverseWorkflowExists
-                              ? `反向已装：${status.reverseWorkflowPath}`
-                              : "反向未装";
-                            return `${fwd}；${rev}`;
-                          }, "正在检查 Actions…");
+                          setMirrorListBusy(true);
+                          setMirrorProgress({
+                            percent: 5,
+                            label: "检查全部安装…",
+                          });
+                          void (async () => {
+                            try {
+                              const health =
+                                await api.verifyActionsMirror(repoPath);
+                              const id = mirrorInstallId(
+                                health.githubOwner,
+                                health.githubRepo,
+                              );
+                              setMirrorInstalls((prev) => {
+                                const next = prev.map((item) => {
+                                  if (item.id !== id && item.repoPath !== repoPath)
+                                    return item;
+                                  return {
+                                    ...item,
+                                    giteeFullName:
+                                      health.giteeFullName || item.giteeFullName,
+                                    connection:
+                                      health.level === "ok"
+                                        ? ("ok" as const)
+                                        : health.level === "warn"
+                                          ? ("warn" as const)
+                                          : ("error" as const),
+                                    connectionDetail: health.detail,
+                                    lastCheckedAt: Date.now(),
+                                  };
+                                });
+                                // If current repo not in list but has workflows, add it
+                                if (
+                                  !next.some((x) => x.id === id) &&
+                                  (health.forwardLocal || health.reverseLocal)
+                                ) {
+                                  next.unshift({
+                                    id,
+                                    repoPath,
+                                    githubOwner: health.githubOwner,
+                                    githubRepo: health.githubRepo,
+                                    giteeFullName: health.giteeFullName,
+                                    giteeUrl: "",
+                                    installedAt: Date.now(),
+                                    connection:
+                                      health.level === "ok"
+                                        ? "ok"
+                                        : health.level === "warn"
+                                          ? "warn"
+                                          : "error",
+                                    connectionDetail: health.detail,
+                                    lastCheckedAt: Date.now(),
+                                  });
+                                }
+                                saveMirrorInstalls(next);
+                                return next;
+                              });
+                              setNotice(
+                                health.level === "ok"
+                                  ? `连接正常：${health.detail}`
+                                  : health.level === "warn"
+                                    ? `待完善：${health.detail}`
+                                    : `存在异常：${health.detail}`,
+                              );
+                            } catch (e) {
+                              setError(failureLine(e));
+                            } finally {
+                              setMirrorListBusy(false);
+                              setMirrorProgress(null);
+                            }
+                          })();
                         }}
                       >
                         检查安装状态
                       </button>
                     </div>
+
+                    {mirrorProgress && (
+                      <div className="about-progress release-progress" style={{ marginTop: "0.55rem" }}>
+                        <div className="about-progress-head">
+                          <span>{mirrorProgress.label}</span>
+                          <span>{mirrorProgress.percent}%</span>
+                        </div>
+                        <div className="about-progress-bar">
+                          <i style={{ width: `${mirrorProgress.percent}%` }} />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mirror-install-list" style={{ marginTop: "0.65rem" }}>
+                      <h5 style={{ margin: "0 0 0.35rem" }}>已安装镜像</h5>
+                      {mirrorInstalls.length === 0 ? (
+                        <p className="muted small">
+                          还没有安装记录。点上方「一键安装」后会显示在此列表。
+                        </p>
+                      ) : (
+                        <ul className="record-list mirror-install-ul">
+                          {mirrorInstalls.map((item) => {
+                            const badge =
+                              item.connection === "ok"
+                                ? "正常"
+                                : item.connection === "warn"
+                                  ? "待推送"
+                                  : item.connection === "error"
+                                    ? "异常"
+                                    : "未检";
+                            const badgeClass =
+                              item.connection === "ok"
+                                ? "is-ok"
+                                : item.connection === "warn"
+                                  ? "is-warn"
+                                  : item.connection === "error"
+                                    ? "is-err"
+                                    : "is-unknown";
+                            return (
+                              <li key={item.id} className="mirror-install-row">
+                                <div className="mirror-install-main">
+                                  <div className="mirror-install-hosts">
+                                    <span>
+                                      <em>GitHub</em>{" "}
+                                      <strong>
+                                        {item.githubOwner}/{item.githubRepo}
+                                      </strong>
+                                    </span>
+                                    <span className="mirror-host-arrow" aria-hidden>
+                                      ↔
+                                    </span>
+                                    <span>
+                                      <em>Gitee</em>{" "}
+                                      <strong>
+                                        {item.giteeFullName || "未配置"}
+                                      </strong>
+                                    </span>
+                                    <span className={`mirror-badge ${badgeClass}`}>
+                                      {badge}
+                                    </span>
+                                  </div>
+                                  {item.connectionDetail ? (
+                                    <span
+                                      className="muted small mirror-install-detail"
+                                      title={item.connectionDetail}
+                                    >
+                                      {item.connectionDetail}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <span className="row-actions">
+                                  <button
+                                    type="button"
+                                    className="pane-btn pane-btn--soft pane-btn--sm"
+                                    disabled={
+                                      busy ||
+                                      mirrorListBusy ||
+                                      !repoPath ||
+                                      (item.repoPath !== repoPath &&
+                                        !!item.repoPath)
+                                    }
+                                    title={
+                                      item.repoPath &&
+                                      item.repoPath !== repoPath
+                                        ? `请先打开仓库：${item.repoPath}`
+                                        : "检查此安装是否连接正常"
+                                    }
+                                    onClick={() => {
+                                      if (!repoPath) return;
+                                      setMirrorListBusy(true);
+                                      setMirrorProgress({
+                                        percent: 5,
+                                        label: `检查 ${item.githubOwner}/${item.githubRepo}…`,
+                                      });
+                                      void (async () => {
+                                        try {
+                                          const health =
+                                            await api.verifyActionsMirror(
+                                              repoPath,
+                                            );
+                                          setMirrorInstalls((prev) => {
+                                            const next = prev.map((x) =>
+                                              x.id === item.id
+                                                ? {
+                                                    ...x,
+                                                    giteeFullName:
+                                                      health.giteeFullName ||
+                                                      x.giteeFullName,
+                                                    connection:
+                                                      health.level === "ok"
+                                                        ? ("ok" as const)
+                                                        : health.level === "warn"
+                                                          ? ("warn" as const)
+                                                          : ("error" as const),
+                                                    connectionDetail:
+                                                      health.detail,
+                                                    lastCheckedAt: Date.now(),
+                                                  }
+                                                : x,
+                                            );
+                                            saveMirrorInstalls(next);
+                                            return next;
+                                          });
+                                          setNotice(
+                                            health.level === "ok"
+                                              ? `连接正常：${health.detail}`
+                                              : health.level === "warn"
+                                                ? `待完善：${health.detail}`
+                                                : `存在异常：${health.detail}`,
+                                          );
+                                        } catch (e) {
+                                          setMirrorInstalls((prev) => {
+                                            const next = prev.map((x) =>
+                                              x.id === item.id
+                                                ? {
+                                                    ...x,
+                                                    connection: "error" as const,
+                                                    connectionDetail:
+                                                      failureLine(e),
+                                                    lastCheckedAt: Date.now(),
+                                                  }
+                                                : x,
+                                            );
+                                            saveMirrorInstalls(next);
+                                            return next;
+                                          });
+                                          setError(failureLine(e));
+                                        } finally {
+                                          setMirrorListBusy(false);
+                                          setMirrorProgress(null);
+                                        }
+                                      })();
+                                    }}
+                                  >
+                                    检查
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="pane-btn pane-btn--danger pane-btn--sm"
+                                    disabled={busy || mirrorListBusy}
+                                    title="删除本地工作流并移出列表（会尽量推送到 GitHub）"
+                                    onClick={() => {
+                                      void (async () => {
+                                        const ok = await confirmAction(
+                                          `删除「${item.githubOwner}/${item.githubRepo}」的双向 Actions 镜像？\n会删除本地 workflow 并尽量推送到 GitHub；列表记录也会移除。`,
+                                          {
+                                            title: "删除镜像安装",
+                                            danger: true,
+                                            confirmLabel: "删除",
+                                          },
+                                        );
+                                        if (!ok) return;
+                                        const canRemoveFiles =
+                                          Boolean(repoPath) &&
+                                          (!item.repoPath ||
+                                            item.repoPath === repoPath);
+                                        setMirrorListBusy(true);
+                                        setMirrorProgress({
+                                          percent: 5,
+                                          label: "正在删除…",
+                                        });
+                                        try {
+                                          if (canRemoveFiles && repoPath) {
+                                            const msg =
+                                              await api.removeActionsMirror(
+                                                repoPath,
+                                                true,
+                                              );
+                                            setNotice(msg);
+                                          } else {
+                                            setNotice(
+                                              "已从列表移除（当前未打开对应仓库，未删磁盘文件）",
+                                            );
+                                          }
+                                          setMirrorInstalls((prev) => {
+                                            const next = removeMirrorInstall(
+                                              prev,
+                                              item.id,
+                                            );
+                                            saveMirrorInstalls(next);
+                                            return next;
+                                          });
+                                        } catch (e) {
+                                          setError(failureLine(e));
+                                        } finally {
+                                          setMirrorListBusy(false);
+                                          setMirrorProgress(null);
+                                        }
+                                      })();
+                                    }}
+                                  >
+                                    删除
+                                  </button>
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+
                     <p className="muted small" style={{ marginTop: "0.4rem" }}>
                       一键安装会写入双向 workflow、自动写 GitHub Secrets，并尽量提交推送。
-                      需已登录 GitHub（含 workflow 权限）与 Gitee。之后选「Actions
-                      双向镜像」再点同步推送即可。
+                      需已登录 GitHub（含 workflow 权限）与 Gitee。安装后可在列表中检查连接或删除。
                     </p>
                   </div>
 
@@ -4067,7 +4567,6 @@ export default function App() {
                     savePrefs(next);
                     setPrefs(next);
                     applyPrefsToDocument(next);
-                    setSystemWallpapers([]);
                   }}
                 />
               )}
@@ -4171,6 +4670,7 @@ export default function App() {
             </div>
           </div>
         </div>
+        {renderWallpaperEnginePicker()}
       </div>
     );
   }
@@ -4200,12 +4700,6 @@ export default function App() {
         />
       )}
       <div className={`app${entering ? " app-enter" : ""}`}>
-      {syncingCache && (
-        <div className="sync-strip" role="status">
-          <div className="sync-strip-bar" />
-          <span>正在后台同步最新状态…</span>
-        </div>
-      )}
       <header className="toolbar">
         <div className="toolbar-left">
           <button type="button" onClick={pickFolder} disabled={busy} title="打开其他项目文件夹">
@@ -4604,33 +5098,29 @@ export default function App() {
         </div>
       </header>
 
-      {(busy || syncProgress) && (
-        <div
-          className={`sync-progress${syncProgress ? "" : " is-indeterminate"}`}
-          role="status"
-          aria-live="polite"
-        >
-          <div className="sync-progress-track">
-            <div
-              className="sync-progress-fill"
-              style={
-                syncProgress
-                  ? { width: `${Math.max(2, syncProgress.percent)}%` }
-                  : undefined
-              }
-            />
-          </div>
-          {syncProgress && (
-            <div className="sync-progress-meta">
-              <span>
-                {syncProgress.label}
-                {syncProgress.detail ? ` · ${syncProgress.detail}` : ""}
-              </span>
-              <span>{syncProgress.percent}%</span>
-            </div>
-          )}
+      <div
+        className={`sync-progress${
+          syncProgress
+            ? ""
+            : busy
+              ? " is-indeterminate"
+              : " is-idle"
+        }`}
+        role="status"
+        aria-live="polite"
+        aria-hidden={!busy && !syncProgress}
+      >
+        <div className="sync-progress-track">
+          <div
+            className="sync-progress-fill"
+            style={
+              syncProgress
+                ? { width: `${Math.max(2, syncProgress.percent)}%` }
+                : undefined
+            }
+          />
         </div>
-      )}
+      </div>
 
       {sessionWarnings.length > 0 && !error && (
         <div className="hint-box auth-warn-strip">

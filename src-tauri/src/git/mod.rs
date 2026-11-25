@@ -5,8 +5,9 @@ mod status;
 mod types;
 
 pub use actions_mirror::{
-    actions_mirror_status, setup_actions_mirror, trigger_reverse_actions_mirror,
-    ActionsMirrorSetup, ActionsMirrorStatus,
+    actions_mirror_status, init_mirror_handle, remove_actions_mirror, setup_actions_mirror,
+    trigger_reverse_actions_mirror, verify_actions_mirror, ActionsMirrorHealth, ActionsMirrorSetup,
+    ActionsMirrorStatus,
 };
 pub use auth::{
     auth_accounts, auth_browser_begin, auth_browser_finish, auth_device_poll, auth_device_start,

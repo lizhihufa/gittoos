@@ -7,7 +7,7 @@ use super::auth::{
     create_or_get_hosting_repo, github_access_token, provider_access_token, provider_login_name,
     Provider,
 };
-use super::runner::GitBinary;
+use super::runner::{emit_terminal, GitBinary};
 use super::types::GitError;
 use super::{
     commit, infer_repo_name, list_remotes, set_remote_url, stage_paths,
@@ -15,6 +15,27 @@ use super::{
 use crypto_box::PublicKey;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::OnceLock;
+use tauri::{AppHandle, Emitter};
+
+static MIRROR_APP: OnceLock<AppHandle> = OnceLock::new();
+
+pub fn init_mirror_handle(app: AppHandle) {
+    let _ = MIRROR_APP.set(app);
+}
+
+fn emit_mirror_progress(percent: u32, label: &str) {
+    if let Some(app) = MIRROR_APP.get() {
+        let _ = app.emit(
+            "actions-mirror-progress",
+            serde_json::json!({
+                "percent": percent.min(100),
+                "label": label,
+            }),
+        );
+    }
+    emit_terminal("out", &format!("[Actions 镜像] {label}"));
+}
 
 const WORKFLOW_FORWARD_REL: &str = ".github/workflows/qingzhi-mirror-gitee.yml";
 const WORKFLOW_REVERSE_REL: &str = ".github/workflows/qingzhi-mirror-from-gitee.yml";
@@ -146,26 +167,49 @@ pub struct ActionsMirrorStatus {
     pub has_gitee_remote: bool,
     pub github_owner: String,
     pub github_repo: String,
+    pub gitee_full_name: String,
     pub secrets_url: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionsMirrorHealth {
+    pub github_owner: String,
+    pub github_repo: String,
+    pub gitee_full_name: String,
+    pub forward_local: bool,
+    pub reverse_local: bool,
+    pub forward_remote: bool,
+    pub reverse_remote: bool,
+    pub secrets_ok: bool,
+    pub gitee_remote_ok: bool,
+    pub ok: bool,
+    /// "ok" | "warn" | "error"
+    pub level: String,
+    pub detail: String,
+}
+
 pub fn actions_mirror_status(git: &GitBinary, repo: &Path) -> Result<ActionsMirrorStatus, GitError> {
-    let _ = git;
     let forward = repo.join(WORKFLOW_FORWARD_REL);
     let reverse = repo.join(WORKFLOW_REVERSE_REL);
     let (owner, name) = resolve_github_owner_repo(git, repo)?;
     let remotes = list_remotes(git, repo).unwrap_or_default();
-    let has_gitee = remotes.iter().any(|r| {
+    let gitee_remote = remotes.iter().find(|r| {
         r.name == "gitee" || r.url.to_ascii_lowercase().contains("gitee.com")
     });
+    let gitee_full_name = gitee_remote
+        .and_then(|r| parse_gitee_owner_repo(&r.url))
+        .map(|(o, n)| format!("{o}/{n}"))
+        .unwrap_or_default();
     Ok(ActionsMirrorStatus {
         workflow_exists: forward.is_file(),
         workflow_path: WORKFLOW_FORWARD_REL.to_string(),
         reverse_workflow_exists: reverse.is_file(),
         reverse_workflow_path: WORKFLOW_REVERSE_REL.to_string(),
-        has_gitee_remote: has_gitee,
+        has_gitee_remote: gitee_remote.is_some(),
         github_owner: owner.clone(),
         github_repo: name.clone(),
+        gitee_full_name,
         secrets_url: if owner.is_empty() {
             String::new()
         } else {
@@ -199,6 +243,7 @@ pub fn setup_actions_mirror(
     repo: &Path,
     configure_secret: bool,
 ) -> Result<ActionsMirrorSetup, GitError> {
+    emit_mirror_progress(5, "解析 GitHub 远程…");
     let (owner, name) = resolve_github_owner_repo(git, repo)?;
     if owner.is_empty() || name.is_empty() {
         return Err(GitError::InvalidInput(
@@ -207,11 +252,13 @@ pub fn setup_actions_mirror(
         ));
     }
 
+    emit_mirror_progress(18, "写入正向 / 反向 workflow…");
     let forward_path = repo.join(WORKFLOW_FORWARD_REL);
     let reverse_path = repo.join(WORKFLOW_REVERSE_REL);
     let forward_written = write_workflow(&forward_path, WORKFLOW_FORWARD_YAML)?;
     let reverse_written = write_workflow(&reverse_path, WORKFLOW_REVERSE_YAML)?;
 
+    emit_mirror_progress(35, "确保 Gitee 仓库并写入远程…");
     let repo_name = infer_repo_name(git, repo)?;
     let created = create_or_get_hosting_repo("gitee", &repo_name, false, "")?;
     set_remote_url(git, repo, "gitee", &created.clone_url)?;
@@ -219,6 +266,7 @@ pub fn setup_actions_mirror(
     let secrets_url = format!("https://github.com/{owner}/{name}/settings/secrets/actions");
     let mut secret_configured = false;
     let secret_note = if configure_secret {
+        emit_mirror_progress(55, "写入 GitHub Secrets…");
         match try_configure_gitee_secrets(&owner, &name, &created.full_name) {
             Ok(()) => {
                 secret_configured = true;
@@ -235,6 +283,7 @@ pub fn setup_actions_mirror(
 
     let mut pushed = false;
     let push_note = if forward_written || reverse_written {
+        emit_mirror_progress(78, "提交并推送 workflow 到 GitHub…");
         match auto_commit_and_push_workflows(git, repo) {
             Ok(msg) => {
                 pushed = true;
@@ -245,9 +294,11 @@ pub fn setup_actions_mirror(
             ),
         }
     } else {
+        emit_mirror_progress(85, "工作流文件已是最新…");
         "工作流文件已是最新。".to_string()
     };
 
+    emit_mirror_progress(100, "安装完成");
     Ok(ActionsMirrorSetup {
         workflow_path: WORKFLOW_FORWARD_REL.to_string(),
         workflow_written: forward_written,
@@ -270,6 +321,281 @@ pub fn setup_actions_mirror(
             created.html_url, secret_note, push_note
         ),
     })
+}
+
+/// 删除本地双向 workflow 文件（可选提交推送）。
+pub fn remove_actions_mirror(
+    git: &GitBinary,
+    repo: &Path,
+    push: bool,
+) -> Result<String, GitError> {
+    emit_mirror_progress(10, "删除本地 workflow…");
+    let paths = [WORKFLOW_FORWARD_REL, WORKFLOW_REVERSE_REL];
+    let mut removed = Vec::new();
+    for rel in paths {
+        let p = repo.join(rel);
+        if p.is_file() {
+            std::fs::remove_file(&p).map_err(|e| GitError::Io {
+                path: p.display().to_string(),
+                message: e.to_string(),
+            })?;
+            removed.push(rel.to_string());
+        }
+    }
+    if removed.is_empty() {
+        emit_mirror_progress(100, "无需删除");
+        return Ok("本地没有可删除的 Actions 镜像工作流。".to_string());
+    }
+
+    // Stage deletions
+    emit_mirror_progress(40, "暂存删除…");
+    stage_paths(git, repo, &removed)?;
+    let _ = commit(
+        git,
+        repo,
+        "chore: remove Qingzhi bidirectional Actions mirror",
+    );
+
+    if push {
+        emit_mirror_progress(70, "推送到 GitHub…");
+        let remotes = list_remotes(git, repo).unwrap_or_default();
+        let remote = remotes
+            .iter()
+            .find(|r| r.name == "github")
+            .or_else(|| remotes.iter().find(|r| r.name == "origin"))
+            .map(|r| r.name.as_str())
+            .unwrap_or("origin");
+        match super::push_with_options(git, repo, false, None, Some(remote)) {
+            Ok(_) => {
+                emit_mirror_progress(100, "已删除并推送");
+                return Ok(format!(
+                    "已删除 {} 并推送到 {remote}。GitHub Secrets 需手动清理（如需要）。",
+                    removed.join("、")
+                ));
+            }
+            Err(err) => {
+                emit_mirror_progress(100, "已删除（推送失败）");
+                return Ok(format!(
+                    "已删除本地 {}，但推送失败（{err}）。可稍后手动推送。",
+                    removed.join("、")
+                ));
+            }
+        }
+    }
+
+    emit_mirror_progress(100, "已删除");
+    Ok(format!(
+        "已删除本地 {}。如需同步到远程，请自行提交推送。",
+        removed.join("、")
+    ))
+}
+
+/// 检查本地文件、GitHub 上的 workflow / Secrets、Gitee 远程是否可用。
+pub fn verify_actions_mirror(
+    git: &GitBinary,
+    repo: &Path,
+) -> Result<ActionsMirrorHealth, GitError> {
+    emit_mirror_progress(8, "检查本地文件…");
+    let (owner, name) = resolve_github_owner_repo(git, repo)?;
+    if owner.is_empty() || name.is_empty() {
+        return Err(GitError::InvalidInput(
+            "找不到 GitHub 仓库，无法检查状态。".to_string(),
+        ));
+    }
+    let forward_local = repo.join(WORKFLOW_FORWARD_REL).is_file();
+    let reverse_local = repo.join(WORKFLOW_REVERSE_REL).is_file();
+
+    let remotes = list_remotes(git, repo).unwrap_or_default();
+    let gitee_remote = remotes.iter().find(|r| {
+        r.name == "gitee" || r.url.to_ascii_lowercase().contains("gitee.com")
+    });
+    let gitee_full_name = gitee_remote
+        .and_then(|r| parse_gitee_owner_repo(&r.url))
+        .map(|(o, n)| format!("{o}/{n}"))
+        .unwrap_or_default();
+    let gitee_remote_ok = gitee_remote.is_some();
+
+    emit_mirror_progress(35, "查询 GitHub workflow…");
+    let (forward_remote, reverse_remote) = match github_workflows_present(&owner, &name) {
+        Ok(v) => v,
+        Err(_) => (false, false),
+    };
+
+    emit_mirror_progress(65, "查询 GitHub Secrets…");
+    let secrets_ok = github_secret_exists(&owner, &name, "GITEE_TOKEN").unwrap_or(false);
+
+    let mark = |ok: bool| if ok { "✓" } else { "✗" };
+    let mut parts = Vec::new();
+    parts.push(format!(
+        "本地 workflow（GitHub→Gitee）{}",
+        mark(forward_local)
+    ));
+    parts.push(format!(
+        "本地 workflow（Gitee→GitHub）{}",
+        mark(reverse_local)
+    ));
+    parts.push(format!(
+        "GitHub 上已有正向 workflow{}",
+        mark(forward_remote)
+    ));
+    parts.push(format!(
+        "GitHub 上已有反向 workflow{}",
+        mark(reverse_remote)
+    ));
+    parts.push(format!("GitHub Secrets（GITEE_TOKEN）{}", mark(secrets_ok)));
+    parts.push(format!("本机 Gitee 远程{}", mark(gitee_remote_ok)));
+
+    let ok = forward_local
+        && reverse_local
+        && forward_remote
+        && reverse_remote
+        && secrets_ok
+        && gitee_remote_ok;
+    // Partial: local+secrets ready but workflows not yet on GitHub (push pending)
+    let warn = !ok
+        && forward_local
+        && reverse_local
+        && secrets_ok
+        && gitee_remote_ok
+        && (!forward_remote || !reverse_remote);
+    let hint = if ok {
+        "全部就绪，可双向同步".to_string()
+    } else if warn {
+        "本地已装好，但 GitHub 仓库里还没有 workflow 文件——请推送 .github/workflows 后再检查".to_string()
+    } else {
+        "存在未就绪项，请对照上方逐项处理".to_string()
+    };
+    emit_mirror_progress(
+        100,
+        if ok {
+            "连接正常"
+        } else if warn {
+            "待推送 workflow"
+        } else {
+            "存在异常"
+        },
+    );
+    Ok(ActionsMirrorHealth {
+        github_owner: owner,
+        github_repo: name,
+        gitee_full_name,
+        forward_local,
+        reverse_local,
+        forward_remote,
+        reverse_remote,
+        secrets_ok,
+        gitee_remote_ok,
+        ok,
+        level: if ok {
+            "ok".into()
+        } else if warn {
+            "warn".into()
+        } else {
+            "error".into()
+        },
+        detail: format!("{}。{}", parts.join(" · "), hint),
+    })
+}
+
+fn github_workflows_present(owner: &str, repo: &str) -> Result<(bool, bool), GitError> {
+    let gh_token = github_access_token()?.ok_or_else(|| {
+        GitError::InvalidInput("请先登录 GitHub。".to_string())
+    })?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .timeout_read(std::time::Duration::from_secs(30))
+        .build();
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/actions/workflows");
+    let resp = agent
+        .get(&url)
+        .set("Authorization", &format!("Bearer {gh_token}"))
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", "qingzhi")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .call()
+        .map_err(|e| GitError::InvalidInput(format!("读取 workflow 失败：{e}")))?;
+    if !(200..300).contains(&resp.status()) {
+        return Err(GitError::InvalidInput(format!(
+            "读取 workflow 失败（HTTP {}）",
+            resp.status()
+        )));
+    }
+    #[derive(Deserialize)]
+    struct WfList {
+        workflows: Vec<WfItem>,
+    }
+    #[derive(Deserialize)]
+    struct WfItem {
+        path: String,
+    }
+    let list = resp
+        .into_json::<WfList>()
+        .map_err(|e| GitError::InvalidInput(format!("解析 workflow：{e}")))?;
+    let forward = list
+        .workflows
+        .iter()
+        .any(|w| w.path.ends_with("qingzhi-mirror-gitee.yml"));
+    let reverse = list
+        .workflows
+        .iter()
+        .any(|w| w.path.ends_with("qingzhi-mirror-from-gitee.yml"));
+    Ok((forward, reverse))
+}
+
+fn github_secret_exists(owner: &str, repo: &str, name: &str) -> Result<bool, GitError> {
+    let gh_token = github_access_token()?.ok_or_else(|| {
+        GitError::InvalidInput("请先登录 GitHub。".to_string())
+    })?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .timeout_read(std::time::Duration::from_secs(30))
+        .build();
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/actions/secrets/{name}");
+    match agent
+        .get(&url)
+        .set("Authorization", &format!("Bearer {gh_token}"))
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", "qingzhi")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .call()
+    {
+        Ok(resp) => Ok((200..300).contains(&resp.status())),
+        Err(ureq::Error::Status(404, _)) => Ok(false),
+        Err(ureq::Error::Status(code, resp)) => {
+            let _ = resp.into_string();
+            Err(GitError::InvalidInput(format!(
+                "查询 Secret 失败（HTTP {code}）"
+            )))
+        }
+        Err(e) => Err(GitError::InvalidInput(format!("查询 Secret 失败：{e}"))),
+    }
+}
+
+fn parse_gitee_owner_repo(url: &str) -> Option<(String, String)> {
+    let lower = url.trim().to_ascii_lowercase();
+    if !lower.contains("gitee.com") {
+        return None;
+    }
+    let trimmed = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    let parts: Vec<&str> = if let Some(rest) = trimmed.strip_prefix("git@gitee.com:") {
+        rest.split('/').collect()
+    } else if let Some(idx) = trimmed.find("gitee.com/") {
+        trimmed[idx + "gitee.com/".len()..].split('/').collect()
+    } else if let Some(idx) = trimmed.find("gitee.com:") {
+        trimmed[idx + "gitee.com:".len()..].split('/').collect()
+    } else {
+        return None;
+    };
+    if parts.len() < 2 {
+        return None;
+    }
+    let owner = parts[0].trim();
+    let name = parts[1].trim();
+    if owner.is_empty() || name.is_empty() {
+        None
+    } else {
+        Some((owner.to_string(), name.to_string()))
+    }
 }
 
 fn auto_commit_and_push_workflows(git: &GitBinary, repo: &Path) -> Result<String, GitError> {

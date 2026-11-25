@@ -37,6 +37,7 @@ export function LoadingScreen({
         <div className="boot-scrim" />
       </div>
 
+      {/* Top edge progress — no text on the bar itself */}
       <div className="boot-progress-track" aria-hidden>
         <div className="boot-progress-fill" style={{ width: `${pct}%` }} />
         <div className="boot-progress-glow" style={{ left: `${pct}%` }} />
@@ -50,7 +51,15 @@ export function LoadingScreen({
           {label}
           {fromCache ? " · 缓存加速" : ""}
         </p>
-        <p className="boot-percent">{Math.round(pct)}%</p>
+        {/* Compact progress under status — also text-free */}
+        <div className="boot-progress-mini" aria-hidden>
+          <div className="boot-progress-mini-track">
+            <div
+              className="boot-progress-mini-fill"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

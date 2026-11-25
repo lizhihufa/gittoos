@@ -257,6 +257,23 @@ export interface ActionsMirrorStatus {
   hasGiteeRemote: boolean;
   githubOwner: string;
   githubRepo: string;
+  giteeFullName: string;
   secretsUrl: string;
+}
+
+export interface ActionsMirrorHealth {
+  githubOwner: string;
+  githubRepo: string;
+  giteeFullName: string;
+  forwardLocal: boolean;
+  reverseLocal: boolean;
+  forwardRemote: boolean;
+  reverseRemote: boolean;
+  secretsOk: boolean;
+  giteeRemoteOk: boolean;
+  ok: boolean;
+  /** "ok" | "warn" | "error" */
+  level: string;
+  detail: string;
 }
 

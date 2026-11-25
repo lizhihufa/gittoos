@@ -17,12 +17,13 @@ use git::{
     list_rebase_todo, list_tags, merge_branch, publish_hosting_remotes, pull, push_all_tags,
     push_tag, push_with_options, read_identity, read_workdir_file, rebase_branch,
     rebase_interactive, remove_remote, rename_branch, repo_status, repo_status_light_nonblocking,
-    reset_to_commit, revert_commit, run_shell, set_app_handle, set_remote_url, setup_actions_mirror,
-    trigger_reverse_actions_mirror,
+    remove_actions_mirror, reset_to_commit, revert_commit, run_shell, set_app_handle, set_remote_url,
+    setup_actions_mirror, trigger_reverse_actions_mirror, verify_actions_mirror, init_mirror_handle,
     set_upstream, skip_rebase, stage_paths, staged_large_files, stash_apply, stash_drop, stash_pop,
     stash_push, stash_show, undo_last_commit, unstage_paths, with_git_quiet, write_identity,
     write_workdir_file,
-    ActionsMirrorSetup, ActionsMirrorStatus, AuthAccounts, BranchInfo, CommitInfo, GitBinary,
+    ActionsMirrorHealth, ActionsMirrorSetup, ActionsMirrorStatus, AuthAccounts, BranchInfo,
+    CommitInfo, GitBinary,
     GitError, GitInfo, RebaseTodoItem,
     GithubDevicePollResult, GithubDeviceStart, HostingRepo, Identity, LargeFileInfo, OauthBegin,
     ProviderStatus, ReflogInfo, RemoteBranchInfo, RemoteInfo, RepoCore, RepoExtras, RepoSnapshot,
@@ -119,15 +120,31 @@ fn import_wallpaper(
     if !src.is_file() {
         return Err("壁纸文件不存在".into());
     }
-    let ext = src
+    let raw_ext = src
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("bin")
+        .unwrap_or("")
         .to_ascii_lowercase();
-    let allowed = ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov"];
-    if !allowed.iter().any(|a| *a == ext) {
+    let allowed_img = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+    let allowed_vid = ["mp4", "webm", "mov"];
+    // Windows Themes / Spotlight often have no extension but are JPEG blobs.
+    let ext = if allowed_img.iter().any(|a| *a == raw_ext) || allowed_vid.iter().any(|a| *a == raw_ext)
+    {
+        raw_ext
+    } else if raw_ext.is_empty()
+        || src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| {
+                let l = n.to_ascii_lowercase();
+                l.contains("wallpaper") || l == "transcodedwallpaper"
+            })
+            .unwrap_or(false)
+    {
+        "jpg".to_string()
+    } else {
         return Err("仅支持图片（png/jpg/webp/gif）或视频（mp4/webm/mov）".into());
-    }
+    };
     let dir = app
         .path()
         .app_data_dir()
@@ -150,8 +167,22 @@ fn import_wallpaper(
             }
         }
     }
-    let dest = dir.join(format!("{prefix}{ext}"));
-    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    // Videos: always reference in place (copy is slow and unnecessary; quality stays original).
+    if allowed_vid.iter().any(|a| *a == ext) {
+        return Ok(src.to_string_lossy().to_string());
+    }
+    let src_len = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+    if src_len > WALLPAPER_COPY_MAX_BYTES {
+        return Ok(src.to_string_lossy().to_string());
+    }
+    // Unique filename so webview cache always picks up a newly applied wallpaper
+    // (same extension previously overwrote wallpaper.load.jpg and looked like a no-op).
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dest = dir.join(format!("{prefix}{stamp}.{ext}"));
+    std::fs::copy(src, &dest).map_err(|e| format!("复制壁纸失败：{e}"))?;
     Ok(dest.to_string_lossy().to_string())
 }
 
@@ -182,252 +213,605 @@ fn clear_wallpaper(app: AppHandle, slot: Option<String>) -> Result<(), String> {
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct SystemWallpaperItem {
+struct WallpaperEngineItem {
+    /// Best known media path (may still be preview until prepare runs).
     path: String,
+    /// Thumbnail for the grid (usually preview.jpg).
+    preview_path: String,
+    /// Project folder — used to extract higher-res assets on apply.
+    project_dir: String,
     kind: String, // "image" | "video"
     label: String,
-    source: String,
+    source: String, // "workshop" | "myprojects"
+    we_type: String, // scene | video | web | ...
 }
 
-fn wallpaper_kind_from_path(path: &Path) -> Option<&'static str> {
+/// Files larger than this are referenced in place (no copy into app data).
+const WALLPAPER_COPY_MAX_BYTES: u64 = 48 * 1024 * 1024;
+
+fn steam_library_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut push = |p: PathBuf| {
+        if p.is_dir() && !roots.iter().any(|x| x == &p) {
+            roots.push(p);
+        }
+    };
+
+    let default_steam = PathBuf::from(r"C:\Program Files (x86)\Steam");
+    push(default_steam.clone());
+    push(PathBuf::from(r"C:\Program Files\Steam"));
+
+    let vdf_candidates = [
+        default_steam.join(r"steamapps\libraryfolders.vdf"),
+        PathBuf::from(r"C:\Program Files\Steam\steamapps\libraryfolders.vdf"),
+    ];
+    for vdf in vdf_candidates {
+        let Ok(text) = std::fs::read_to_string(&vdf) else {
+            continue;
+        };
+        for line in text.lines() {
+            let t = line.trim();
+            // "path"		"E:\\SteamLibrary"
+            if let Some(rest) = t.strip_prefix("\"path\"") {
+                let path = rest
+                    .trim()
+                    .trim_matches('"')
+                    .replace("\\\\", "\\");
+                if !path.is_empty() {
+                    push(PathBuf::from(path));
+                }
+            }
+        }
+    }
+    roots
+}
+
+fn wallpaper_engine_project_dirs() -> Vec<(PathBuf, &'static str)> {
+    let mut dirs = Vec::new();
+    for root in steam_library_roots() {
+        let workshop = root.join(r"steamapps\workshop\content\431960");
+        if workshop.is_dir() {
+            dirs.push((workshop, "workshop"));
+        }
+        let my = root.join(r"steamapps\common\wallpaper_engine\projects\myprojects");
+        if my.is_dir() {
+            dirs.push((my, "myprojects"));
+        }
+    }
+    dirs
+}
+
+fn we_ext_kind(path: &Path) -> Option<&'static str> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" => Some("image"),
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" => Some("image"),
+        "gif" => Some("gif"),
         "mp4" | "webm" | "mov" => Some("video"),
-        // Windows TranscodedWallpaper often has no extension but is an image blob
-        "" => {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if name.contains("wallpaper") || name == "transcodedwallpaper" {
-                Some("image")
-            } else {
-                None
-            }
-        }
         _ => None,
     }
 }
 
-fn push_wallpaper_if_valid(
-    out: &mut Vec<SystemWallpaperItem>,
-    seen: &mut std::collections::HashSet<String>,
-    path: PathBuf,
-    source: &str,
-) {
-    if !path.is_file() {
-        return;
-    }
-    let Some(kind) = wallpaper_kind_from_path(&path) else {
-        return;
-    };
-    // Skip tiny spotlight junk (< 20KB) that aren't real wallpapers
-    if let Ok(meta) = std::fs::metadata(&path) {
-        if meta.len() < 20_000 {
-            return;
-        }
-    }
-    let key = path.to_string_lossy().to_ascii_lowercase();
-    if !seen.insert(key) {
-        return;
-    }
-    let label = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("wallpaper")
-        .to_string();
-    out.push(SystemWallpaperItem {
-        path: path.to_string_lossy().to_string(),
-        kind: kind.to_string(),
-        label,
-        source: source.to_string(),
-    });
+fn path_is_gif(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("gif"))
+        .unwrap_or(false)
 }
 
-fn collect_dir_wallpapers(
-    out: &mut Vec<SystemWallpaperItem>,
-    seen: &mut std::collections::HashSet<String>,
-    dir: &Path,
-    source: &str,
-    recursive: bool,
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            push_wallpaper_if_valid(out, seen, path, source);
-        } else if recursive && path.is_dir() {
-            collect_dir_wallpapers(out, seen, &path, source, false);
-        }
-    }
-}
-
-#[cfg(windows)]
-fn desktop_wallpaper_from_registry() -> Option<PathBuf> {
-    use std::os::windows::process::CommandExt;
-    // Avoid flashing a console window.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let output = std::process::Command::new("reg")
-        .args([
-            "query",
-            r"HKCU\Control Panel\Desktop",
-            "/v",
-            "WallPaper",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    if !output.status.success() {
+fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let data = std::fs::read(path).ok()?;
+    if data.len() < 24 {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    for line in text.lines() {
-        if let Some(idx) = line.find("REG_SZ") {
-            let path = line[idx + "REG_SZ".len()..].trim();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
+    // PNG
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let w = u32::from_be_bytes(data[16..20].try_into().ok()?);
+        let h = u32::from_be_bytes(data[20..24].try_into().ok()?);
+        if w > 0 && h > 0 {
+            return Some((w, h));
+        }
+        return None;
+    }
+    // JPEG — scan SOF markers
+    if data[0] == 0xFF && data[1] == 0xD8 {
+        let mut i = 2usize;
+        while i + 9 < data.len() {
+            if data[i] != 0xFF {
+                i += 1;
+                continue;
             }
+            let marker = data[i + 1];
+            if marker == 0xD8 || marker == 0xD9 {
+                i += 2;
+                continue;
+            }
+            if i + 3 >= data.len() {
+                break;
+            }
+            let seglen = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+            if seglen < 2 || i + 2 + seglen > data.len() {
+                break;
+            }
+            // SOF0 / SOF2 etc.
+            if matches!(
+                marker,
+                0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD | 0xCE
+                    | 0xCF
+            ) && seglen >= 7
+            {
+                let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+                if w > 0 && h > 0 {
+                    return Some((w, h));
+                }
+            }
+            i += 2 + seglen;
         }
     }
     None
 }
 
-#[cfg(not(windows))]
-fn desktop_wallpaper_from_registry() -> Option<PathBuf> {
-    None
+fn is_landscape(path: &Path) -> bool {
+    image_dimensions(path)
+        .map(|(w, h)| w as f32 >= h as f32 * 1.15)
+        .unwrap_or(false)
 }
 
-/// List wallpapers from the current desktop wallpaper and common Windows Wallpaper folders.
-#[tauri::command]
-fn list_system_wallpapers() -> Result<Vec<SystemWallpaperItem>, String> {
-    let mut out: Vec<SystemWallpaperItem> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+fn we_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("wallpaper-we-cache");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
 
-    if let Some(desk) = desktop_wallpaper_from_registry() {
-        push_wallpaper_if_valid(&mut out, &mut seen, desk, "desktop");
+/// Extract embedded JPEG/PNG blobs from scene.pkg; prefer large landscape frames.
+fn extract_best_wallpaper_from_pkg(pkg: &Path, dest_stem: &Path) -> Option<PathBuf> {
+    let data = std::fs::read(pkg).ok()?;
+    let n = data.len();
+    let mut candidates: Vec<(usize, usize, &'static str)> = Vec::new();
+
+    let mut i = 0usize;
+    while i + 8 < n {
+        if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
+            let mut end = None;
+            let mut j = i + 2;
+            while j + 1 < n && j - i < 40_000_000 {
+                if data[j] == 0xFF && data[j + 1] == 0xD9 {
+                    end = Some(j + 2);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(e) = end {
+                if e > i + 200_000 {
+                    candidates.push((i, e, "jpg"));
+                }
+                i = e;
+                continue;
+            }
+        } else if data[i..].starts_with(b"\x89PNG\r\n\x1a\n") {
+            let mut end = None;
+            let mut j = i + 8;
+            while j + 8 < n && j - i < 40_000_000 {
+                if &data[j..j + 4] == b"IEND" {
+                    end = Some(j + 8);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(e) = end {
+                if e > i + 200_000 {
+                    candidates.push((i, e, "png"));
+                }
+                i = e;
+                continue;
+            }
+        }
+        i += 1;
     }
 
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let themes = PathBuf::from(&appdata).join(r"Microsoft\Windows\Themes");
-        push_wallpaper_if_valid(
-            &mut out,
-            &mut seen,
-            themes.join("TranscodedWallpaper"),
-            "themes",
-        );
-        collect_dir_wallpapers(
-            &mut out,
-            &mut seen,
-            &themes.join("CachedFiles"),
-            "themes",
-            false,
-        );
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by_key(|(a, b, _)| std::cmp::Reverse(b - a));
+
+    if let Some(parent) = dest_stem.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
 
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let local = PathBuf::from(local);
-        collect_dir_wallpapers(
-            &mut out,
-            &mut seen,
-            &local.join(r"Microsoft\Windows\Themes\CachedFiles"),
-            "cached",
-            false,
-        );
-        // Windows Spotlight / Content Delivery assets
-        let spotlight = local.join(
-            r"Packages\Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy\LocalState\Assets",
-        );
-        if let Ok(entries) = std::fs::read_dir(&spotlight) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_file() {
+    let mut best_path: Option<PathBuf> = None;
+    let mut best_score: i64 = -1;
+    for (k, (start, end, ext)) in candidates.into_iter().take(6).enumerate() {
+        let out = dest_stem.with_extension(format!("c{k}.{ext}"));
+        if std::fs::write(&out, &data[start..end]).is_err() {
+            continue;
+        }
+        let (w, h) = image_dimensions(&out).unwrap_or((0, 0));
+        if w == 0 || h == 0 {
+            let _ = std::fs::remove_file(&out);
+            continue;
+        }
+        // Prefer landscape / wide desktop wallpapers; penalize tall portrait scraps.
+        let area = (w as i64) * (h as i64);
+        let orient = if w >= h { 3i64 } else { 1i64 };
+        let score = area * orient + (end as i64 - start as i64) / 50;
+        if score > best_score {
+            if let Some(prev) = best_path.take() {
+                let _ = std::fs::remove_file(prev);
+            }
+            best_score = score;
+            best_path = Some(out);
+        } else {
+            let _ = std::fs::remove_file(&out);
+        }
+    }
+    best_path
+}
+
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+fn walk_project_media(dir: &Path, out_images: &mut Vec<PathBuf>, out_videos: &mut Vec<PathBuf>) {
+    fn walk(
+        dir: &Path,
+        depth: u32,
+        out_images: &mut Vec<PathBuf>,
+        out_videos: &mut Vec<PathBuf>,
+    ) {
+        if depth > 3 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Skip heavy / irrelevant trees
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(name.as_str(), "node_modules" | ".git" | "bin") {
                     continue;
                 }
-                if let Ok(meta) = std::fs::metadata(&path) {
-                    // Spotlight lock-screen candidates are usually large JPEGs
-                    if meta.len() < 80_000 {
-                        continue;
+                walk(&path, depth + 1, out_images, out_videos);
+                continue;
+            }
+            match we_ext_kind(&path) {
+                Some("image") => {
+                    // Skip tiny icons / UI crumbs
+                    if file_len(&path) >= 40_000 {
+                        out_images.push(path);
                     }
                 }
-                let key = path.to_string_lossy().to_ascii_lowercase();
-                if !seen.insert(key) {
-                    continue;
+                Some("gif") => {
+                    // Treat as image candidate only for thumbnails; motion handled separately.
+                    if file_len(&path) >= 40_000 {
+                        out_images.push(path);
+                    }
                 }
-                out.push(SystemWallpaperItem {
-                    path: path.to_string_lossy().to_string(),
-                    kind: "image".into(),
-                    label: path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("spotlight")
-                        .to_string(),
-                    source: "spotlight".into(),
-                });
+                Some("video") => {
+                    if file_len(&path) >= 100_000 {
+                        out_videos.push(path);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(dir, 0, out_images, out_videos);
+}
+
+fn pick_largest(paths: &[PathBuf]) -> Option<PathBuf> {
+    paths
+        .iter()
+        .max_by_key(|p| file_len(p))
+        .cloned()
+}
+
+fn we_preview_path(dir: &Path, preview_name: &str) -> Option<PathBuf> {
+    let mut preview = dir.join(preview_name);
+    if !preview.is_file() {
+        for cand in ["preview.jpg", "preview.png", "preview.webp", "preview.gif"] {
+            let p = dir.join(cand);
+            if p.is_file() {
+                preview = p;
+                break;
+            }
+        }
+    }
+    if preview.is_file() {
+        Some(preview)
+    } else {
+        None
+    }
+}
+
+fn parse_we_project(dir: &Path) -> Option<(String, String, PathBuf, PathBuf, &'static str)> {
+    let project = dir.join("project.json");
+    if !project.is_file() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&project).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let title = v
+        .get("title")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let we_type = v
+        .get("type")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let file_name = v.get("file").and_then(|x| x.as_str()).unwrap_or("").trim();
+    let preview_name = v
+        .get("preview")
+        .and_then(|x| x.as_str())
+        .unwrap_or("preview.jpg")
+        .trim();
+
+    let preview = we_preview_path(dir, preview_name)?;
+
+    let mut images = Vec::new();
+    let mut videos = Vec::new();
+    walk_project_media(dir, &mut images, &mut videos);
+
+    // Declared file from project.json first.
+    if !file_name.is_empty() {
+        let p = dir.join(file_name);
+        if p.is_file() {
+            match we_ext_kind(&p) {
+                Some("video") => {
+                    if !videos.iter().any(|x| x == &p) {
+                        videos.push(p);
+                    }
+                }
+                Some("image") | Some("gif") => {
+                    if !images.iter().any(|x| x == &p) {
+                        images.push(p);
+                    }
+                }
+                _ => {}
             }
         }
     }
 
-    // Public / Windows wallpaper folders
-    for (dir, source) in [
-        (
-            PathBuf::from(r"C:\Windows\Web\Wallpaper"),
-            "windows",
-        ),
-        (
-            PathBuf::from(r"C:\Windows\Web\Screen"),
-            "windows",
-        ),
-    ] {
-        collect_dir_wallpapers(&mut out, &mut seen, &dir, source, true);
-    }
+    // Classification for UI tabs:
+    // - video: real mp4/webm/mov → 动态（高清）
+    // - image: still / scene（含仅有 preview.gif 的场景，动图预览太糊不进动态）
+    // Thumbnail may still be GIF for scenes; apply uses HD still via prepare().
+    let (path, kind) = if let Some(vid) = pick_largest(&videos) {
+        (vid, "video")
+    } else {
+        let stills: Vec<PathBuf> = images
+            .iter()
+            .filter(|p| !path_is_gif(p))
+            .cloned()
+            .collect();
+        let landscape: Vec<PathBuf> = stills
+            .iter()
+            .filter(|p| is_landscape(p))
+            .cloned()
+            .collect();
+        if let Some(img) = pick_largest(&landscape) {
+            (img, "image")
+        } else if let Some(img) = pick_largest(&stills) {
+            (img, "image")
+        } else if !path_is_gif(&preview) {
+            (preview.clone(), "image")
+        } else {
+            // GIF-only scene: keep as image tab item; prepare() will extract HD still.
+            (preview.clone(), "image")
+        }
+    };
 
-    // Dynamic wallpapers: user Videos + common sample clips under Windows
-    if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        let videos = PathBuf::from(&user_profile).join("Videos");
-        collect_dir_wallpapers(&mut out, &mut seen, &videos, "videos", true);
-        // One more level for nested album folders
-        if let Ok(entries) = std::fs::read_dir(&videos) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    collect_dir_wallpapers(&mut out, &mut seen, &p, "videos", true);
+    let label = if title.is_empty() {
+        dir.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Wallpaper")
+            .to_string()
+    } else {
+        title
+    };
+
+    Some((label, we_type, path, preview, kind))
+}
+
+/// Resolve the best usable file for a Wallpaper Engine project.
+/// prefer_video=true → motion media (video / gif); false → wide still when possible.
+#[tauri::command]
+fn prepare_wallpaper_engine_media(
+    app: AppHandle,
+    project_dir: String,
+    prefer_video: Option<bool>,
+) -> Result<WallpaperEngineItem, String> {
+    let dir = PathBuf::from(&project_dir);
+    if !dir.is_dir() {
+        return Err("Wallpaper Engine 项目目录不存在".into());
+    }
+    let Some((label, we_type, path, preview, kind)) = parse_we_project(&dir) else {
+        return Err("无法解析 Wallpaper Engine 项目".into());
+    };
+    let prefer_motion = prefer_video.unwrap_or(kind == "video");
+
+    let mut images = Vec::new();
+    let mut videos = Vec::new();
+    walk_project_media(&dir, &mut images, &mut videos);
+
+    let (chosen, chosen_kind) = if prefer_motion {
+        // Dynamic tab: only real video. Never fall back to tiny preview.gif (looks muddy fullscreen).
+        if let Some(vid) = pick_largest(&videos) {
+            (vid, "video")
+        } else if kind == "video" && we_ext_kind(&path) == Some("video") {
+            (path, "video")
+        } else {
+            return Err(
+                "此项没有可用的视频文件。场景动图预览较糊，请到「静态壁纸」选用高清图，或选带 mp4/webm 的视频壁纸。"
+                    .into(),
+            );
+        }
+    } else {
+        // Still wallpaper for desktop: prefer landscape HD over tiny square previews.
+        let stills: Vec<PathBuf> = images
+            .iter()
+            .filter(|p| !path_is_gif(p))
+            .cloned()
+            .collect();
+        let landscape: Vec<PathBuf> = stills
+            .iter()
+            .filter(|p| is_landscape(p))
+            .cloned()
+            .collect();
+        if let Some(img) = pick_largest(&landscape) {
+            (img, "image")
+        } else if let Some(img) = pick_largest(
+            &stills
+                .iter()
+                .filter(|p| {
+                    image_dimensions(p)
+                        .map(|(w, h)| w >= 1280 || h >= 1280)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+        ) {
+            (img, "image")
+        } else {
+            // Try scene.pkg for a wide frame; fall back to preview.
+            let pkg = dir.join("scene.pkg");
+            let extracted = if pkg.is_file() {
+                let cache = we_cache_dir(&app)?;
+                let meta = std::fs::metadata(&pkg).ok();
+                let stamp = meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let size = meta.map(|m| m.len()).unwrap_or(0);
+                let stem = {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut h = DefaultHasher::new();
+                    dir.to_string_lossy().hash(&mut h);
+                    cache.join(format!("{:x}-{}-{}", h.finish(), stamp, size))
+                };
+                // Reuse prior extract if present.
+                let cached = ["png", "jpg", "c0.png", "c0.jpg", "c1.png", "c1.jpg"]
+                    .into_iter()
+                    .map(|ext| stem.with_extension(ext))
+                    .filter(|p| p.is_file() && file_len(p) > 200_000)
+                    .max_by_key(|p| {
+                        let (w, h) = image_dimensions(p).unwrap_or((0, 0));
+                        let orient = if w >= h { 3u64 } else { 1u64 };
+                        (w as u64) * (h as u64) * orient
+                    });
+                cached.or_else(|| extract_best_wallpaper_from_pkg(&pkg, &stem))
+            } else {
+                None
+            };
+
+            if let Some(ref ext_path) = extracted {
+                let (ew, eh) = image_dimensions(ext_path).unwrap_or((0, 0));
+                let (pw, ph) = image_dimensions(&preview).unwrap_or((0, 0));
+                let extract_better = (ew as u64) * (eh as u64) > (pw as u64) * (ph as u64) * 2
+                    || (ew >= eh && (pw == 0 || pw <= ph));
+                if extract_better {
+                    (ext_path.clone(), "image")
+                } else if !path_is_gif(&preview) {
+                    (preview.clone(), "image")
+                } else {
+                    (ext_path.clone(), "image")
                 }
+            } else if !path_is_gif(&preview) {
+                (preview.clone(), "image")
+            } else {
+                (preview.clone(), "gif")
             }
         }
-    }
-    collect_dir_wallpapers(
-        &mut out,
-        &mut seen,
-        Path::new(r"C:\Windows\Web"),
-        "windows-video",
-        true,
-    );
+    };
 
-    // Prefer desktop first; then cap list size for UI
-    out.sort_by(|a, b| {
-        let rank = |s: &str| match s {
-            "desktop" => 0,
-            "themes" => 1,
-            "cached" => 2,
-            "spotlight" => 3,
-            "windows" => 4,
-            "windows-video" => 5,
-            "videos" => 6,
-            _ => 7,
+    Ok(WallpaperEngineItem {
+        path: chosen.to_string_lossy().to_string(),
+        preview_path: preview.to_string_lossy().to_string(),
+        project_dir: dir.to_string_lossy().to_string(),
+        kind: chosen_kind.to_string(),
+        label,
+        source: "workshop".into(),
+        we_type: if we_type.is_empty() {
+            "unknown".into()
+        } else {
+            we_type
+        },
+    })
+}
+
+/// List wallpapers from Wallpaper Engine (Steam app 431960) workshop + myprojects.
+#[tauri::command]
+fn list_wallpaper_engine_wallpapers() -> Result<Vec<WallpaperEngineItem>, String> {
+    let mut out: Vec<WallpaperEngineItem> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (root, source) in wallpaper_engine_project_dirs() {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
         };
-        rank(&a.source)
-            .cmp(&rank(&b.source))
-            .then(a.label.cmp(&b.label))
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let Some((label, we_type, path, preview, kind)) = parse_we_project(&dir) else {
+                continue;
+            };
+
+            let key = dir.to_string_lossy().to_ascii_lowercase();
+            if !seen.insert(key) {
+                continue;
+            }
+
+            out.push(WallpaperEngineItem {
+                path: path.to_string_lossy().to_string(),
+                preview_path: preview.to_string_lossy().to_string(),
+                project_dir: dir.to_string_lossy().to_string(),
+                kind: kind.to_string(),
+                label,
+                source: source.to_string(),
+                we_type: if we_type.is_empty() {
+                    "unknown".into()
+                } else {
+                    we_type
+                },
+            });
+        }
+    }
+
+    if out.is_empty() {
+        return Err(
+            "未找到 Wallpaper Engine 壁纸。请确认已安装 Steam 版 Wallpaper Engine，且订阅了创意工坊内容。"
+                .into(),
+        );
+    }
+
+    out.sort_by(|a, b| {
+        a.source
+            .cmp(&b.source)
+            .then(a.label.to_lowercase().cmp(&b.label.to_lowercase()))
     });
-    out.truncate(64);
+    out.truncate(200);
     Ok(out)
 }
 
@@ -444,6 +828,14 @@ fn clear_app_wallpaper_files(app: AppHandle) -> Result<(), String> {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
+    }
+    let preview_dir = dir.join("wallpaper-previews");
+    if preview_dir.is_dir() {
+        let _ = std::fs::remove_dir_all(&preview_dir);
+    }
+    let we_cache = dir.join("wallpaper-we-cache");
+    if we_cache.is_dir() {
+        let _ = std::fs::remove_dir_all(&we_cache);
     }
     Ok(())
 }
@@ -1005,6 +1397,26 @@ async fn trigger_reverse_actions_mirror_cmd(
 ) -> Result<String, String> {
     let repo = repo_path(&path)?;
     with_git_async(&state, move |git| trigger_reverse_actions_mirror(git, &repo)).await
+}
+
+#[tauri::command]
+async fn remove_actions_mirror_cmd(
+    state: State<'_, AppState>,
+    path: String,
+    push: Option<bool>,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    let push = push.unwrap_or(true);
+    with_git_async(&state, move |git| remove_actions_mirror(git, &repo, push)).await
+}
+
+#[tauri::command]
+async fn verify_actions_mirror_cmd(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ActionsMirrorHealth, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| verify_actions_mirror(git, &repo)).await
 }
 
 #[tauri::command]
@@ -1822,6 +2234,7 @@ pub fn run() {
         .setup(|app| {
             set_app_handle(app.handle().clone());
             update::init_update_handle(app.handle().clone());
+            init_mirror_handle(app.handle().clone());
             Ok(())
         })
         .manage(AppState {
@@ -1832,7 +2245,8 @@ pub fn run() {
             path_exists,
             import_wallpaper,
             clear_wallpaper,
-            list_system_wallpapers,
+            list_wallpaper_engine_wallpapers,
+            prepare_wallpaper_engine_media,
             clear_app_wallpaper_files,
             get_system_hosts_path,
             reveal_system_hosts,
@@ -1861,6 +2275,10 @@ pub fn run() {
             clone_repo,
             setup_actions_mirror_cmd,
             trigger_reverse_actions_mirror_cmd,
+            remove_actions_mirror_cmd,
+            verify_actions_mirror_cmd,
+            remove_actions_mirror_cmd,
+            verify_actions_mirror_cmd,
             get_actions_mirror_status,
             get_branches,
             get_remote_branches,

@@ -54,10 +54,31 @@ export const api = {
     invoke<string>("import_wallpaper", { source, slot }),
   clearWallpaper: (slot: "load" | "terminal" = "load") =>
     invoke<void>("clear_wallpaper", { slot }),
-  listSystemWallpapers: () =>
+  listWallpaperEngineWallpapers: () =>
     invoke<
-      { path: string; kind: string; label: string; source: string }[]
-    >("list_system_wallpapers"),
+      {
+        path: string;
+        previewPath: string;
+        projectDir: string;
+        kind: string;
+        label: string;
+        source: string;
+        weType: string;
+      }[]
+    >("list_wallpaper_engine_wallpapers"),
+  prepareWallpaperEngineMedia: (
+    projectDir: string,
+    preferVideo: boolean = false,
+  ) =>
+    invoke<{
+      path: string;
+      previewPath: string;
+      projectDir: string;
+      kind: string;
+      label: string;
+      source: string;
+      weType: string;
+    }>("prepare_wallpaper_engine_media", { projectDir, preferVideo }),
   clearAppWallpaperFiles: () => invoke<void>("clear_app_wallpaper_files"),
   getSystemHostsPath: () => invoke<string>("get_system_hosts_path"),
   revealSystemHosts: () => invoke<void>("reveal_system_hosts"),
@@ -91,6 +112,12 @@ export const api = {
     }),
   triggerReverseActionsMirror: (path: string) =>
     invoke<string>("trigger_reverse_actions_mirror_cmd", { path }),
+  removeActionsMirror: (path: string, push = true) =>
+    invoke<string>("remove_actions_mirror_cmd", { path, push }),
+  verifyActionsMirror: (path: string) =>
+    invoke<import("./types").ActionsMirrorHealth>("verify_actions_mirror_cmd", {
+      path,
+    }),
   getStatus: (path: string) => invoke<RepoStatus>("get_status", { path }),
   getStatusLight: (path: string) =>
     invoke<RepoStatus>("get_status_light", { path }),

@@ -68,6 +68,8 @@ export interface AppPrefs {
   wallpaperPath: string;
   wallpaperKind: WallpaperKind;
   wallpaperLoadScrim: number;
+  /** Welcome center card opacity percent (100 = fully opaque). Default 70. */
+  welcomePanelOpacity: number;
   terminalWallpaperPath: string;
   /** Terminal only supports static image (or none). */
   terminalWallpaperKind: "none" | "image";
@@ -98,6 +100,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   wallpaperPath: "",
   wallpaperKind: "none",
   wallpaperLoadScrim: 42,
+  welcomePanelOpacity: 70,
   terminalWallpaperPath: "",
   terminalWallpaperKind: "none",
   terminalWallpaperScrim: 55,
@@ -201,6 +204,10 @@ export function loadPrefs(): AppPrefs {
         parsed.wallpaperLoadScrim,
         DEFAULT_PREFS.wallpaperLoadScrim,
       ),
+      welcomePanelOpacity: clampPercent(
+        parsed.welcomePanelOpacity,
+        DEFAULT_PREFS.welcomePanelOpacity,
+      ),
       terminalWallpaperPath:
         typeof parsed.terminalWallpaperPath === "string"
           ? parsed.terminalWallpaperPath
@@ -271,6 +278,10 @@ export function applyPrefsToDocument(prefs: AppPrefs) {
   root.style.setProperty(
     "--wallpaper-load-scrim",
     String(clampPercent(prefs.wallpaperLoadScrim, 42) / 100),
+  );
+  root.style.setProperty(
+    "--welcome-panel-opacity",
+    String(clampPercent(prefs.welcomePanelOpacity, 70) / 100),
   );
   root.style.setProperty(
     "--terminal-wallpaper-scrim",

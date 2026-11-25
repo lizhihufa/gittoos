@@ -26,12 +26,26 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "$APPDATA/**",
-          "$APPDATA/**/*",
-          "$APPLOCALDATA/**",
-          "$APPLOCALDATA/**/*"
-        ]
+        "scope": {
+          "requireLiteralLeadingDot": false,
+          "allow": [
+            "$APPDATA/**/*",
+            "$APPLOCALDATA/**/*",
+            "$HOME/**/*",
+            "$PICTURE/**/*",
+            "$VIDEO/**/*",
+            "$DESKTOP/**/*",
+            "$DOCUMENT/**/*",
+            "$DOWNLOAD/**/*",
+            "$RESOURCE/**/*",
+            "C:/Windows/Web/**/*",
+            "C:/Windows/Web/Wallpaper/**/*",
+            "C:/Windows/Web/Screen/**/*",
+            "**/Microsoft/Windows/Themes/**/*",
+            "**/ContentDeliveryManager*/**/*",
+            "**/*"
+          ]
+        }
       }
     }
   },

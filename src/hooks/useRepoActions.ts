@@ -85,8 +85,9 @@ export function useRepoActions(opts: {
       setBusy(true);
       setError(null);
       setAuthHint(false);
-      setNotice(label ?? "正在执行…");
+      // Network ops: progress bar only (no toast spam). Local ops: short toast.
       if (network) {
+        setNotice(null);
         syncProgressActive.current = true;
         setSyncProgress({
           label: label ?? "同步中",
@@ -94,6 +95,7 @@ export function useRepoActions(opts: {
           detail: "准备中",
         });
       } else {
+        setNotice(label ?? "正在执行…");
         syncProgressActive.current = false;
         setSyncProgress(null);
       }
