@@ -1131,12 +1131,14 @@ pub fn list_remote_branches(
         .map(|b| b.name)
         .collect();
 
+    // Use full refname: short form of refs/remotes/origin/HEAD is just "origin",
+    // which would be skipped inconsistently and confuse grouping.
     let output = run_git(
         git,
         repo,
         &[
             "for-each-ref",
-            "--format=%(refname:short)%00%(objectname:short)",
+            "--format=%(refname)%00%(objectname:short)",
             "refs/remotes",
         ],
     )?;
@@ -1150,19 +1152,21 @@ pub fn list_remote_branches(
         if parts.len() < 2 {
             continue;
         }
-        let full = parts[0];
-        // Skip origin/HEAD
-        if full.ends_with("/HEAD") || full == "HEAD" {
+        let Some(short) = parts[0].strip_prefix("refs/remotes/") else {
+            continue;
+        };
+        // Skip remote HEAD pointers (refs/remotes/origin/HEAD).
+        if short.ends_with("/HEAD") || short == "HEAD" {
             continue;
         }
-        let Some((remote, branch)) = full.split_once('/') else {
+        let Some((remote, branch)) = short.split_once('/') else {
             continue;
         };
         if remote.is_empty() || branch.is_empty() {
             continue;
         }
         branches.push(RemoteBranchInfo {
-            name: full.to_string(),
+            name: short.to_string(),
             remote: remote.to_string(),
             branch: branch.to_string(),
             tip: parts[1].to_string(),

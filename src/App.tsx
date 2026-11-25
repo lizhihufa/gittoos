@@ -14,6 +14,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
 import { confirmAction, withConfirm } from "./confirm";
 import { ChangeList } from "./components/ChangeList";
+import { SidebarSection } from "./components/SidebarSection";
 import { ExtraPane, type Pane } from "./components/ExtraPane";
 import {
   IdentityRemotePane,
@@ -119,6 +120,45 @@ import "./App.css";
 function folderName(path: string): string {
   const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
   return parts[parts.length - 1] || path;
+}
+
+/** Human-readable hosting platform for a git remote. */
+function labelRemotePlatform(remoteName: string, url = ""): string {
+  const u = url.toLowerCase();
+  const n = remoteName.toLowerCase();
+  if (
+    u.includes("github.com") ||
+    n === "github" ||
+    n.startsWith("github/") ||
+    n.startsWith("github-")
+  ) {
+    return "GitHub";
+  }
+  if (
+    u.includes("gitee.com") ||
+    n === "gitee" ||
+    n.startsWith("gitee/") ||
+    n.startsWith("gitee-")
+  ) {
+    return "Gitee";
+  }
+  if (u.includes("gitlab") || n.includes("gitlab")) return "GitLab";
+  if (u.includes("bitbucket") || n.includes("bitbucket")) return "Bitbucket";
+  if (u.includes("coding.net") || u.includes("tencent.com")) return "CODING";
+  return "其他远程";
+}
+
+function remoteHostHint(url: string): string {
+  const m = url.match(/@([^/:]+)[:/]|:\/\/([^/]+)/);
+  return (m?.[1] || m?.[2] || "").replace(/^www\./, "");
+}
+
+function platformBadgeClass(platform: string): string {
+  const key = platform.toLowerCase();
+  if (key === "github") return "is-github";
+  if (key === "gitee") return "is-gitee";
+  if (key === "gitlab") return "is-gitlab";
+  return "is-other";
 }
 
 function statusFingerprint(s: RepoStatus): string {
@@ -1595,6 +1635,38 @@ export default function App() {
   const defaultRemoteName =
     remotes.find((r) => r.name === "origin")?.name ?? remotes[0]?.name ?? null;
   const activePushRemote = pushRemote ?? defaultRemoteName;
+
+  const remoteBranchGroups = useMemo(() => {
+    const byRemote = new Map<string, RemoteBranchInfo[]>();
+    for (const rb of remoteBranches) {
+      const list = byRemote.get(rb.remote) ?? [];
+      list.push(rb);
+      byRemote.set(rb.remote, list);
+    }
+    // Always include every configured remote (e.g. GitHub origin), even if
+    // its branches have not been fetched yet — otherwise only Gitee may appear.
+    const names: string[] = [];
+    for (const r of remotes) {
+      if (!names.includes(r.name)) names.push(r.name);
+    }
+    for (const name of byRemote.keys()) {
+      if (!names.includes(name)) names.push(name);
+    }
+    return names.map((remoteName) => {
+      const url = remotes.find((r) => r.name === remoteName)?.url ?? "";
+      const platform = labelRemotePlatform(remoteName, url);
+      const items = (byRemote.get(remoteName) ?? [])
+        .slice()
+        .sort((a, b) => a.branch.localeCompare(b.branch));
+      return {
+        remoteName,
+        url,
+        platform,
+        host: remoteHostHint(url),
+        items,
+      };
+    });
+  }, [remoteBranches, remotes]);
 
   useEffect(() => {
     if (!mirrorTarget && pushMode === "mirror") setPushMode("direct");
@@ -5447,27 +5519,50 @@ export default function App() {
             onFileHistory={(path) => void loadFileHistory(path)}
           />
 
-          <div className="panel branch-panel">
-            <div className="panel-header">
-              <strong>分支</strong>
-            </div>
+          <SidebarSection
+            title="分支"
+            sectionId="branches"
+            count={branches.length}
+            stickyTop="0"
+            hint={branches.find((b) => b.isCurrent)?.name}
+          >
             <ul className="branch-list">
               {branches.map((b) => (
                 <li key={b.name} className={b.isCurrent ? "current" : ""}>
                   <button
                     type="button"
+                    className="branch-main-btn"
                     disabled={busy || b.isCurrent}
                     onClick={() =>
                       runAction(() => api.branchCheckout(repoPath, b.name))
                     }
                   >
-                    {b.isCurrent ? "● " : "○ "}
-                    {b.name}
-                    {b.upstream ? (
-                      <span className="muted small"> → {b.upstream}</span>
-                    ) : null}
+                    <span
+                      className={`branch-dot${b.isCurrent ? " is-on" : ""}`}
+                      aria-hidden
+                    />
+                    <span className="branch-name-block">
+                      <span className="branch-name">{b.name}</span>
+                      {b.upstream ? (
+                        <span className="muted small branch-upstream">
+                          →{" "}
+                          {(() => {
+                            const remoteName =
+                              b.upstream.split("/")[0] || "";
+                            const url =
+                              remotes.find((r) => r.name === remoteName)
+                                ?.url ?? "";
+                            const platform = labelRemotePlatform(
+                              remoteName,
+                              url,
+                            );
+                            return `${platform} · ${b.upstream}`;
+                          })()}
+                        </span>
+                      ) : null}
+                    </span>
                   </button>
-                  <span className="row-actions">
+                  <span className="row-actions branch-row-actions">
                     <button
                       type="button"
                       disabled={busy}
@@ -5505,7 +5600,7 @@ export default function App() {
                           });
                         }}
                       >
-                        {b.upstream ? "改上游" : "设上游"}
+                        {b.upstream ? "上游" : "设上游"}
                       </button>
                     )}
                     {!b.isCurrent && (
@@ -5537,7 +5632,11 @@ export default function App() {
                                     },
                                   );
                                   if (!force) return "已取消删除";
-                                  return api.branchDelete(repoPath, b.name, true);
+                                  return api.branchDelete(
+                                    repoPath,
+                                    b.name,
+                                    true,
+                                  );
                                 }
                                 throw e;
                               }
@@ -5552,201 +5651,279 @@ export default function App() {
                 </li>
               ))}
             </ul>
-            <div className="new-branch">
-              <input
-                value={newBranch}
-                onChange={(e) => setNewBranch(e.target.value)}
-                placeholder="新分支名"
-              />
-              <button
-                type="button"
-                disabled={busy || !newBranch.trim()}
-                onClick={() =>
-                  runAction(async () => {
-                    await api.branchCreate(repoPath, newBranch.trim());
-                    setNewBranch("");
-                  })
-                }
-              >
-                新建
-              </button>
-              <button
-                type="button"
-                className="danger"
-                disabled={busy}
-                title="清理未跟踪文件（先预览）"
-                onClick={() => {
-                  void runAction(async () => {
-                    const preview = await api.cleanFiles(repoPath, true, false);
-                    const ok = await confirmAction(
-                      preview.trim()
-                        ? `将删除以下未跟踪文件：\n\n${preview}\n确定清理？`
-                        : "没有可清理的未跟踪文件。",
-                      {
-                        title: "清理未跟踪文件",
-                        danger: true,
-                        confirmLabel: "清理",
-                      },
-                    );
-                    if (!ok || !preview.trim() || preview.includes("没有可清理")) {
-                      return preview.includes("没有可清理")
-                        ? preview
-                        : "已取消清理";
-                    }
-                    return api.cleanFiles(repoPath, false, false);
-                  }, "正在清理…");
-                }}
-              >
-                清理
-              </button>
-            </div>
-            <div className="new-branch">
-              <select
-                value={mergeTarget}
-                onChange={(e) => setMergeTarget(e.target.value)}
-                disabled={busy}
-              >
-                <option value="">合并其他分支到当前…</option>
-                {branches
-                  .filter((b) => !b.isCurrent)
-                  .map((b) => (
-                    <option key={b.name} value={b.name}>
-                      {b.name}
-                    </option>
-                  ))}
-              </select>
-              <button
-                type="button"
-                disabled={busy || !mergeTarget}
-                onClick={() =>
-                  withConfirm(`把「${mergeTarget}」合并进当前分支？`, () => {
-                    void runAction(
-                      () => api.branchMerge(repoPath, mergeTarget),
-                      "正在合并…",
-                    );
-                  })
+            <div className="branch-tools">
+              <div className="branch-tool-row">
+                <input
+                  value={newBranch}
+                  onChange={(e) => setNewBranch(e.target.value)}
+                  placeholder="新分支名"
+                  aria-label="新分支名"
+                />
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || !newBranch.trim()}
+                  onClick={() =>
+                    runAction(async () => {
+                      await api.branchCreate(repoPath, newBranch.trim());
+                      setNewBranch("");
+                    })
                   }
-              >
-                合并
-              </button>
-            </div>
-            <div className="new-branch">
-              <select
-                value={rebaseTarget}
-                onChange={(e) => setRebaseTarget(e.target.value)}
-                disabled={busy}
-              >
-                <option value="">把当前分支变基到…</option>
-                {branches
-                  .filter((b) => !b.isCurrent)
-                  .map((b) => (
-                    <option key={`rebase-${b.name}`} value={b.name}>
-                      {b.name}
-                    </option>
-                  ))}
-              </select>
-              <button
-                type="button"
-                disabled={busy || !rebaseTarget}
-                title="把当前分支的提交接到所选分支最新提交之后"
-                onClick={() =>
-                  withConfirm(
-                    `把当前分支变基到「${rebaseTarget}」？\n历史可能被改写；若已推送，之后可能需要强制推送。`,
-                    () => {
+                >
+                  新建
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={busy}
+                  title="清理未跟踪文件（先预览）"
+                  onClick={() => {
+                    void runAction(async () => {
+                      const preview = await api.cleanFiles(
+                        repoPath,
+                        true,
+                        false,
+                      );
+                      const ok = await confirmAction(
+                        preview.trim()
+                          ? `将删除以下未跟踪文件：\n\n${preview}\n确定清理？`
+                          : "没有可清理的未跟踪文件。",
+                        {
+                          title: "清理未跟踪文件",
+                          danger: true,
+                          confirmLabel: "清理",
+                        },
+                      );
+                      if (
+                        !ok ||
+                        !preview.trim() ||
+                        preview.includes("没有可清理")
+                      ) {
+                        return preview.includes("没有可清理")
+                          ? preview
+                          : "已取消清理";
+                      }
+                      return api.cleanFiles(repoPath, false, false);
+                    }, "正在清理…");
+                  }}
+                >
+                  清理
+                </button>
+              </div>
+              <div className="branch-tool-row">
+                <select
+                  value={mergeTarget}
+                  onChange={(e) => setMergeTarget(e.target.value)}
+                  disabled={busy}
+                  aria-label="合并分支"
+                >
+                  <option value="">合并到当前…</option>
+                  {branches
+                    .filter((b) => !b.isCurrent)
+                    .map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={busy || !mergeTarget}
+                  onClick={() =>
+                    withConfirm(`把「${mergeTarget}」合并进当前分支？`, () => {
                       void runAction(
-                        () => api.branchRebase(repoPath, rebaseTarget),
-                        "正在变基…",
+                        () => api.branchMerge(repoPath, mergeTarget),
+                        "正在合并…",
                       );
-                    },
-                  )
-                }
-              >
-                变基
-              </button>
-              <button
-                type="button"
-                disabled={busy || !rebaseTarget}
-                title="调整提交顺序，并可 squash / fixup / drop"
-                onClick={() => {
-                  void runAction(async () => {
-                    const commits = await api.getRebaseTodo(
-                      repoPath,
-                      rebaseTarget,
-                    );
-                    if (commits.length === 0) {
-                      throw new Error(
-                        `相对「${rebaseTarget}」没有可回放的提交`,
+                    })
+                  }
+                >
+                  合并
+                </button>
+              </div>
+              <div className="branch-tool-row">
+                <select
+                  value={rebaseTarget}
+                  onChange={(e) => setRebaseTarget(e.target.value)}
+                  disabled={busy}
+                  aria-label="变基目标"
+                >
+                  <option value="">变基到…</option>
+                  {branches
+                    .filter((b) => !b.isCurrent)
+                    .map((b) => (
+                      <option key={`rebase-${b.name}`} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={busy || !rebaseTarget}
+                  title="把当前分支的提交接到所选分支最新提交之后"
+                  onClick={() =>
+                    withConfirm(
+                      `把当前分支变基到「${rebaseTarget}」？\n历史可能被改写；若已推送，之后可能需要强制推送。`,
+                      () => {
+                        void runAction(
+                          () => api.branchRebase(repoPath, rebaseTarget),
+                          "正在变基…",
+                        );
+                      },
+                    )
+                  }
+                >
+                  变基
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || !rebaseTarget}
+                  title="调整提交顺序，并可 squash / fixup / drop"
+                  onClick={() => {
+                    void runAction(async () => {
+                      const commits = await api.getRebaseTodo(
+                        repoPath,
+                        rebaseTarget,
                       );
-                    }
-                    setRebaseInteractive({
-                      onto: rebaseTarget,
-                      rows: commitsToRebaseRows(commits),
-                    });
-                    return `已加载 ${commits.length} 个提交`;
-                  }, "正在准备交互变基…");
-                }}
-              >
-                交互变基
-              </button>
+                      if (commits.length === 0) {
+                        throw new Error(
+                          `相对「${rebaseTarget}」没有可回放的提交`,
+                        );
+                      }
+                      setRebaseInteractive({
+                        onto: rebaseTarget,
+                        rows: commitsToRebaseRows(commits),
+                      });
+                      return `已加载 ${commits.length} 个提交`;
+                    }, "正在准备交互变基…");
+                  }}
+                >
+                  交互
+                </button>
+              </div>
             </div>
-            <div className="panel-header remote-branch-header">
-              <strong>远程分支</strong>
-              <span className="muted small">
-                {remoteBranches.length === 0
-                  ? "先点「获取」下载远程分支列表"
-                  : "检出可创建/切换本地跟踪分支"}
-              </span>
-            </div>
-            {remoteBranches.length === 0 ? (
-              <p className="muted small pad">暂无远程分支记录</p>
+          </SidebarSection>
+
+          <SidebarSection
+            title="远程分支"
+            sectionId="remote-branches"
+            count={remoteBranches.length}
+            stickyTop="0"
+            defaultCollapsed={remoteBranches.length > 8}
+            hint={
+              remotes.length === 0
+                ? "未配置远程"
+                : remoteBranchGroups
+                    .map((g) => g.platform)
+                    .filter((v, i, a) => a.indexOf(v) === i)
+                    .join(" / ")
+            }
+          >
+            {remotes.length === 0 && remoteBranches.length === 0 ? (
+              <p className="muted small pad side-section-empty">
+                还没有配置远程仓库。可在设置里添加 GitHub / Gitee 地址。
+              </p>
             ) : (
-              <ul className="branch-list remote-branch-list">
-                {remoteBranches.map((rb) => (
-                  <li key={rb.name}>
-                    <span className="remote-branch-name">
-                      {rb.name}
-                      <span className="muted small"> {rb.tip}</span>
-                      {rb.hasLocal ? (
-                        <span className="muted small"> · 已有本地</span>
-                      ) : null}
-                    </span>
-                    <span className="row-actions">
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() =>
-                          void runAction(
-                            () => api.remoteBranchCheckout(repoPath, rb.name),
-                            "正在检出远程分支…",
-                          )
-                        }
+              <div className="remote-branch-groups">
+                <p className="muted small remote-branch-help">
+                  「拉到本地」：还没有本地分支时会新建并跟踪远程；已有则直接切换过去。每个平台一组。
+                </p>
+                {remoteBranchGroups.map((group) => (
+                  <div key={group.remoteName} className="remote-group">
+                    <div className="remote-group-header">
+                      <span
+                        className={`remote-platform-badge ${platformBadgeClass(group.platform)}`}
                       >
-                        检出
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={busy}
-                        onClick={() =>
-                          withConfirm(
-                            `删除远程分支「${rb.name}」？\n这会从 GitHub/Gitee 上删掉该分支，本地同名分支仍保留。`,
-                            () => {
-                              void runAction(
-                                () => api.remoteBranchDelete(repoPath, rb.name),
-                                "正在删除远程分支…",
-                              );
-                            },
-                          )
-                        }
-                      >
-                        删除
-                      </button>
-                    </span>
-                  </li>
+                        {group.platform}
+                      </span>
+                      <span className="remote-group-meta">
+                        <strong className="remote-group-name">
+                          {group.remoteName}
+                        </strong>
+                        {group.host ? (
+                          <span className="muted small remote-group-host">
+                            {group.host}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="muted small remote-group-count">
+                        {group.items.length}
+                      </span>
+                    </div>
+                    {group.items.length === 0 ? (
+                      <p className="muted small pad remote-group-empty">
+                        还没有「{group.platform}」的分支记录。请点工具栏「获取」从{" "}
+                        {group.host || group.remoteName} 下载。
+                      </p>
+                    ) : (
+                      <ul className="branch-list remote-branch-list">
+                        {group.items.map((rb) => (
+                          <li key={rb.name}>
+                            <span className="remote-branch-name">
+                              <span className="branch-name">{rb.branch}</span>
+                              <span className="muted small branch-upstream">
+                                {group.platform} · {rb.name}
+                                {rb.tip ? ` · ${rb.tip}` : ""}
+                                {rb.hasLocal ? " · 本地已有" : ""}
+                              </span>
+                            </span>
+                            <span className="row-actions branch-row-actions">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                title={
+                                  rb.hasLocal
+                                    ? `切换到本地分支「${rb.branch}」（已跟踪 ${group.platform} 的 ${rb.name}）`
+                                    : `创建本地分支「${rb.branch}」，并跟踪 ${group.platform} 上的 ${rb.name}`
+                                }
+                                onClick={() =>
+                                  void runAction(
+                                    () =>
+                                      api.remoteBranchCheckout(
+                                        repoPath,
+                                        rb.name,
+                                      ),
+                                    rb.hasLocal
+                                      ? "正在切换到本地跟踪分支…"
+                                      : "正在创建本地跟踪分支…",
+                                  )
+                                }
+                              >
+                                {rb.hasLocal ? "切到本地" : "拉到本地"}
+                              </button>
+                              <button
+                                type="button"
+                                className="danger"
+                                disabled={busy}
+                                title={`从 ${group.platform}（${group.remoteName}）删除远程分支`}
+                                onClick={() =>
+                                  withConfirm(
+                                    `从 ${group.platform}（远程名 ${group.remoteName}）删除分支「${rb.branch}」？\n完整名：${rb.name}\n本地同名分支不会被删。`,
+                                    () => {
+                                      void runAction(
+                                        () =>
+                                          api.remoteBranchDelete(
+                                            repoPath,
+                                            rb.name,
+                                          ),
+                                        `正在从 ${group.platform} 删除远程分支…`,
+                                      );
+                                    },
+                                  )
+                                }
+                              >
+                                删除
+                              </button>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 ))}
-              </ul>
+              </div>
             )}
-          </div>
+          </SidebarSection>
           </div>
 
           <div className="panel commit-panel">

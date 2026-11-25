@@ -79,8 +79,9 @@ export function ChangeList({
           <span className="group-chevron" aria-hidden>
             {collapsed ? "▸" : "▾"}
           </span>
-          <span>
-            {title} ({files.length})
+          <span className="side-section-title">
+            {title}
+            <em className="side-section-count">{files.length}</em>
           </span>
         </button>
         <div className="row-actions">

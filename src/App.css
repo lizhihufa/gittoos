@@ -1238,12 +1238,20 @@ html[data-scheme="dark"] .hunk-lines .diff-line--selected {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.55rem 0.75rem;
+  padding: 0.5rem 0.7rem;
   background: var(--header-bg);
   border-bottom: 1px solid var(--line);
   font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.panel-header {
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.change-group > .group-header {
+  font-weight: 650;
 }
 
 /* Keep section titles reachable while scrolling the sidebar. */
@@ -1316,31 +1324,47 @@ html[data-scheme="dark"] .hunk-lines .diff-line--selected {
 
 .changes-filter {
   flex: none;
-  padding: 0.55rem 0.75rem;
+  padding: 0.5rem 0.7rem;
   border-bottom: 1px solid var(--line);
   display: grid;
-  gap: 0.4rem;
-  background: var(--header-bg);
+  gap: 0.35rem;
+  background: color-mix(in srgb, var(--header-bg) 88%, var(--surface));
 }
 
 .changes-filter input {
   width: 100%;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.35rem 0.55rem;
+  border-radius: 7px;
+  padding: 0.38rem 0.6rem;
   background: var(--control-bg);
   color: var(--text);
+  font-size: 12.5px;
+}
+
+.changes-filter input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent, #0f6b4c) 55%, var(--line));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #0f6b4c) 18%, transparent);
 }
 
 .filter-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.3rem;
+  gap: 0.28rem;
 }
 
 .filter-chips button {
-  padding: 0.2rem 0.5rem;
-  font-size: 12px;
+  padding: 0.18rem 0.48rem;
+  font-size: 11.5px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel, #fff);
+  color: var(--muted, #6b6560);
+}
+
+.filter-chips button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent, #0f6b4c) 40%, var(--line));
+  color: var(--ink, var(--text));
 }
 
 .filter-chips button.active {
@@ -1779,7 +1803,10 @@ html[data-scheme="dark"] .hunk-lines .diff-line--selected {
   display: block;
 }
 
-.commit-panel,
+.commit-panel {
+  border-top: 1px solid var(--line);
+}
+
 .branch-panel {
   border-top: 1px solid var(--line);
 }
@@ -3531,24 +3558,201 @@ button.release-row-pick:hover strong {
   margin: 0 0.75rem;
 }
 
+/* Collapsible sidebar sections (branches / remotes) */
+.side-section-header {
+  gap: 0.45rem;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.side-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 650;
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.side-section-count {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 11px;
+  padding: 0.05rem 0.38rem;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent, #0f6b4c) 12%, transparent);
+  color: var(--accent, #0f6b4c);
+  letter-spacing: 0;
+}
+
+.side-section-trail {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.side-section-hint {
+  max-width: 7.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.side-section-actions {
+  flex-shrink: 0;
+}
+
+.side-section-body {
+  background: var(--surface);
+}
+
+.side-section-empty {
+  margin: 0;
+  padding: 0.65rem 0.75rem 0.85rem;
+}
+
+.branch-tools {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.55rem 0.65rem 0.65rem;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--header-bg) 55%, var(--surface));
+}
+
+.branch-tool-row {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.branch-tool-row input,
+.branch-tool-row select {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.32rem 0.5rem;
+  background: var(--control-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.branch-tool-row button {
+  flex: none;
+  padding: 0.32rem 0.55rem;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
 .branch-list li {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
-  border-bottom: 1px solid #ece7de;
+  gap: 0.2rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  padding: 0.15rem 0.35rem 0.15rem 0.2rem;
 }
 
-.branch-list button {
+.branch-list li:hover {
+  background: color-mix(in srgb, var(--accent, #0f6b4c) 6%, transparent);
+}
+
+.branch-list li.current {
+  background: color-mix(in srgb, var(--accent, #0f6b4c) 12%, #fff);
+}
+
+.branch-list .branch-main-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
   border: none;
   background: transparent;
   text-align: left;
-  border-radius: 0;
-  padding: 0.45rem 0.75rem;
+  border-radius: 6px;
+  padding: 0.35rem 0.4rem;
+  min-width: 0;
+  width: 100%;
+  color: inherit;
+  cursor: pointer;
 }
 
-.branch-list li.current > button:first-child {
-  background: #e4efe8;
-  font-weight: 600;
+.branch-list .branch-main-btn:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.branch-list .branch-main-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #0f6b4c) 8%, transparent);
+}
+
+.branch-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-top: 0.35rem;
+  border-radius: 50%;
+  flex: none;
+  border: 1.5px solid color-mix(in srgb, var(--muted, #888) 70%, transparent);
+  background: transparent;
+}
+
+.branch-dot.is-on {
+  border-color: var(--accent, #0f6b4c);
+  background: var(--accent, #0f6b4c);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #0f6b4c) 18%, transparent);
+}
+
+.branch-name-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.branch-name {
+  font-size: 12.5px;
+  font-weight: 560;
+  word-break: break-all;
+  line-height: 1.25;
+}
+
+.branch-list li.current .branch-name {
+  font-weight: 680;
+  color: var(--accent, #0f6b4c);
+}
+
+.branch-upstream {
+  line-height: 1.2;
+  word-break: break-all;
+}
+
+.branch-row-actions {
+  opacity: 0.72;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 11rem;
+}
+
+.branch-list li:hover .branch-row-actions,
+.branch-list li.current .branch-row-actions {
+  opacity: 1;
+}
+
+.branch-row-actions button {
+  border: 1px solid var(--line);
+  background: var(--panel, #fff);
+  border-radius: 5px;
+  padding: 0.18rem 0.4rem;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.branch-row-actions button.danger {
+  color: var(--danger);
+  border-color: #f0b4b4;
 }
 
 .remote-branch-header {
@@ -3558,28 +3762,115 @@ button.release-row-pick:hover strong {
   gap: 0.35rem;
 }
 
+.remote-branch-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-bottom: 0.35rem;
+}
+
+.remote-branch-help {
+  margin: 0;
+  padding: 0.45rem 0.7rem 0.35rem;
+  line-height: 1.35;
+}
+
+.remote-group + .remote-group {
+  border-top: 1px solid var(--line);
+  margin-top: 0.15rem;
+  padding-top: 0.15rem;
+}
+
+.remote-group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.65rem 0.25rem;
+  min-width: 0;
+}
+
+.remote-platform-badge {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.12rem 0.38rem;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--header-bg) 70%, #fff);
+  color: var(--ink, var(--text));
+}
+
+.remote-platform-badge.is-github {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #3730a3;
+}
+
+.remote-platform-badge.is-gitee {
+  background: #fff1f0;
+  border-color: #ffccc7;
+  color: #c41d7f;
+}
+
+.remote-platform-badge.is-gitlab {
+  background: #fff7e6;
+  border-color: #ffd591;
+  color: #ad6800;
+}
+
+.remote-platform-badge.is-other {
+  background: #f5f5f5;
+  border-color: #d9d9d9;
+  color: #595959;
+}
+
+.remote-group-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.remote-group-name {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.remote-group-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-group-count {
+  flex: none;
+}
+
+.remote-group-empty {
+  margin: 0;
+  padding: 0.35rem 0.7rem 0.55rem;
+  line-height: 1.35;
+}
+
 .remote-branch-list {
-  max-height: 160px;
+  max-height: 220px;
   overflow: auto;
 }
 
-.remote-branch-list .row-actions button {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  border-radius: 6px;
-  padding: 0.25rem 0.5rem;
+.remote-branch-list .remote-branch-name {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem 0.45rem;
   font-size: 12px;
-}
-
-.remote-branch-list .row-actions button.danger {
-  color: var(--danger);
-  border-color: #f0b4b4;
-}
-
-.remote-branch-name {
-  padding: 0.45rem 0.75rem;
-  font-size: 12px;
+  min-width: 0;
   word-break: break-all;
+}
+
+.remote-branch-list .branch-row-actions {
+  max-width: 10.5rem;
 }
 
 .new-branch {
