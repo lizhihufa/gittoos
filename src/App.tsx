@@ -161,6 +161,16 @@ function platformBadgeClass(platform: string): string {
   return "is-other";
 }
 
+function authProviderFromRemote(
+  remoteName: string,
+  url = "",
+): AuthProvider | null {
+  const platform = labelRemotePlatform(remoteName, url);
+  if (platform === "GitHub") return "github";
+  if (platform === "Gitee") return "gitee";
+  return null;
+}
+
 function statusFingerprint(s: RepoStatus): string {
   return JSON.stringify({
     branch: s.branch,
@@ -365,7 +375,8 @@ export default function App() {
       showOauth: false,
     },
   });
-  const [authHint, setAuthHint] = useState(false);
+  /** When set, error toast shows a clickable「登录」 for this provider. */
+  const [authHint, setAuthHint] = useState<AuthProvider | null>(null);
   const [sessionWarnings, setSessionWarnings] = useState<string[]>([]);
   const [addingAccount, setAddingAccount] = useState(false);
   const [deviceFlow, setDeviceFlow] = useState<GithubDeviceStart | null>(null);
@@ -1240,6 +1251,7 @@ export default function App() {
 
   async function runMirrorPush() {
     if (!repoPath || !mirrorTarget) return;
+    if (!ensureLoggedInForMirror()) return;
     const useActions = prefs.mirrorSyncMethod === "actions";
     // GitHub → Gitee：只推 GitHub，由 forward workflow 同步
     if (useActions && mirrorTarget === "gitee" && primaryHost === "github") {
@@ -1378,6 +1390,54 @@ export default function App() {
     openSettings("auth");
   }
 
+  /** Block push until the matching GitHub/Gitee account is logged in. */
+  function ensureLoggedInForPush(
+    remoteName: string | null | undefined,
+  ): boolean {
+    const name =
+      (remoteName && remoteName.trim()) ||
+      defaultRemoteName ||
+      remotes[0]?.name ||
+      "";
+    const url = remotes.find((r) => r.name === name)?.url ?? "";
+    const provider = authProviderFromRemote(name, url);
+    if (!provider) return true;
+    const loggedIn =
+      provider === "github"
+        ? Boolean(accounts?.github.loggedIn)
+        : Boolean(accounts?.gitee.loggedIn);
+    if (loggedIn) return true;
+    const label = provider === "github" ? "GitHub" : "Gitee";
+    setError(`推送到 ${label} 前请先`);
+    setAuthHint(provider);
+    return false;
+  }
+
+  function ensureLoggedInForMirror(): boolean {
+    if (!mirrorTarget) return true;
+    // Actions GitHub→Gitee only pushes GitHub first.
+    if (
+      prefs.mirrorSyncMethod === "actions" &&
+      mirrorTarget === "gitee" &&
+      primaryHost === "github"
+    ) {
+      if (accounts?.github.loggedIn) return true;
+      setError("镜像同步前请先");
+      setAuthHint("github");
+      return false;
+    }
+    const need = mirrorTarget;
+    const loggedIn =
+      need === "github"
+        ? Boolean(accounts?.github.loggedIn)
+        : Boolean(accounts?.gitee.loggedIn);
+    if (loggedIn) return true;
+    const label = need === "github" ? "GitHub" : "Gitee";
+    setError(`镜像同步到 ${label} 前请先`);
+    setAuthHint(need);
+    return false;
+  }
+
   function updateDraft(
     provider: AuthProvider,
     patch: Partial<ProviderDraft>,
@@ -1391,7 +1451,7 @@ export default function App() {
   async function loginWithGitManager(provider: AuthProvider) {
     setBusy(true);
     setError(null);
-    setAuthHint(false);
+    setAuthHint(null);
     setNotice(
       provider === "github"
         ? "正在打开 Git 凭据管理器…"
@@ -1408,7 +1468,7 @@ export default function App() {
     } catch (e) {
       setNotice(null);
       setError(failureLine(e));
-      setAuthHint(true);
+      setAuthHint(provider);
     } finally {
       setBusy(false);
     }
@@ -1430,7 +1490,7 @@ export default function App() {
     }
     setBusy(true);
     setError(null);
-    setAuthHint(false);
+    setAuthHint(null);
     setNotice("正在打开浏览器，请完成授权…");
     try {
       if (clientId && clientSecret) {
@@ -1449,7 +1509,7 @@ export default function App() {
     } catch (e) {
       setNotice(null);
       setError(failureLine(e));
-      setAuthHint(true);
+      setAuthHint(provider);
     } finally {
       setBusy(false);
     }
@@ -1459,7 +1519,7 @@ export default function App() {
     stopDevicePoll();
     setBusy(true);
     setError(null);
-    setAuthHint(false);
+    setAuthHint(null);
     setDeviceStatus("");
     setNotice("正在申请 GitHub 设备码…");
     try {
@@ -1501,7 +1561,7 @@ export default function App() {
             setDeviceFlow(null);
             setDeviceStatus("");
             setError(failureLine(e));
-            setAuthHint(true);
+            setAuthHint("github");
           }
         }, intervalSec * 1000);
       };
@@ -1513,7 +1573,7 @@ export default function App() {
       if (/Client ID/i.test(String(e))) {
         updateDraft("github", { showOauth: true });
       }
-      setAuthHint(true);
+      setAuthHint("github");
       setBusy(false);
     }
   }
@@ -1538,7 +1598,7 @@ export default function App() {
     if (!token) return;
     setBusy(true);
     setError(null);
-    setAuthHint(false);
+    setAuthHint(null);
     try {
       const status = await api.authLoginToken(provider, token);
       applyAccount(status);
@@ -1550,7 +1610,7 @@ export default function App() {
       setNotice(`已登录 ${status.login}`);
     } catch (e) {
       setError(failureLine(e));
-      setAuthHint(true);
+      setAuthHint(provider);
     } finally {
       setBusy(false);
     }
@@ -1699,19 +1759,25 @@ export default function App() {
         : null;
   const mirrorMenuLabel =
     mirrorTarget === "gitee"
-      ? "推送到 Gitee"
+      ? "镜像同步到 Gitee"
       : mirrorTarget === "github"
-        ? "推送到 GitHub"
+        ? "镜像同步到 GitHub"
         : null;
   const mirrorButtonLabel =
     mirrorTarget === "gitee"
-      ? "同步推送（Gitee）"
+      ? "镜像同步（Gitee）"
       : mirrorTarget === "github"
-        ? "同步推送（GitHub）"
+        ? "镜像同步（GitHub）"
         : null;
   const defaultRemoteName =
     remotes.find((r) => r.name === "origin")?.name ?? remotes[0]?.name ?? null;
   const activePushRemote = pushRemote ?? defaultRemoteName;
+
+  const remotePushLabel = (remoteName: string, url: string) => {
+    const platform = labelRemotePlatform(remoteName, url);
+    if (platform === "其他远程") return `推送到 ${remoteName}`;
+    return `推送到 ${platform}`;
+  };
 
   const remoteBranchGroups = useMemo(() => {
     const urlOf = (remoteName: string) =>
@@ -1856,6 +1922,7 @@ export default function App() {
         if (pushMode === "mirror" && mirrorTarget) {
           void runMirrorPush();
         } else {
+          if (!ensureLoggedInForPush(activePushRemote)) return;
           void runAction(
             () => api.push(repoPath, false, null, activePushRemote),
             activePushRemote && activePushRemote !== defaultRemoteName
@@ -3246,33 +3313,30 @@ export default function App() {
             <span className="toast-mark" aria-hidden>
               !
             </span>
-            <button
-              type="button"
-              className="toast-error-text"
-              title={`${error}（点击关闭）`}
-              onClick={() => {
-                setError(null);
-                setAuthHint(false);
-              }}
-            >
-              <span className="toast-body">{error}</span>
-            </button>
-            {authHint && (
-              <button
-                type="button"
-                className="primary toast-error-action"
-                onClick={() => openSettingsAuth()}
-              >
-                去登录
-              </button>
-            )}
+            <div className="toast-error-text">
+              <span className="toast-body">
+                {error}
+                {authHint ? (
+                  <button
+                    type="button"
+                    className="toast-login-link"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openSettingsAuth(authHint);
+                    }}
+                  >
+                    登录
+                  </button>
+                ) : null}
+              </span>
+            </div>
             <button
               type="button"
               className="toast-dismiss-btn"
               aria-label="关闭"
               onClick={() => {
                 setError(null);
-                setAuthHint(false);
+                setAuthHint(null);
               }}
             >
               ×
@@ -5120,15 +5184,16 @@ export default function App() {
                   setPushMenuOpen(false);
                   if (pushMode === "mirror" && mirrorTarget) {
                     void runMirrorPush();
-                  } else {
-                    void runAction(
-                      () => api.push(repoPath, false, null, activePushRemote),
-                      activePushRemote &&
-                        activePushRemote !== defaultRemoteName
-                        ? `正在推送到 ${activePushRemote}…`
-                        : "正在推送…",
-                    );
+                    return;
                   }
+                  if (!ensureLoggedInForPush(activePushRemote)) return;
+                  void runAction(
+                    () => api.push(repoPath, false, null, activePushRemote),
+                    activePushRemote &&
+                      activePushRemote !== defaultRemoteName
+                      ? `正在推送到 ${activePushRemote}…`
+                      : "正在推送…",
+                  );
                 }}
               >
                 {busy
@@ -5168,57 +5233,45 @@ export default function App() {
                   role="menu"
                   onMouseDown={(event) => event.stopPropagation()}
                 >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={
-                      pushMode === "direct" && !pushRemote
-                        ? "is-active"
-                        : undefined
-                    }
-                    disabled={busy}
-                    onClick={() => {
-                      setPushMode("direct");
-                      setPushRemote(null);
-                      setPushMenuOpen(false);
-                      void runAction(
-                        () => api.push(repoPath, false, null, null),
-                        "正在推送…",
-                      );
-                    }}
-                  >
-                    <strong>推送</strong>
-                    <span>
-                      {defaultRemoteName
-                        ? `推送到 ${defaultRemoteName}`
-                        : "推送到默认远程"}
-                    </span>
-                  </button>
-                  {remotes.map((r) => (
-                    <button
-                      key={`push-remote-${r.name}`}
-                      type="button"
-                      role="menuitem"
-                      className={
-                        pushMode === "direct" && pushRemote === r.name
-                          ? "is-active"
-                          : undefined
-                      }
-                      disabled={busy}
-                      onClick={() => {
-                        setPushMode("direct");
-                        setPushRemote(r.name);
-                        setPushMenuOpen(false);
-                        void runAction(
-                          () => api.push(repoPath, false, null, r.name),
-                          `正在推送到 ${r.name}…`,
-                        );
-                      }}
-                    >
-                      <strong>推送到 {r.name}</strong>
-                      <span className="muted small">{r.url}</span>
-                    </button>
-                  ))}
+                  {remotes.map((r) => {
+                    const isDefault = r.name === defaultRemoteName;
+                    const isActive =
+                      pushMode === "direct" &&
+                      (pushRemote === r.name ||
+                        (!pushRemote && isDefault));
+                    return (
+                      <button
+                        key={`push-remote-${r.name}`}
+                        type="button"
+                        role="menuitem"
+                        className={isActive ? "is-active" : undefined}
+                        disabled={busy}
+                        onClick={() => {
+                          setPushMode("direct");
+                          setPushRemote(isDefault ? null : r.name);
+                          setPushMenuOpen(false);
+                          if (!ensureLoggedInForPush(r.name)) return;
+                          void runAction(
+                            () =>
+                              api.push(
+                                repoPath,
+                                false,
+                                null,
+                                isDefault ? null : r.name,
+                              ),
+                            `正在推送到 ${r.name}…`,
+                          );
+                        }}
+                      >
+                        <strong>{remotePushLabel(r.name, r.url)}</strong>
+                        <span className="muted small">
+                          {r.name}
+                          {r.url ? ` · ${r.url}` : ""}
+                          {isDefault ? " · 默认" : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
                   {mirrorMenuLabel && mirrorTarget && (
                     <button
                       type="button"
@@ -5237,8 +5290,11 @@ export default function App() {
                       <span>
                         {prefs.mirrorSyncMethod === "actions" &&
                         mirrorTarget === "gitee"
-                          ? "推送 GitHub，Actions 自动镜像 Gitee"
-                          : "本机先推默认远程，再同步到另一平台"}
+                          ? "先推 GitHub，由 Actions 自动同步到 Gitee"
+                          : prefs.mirrorSyncMethod === "actions" &&
+                              mirrorTarget === "github"
+                            ? "先推 Gitee，再触发 Actions 同步 GitHub"
+                            : "本机依次推送到两个平台"}
                       </span>
                     </button>
                   )}
@@ -5250,6 +5306,7 @@ export default function App() {
                     disabled={busy}
                     onClick={() => {
                       setPushMenuOpen(false);
+                      if (!ensureLoggedInForPush(activePushRemote)) return;
                       withConfirm(
                         "强制推送会覆盖远程同名分支上的提交，确定继续？",
                         () => {
