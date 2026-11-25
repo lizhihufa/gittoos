@@ -236,18 +236,24 @@ export interface ActionsMirrorSetup {
   workflowPath: string;
   workflowWritten: boolean;
   workflowExists: boolean;
+  reverseWorkflowPath: string;
+  reverseWorkflowWritten: boolean;
+  reverseWorkflowExists: boolean;
   giteeUrl: string;
   giteeFullName: string;
   githubOwner: string;
   githubRepo: string;
   secretsUrl: string;
   secretConfigured: boolean;
+  pushed: boolean;
   message: string;
 }
 
 export interface ActionsMirrorStatus {
   workflowExists: boolean;
   workflowPath: string;
+  reverseWorkflowExists: boolean;
+  reverseWorkflowPath: string;
   hasGiteeRemote: boolean;
   githubOwner: string;
   githubRepo: string;

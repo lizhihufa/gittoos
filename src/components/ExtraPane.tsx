@@ -4,7 +4,11 @@ import type { CommitInfo, ReflogInfo, StashInfo, TagInfo } from "../types";
 import { ConflictEditor } from "./ConflictEditor";
 import { DiffLines } from "./DiffLines";
 import { DiffView } from "./DiffView";
-import { ReleaseManager } from "./ReleaseManager";
+import { t as i18n } from "../i18n";
+import {
+  ReleaseManager,
+  type ReleasePlatform,
+} from "./ReleaseManager";
 import { Terminal } from "./Terminal";
 
 export type Pane =
@@ -94,8 +98,13 @@ interface Props {
   terminalWallpaperScrim?: number;
   releaseOwner: string;
   releaseRepo: string;
+  releaseGiteeOwner: string;
+  releaseGiteeRepo: string;
   releaseDefaultTag: string;
+  releasePlatform: ReleasePlatform;
+  onReleasePlatform: (p: ReleasePlatform) => void;
   githubLoggedIn: boolean;
+  giteeLoggedIn: boolean;
   updateBusy: boolean;
   onUpdateBusy: (busy: boolean) => void;
   onNotice: (text: string | null) => void;
@@ -103,10 +112,12 @@ interface Props {
   onOpenAuth: () => void;
   onConfigureReleaseRepo?: () => void;
   updateProgress: { percent: number; label: string } | null;
+  locale?: string;
 }
 
 export function ExtraPane(props: Props) {
   const [commitSearch, setCommitSearch] = useState("");
+  const loc = props.locale || "zh-CN";
 
   const filteredCommits = useMemo(() => {
     const q = commitSearch.trim().toLowerCase();
@@ -145,21 +156,21 @@ export function ExtraPane(props: Props) {
       <div className="tabs">
         {(
           [
-            ["diff", "差异"],
-            ["history", "历史"],
-            ["stash", "储藏"],
-            ["tags", "标签"],
-            ["terminal", "终端"],
-            ["releases", "Release"],
+            ["diff", "pane.diff"],
+            ["history", "pane.history"],
+            ["stash", "pane.stash"],
+            ["tags", "pane.tags"],
+            ["terminal", "pane.terminal"],
+            ["releases", "pane.releases"],
           ] as const
-        ).map(([id, label]) => (
+        ).map(([id, key]) => (
           <button
             key={id}
             type="button"
             className={props.pane === id ? "tab active" : "tab"}
             onClick={() => props.onPane(id)}
           >
-            {label}
+            {i18n(loc, key)}
           </button>
         ))}
       </div>
@@ -695,10 +706,15 @@ export function ExtraPane(props: Props) {
       )}
       {props.pane === "releases" && (
         <ReleaseManager
+          platform={props.releasePlatform}
+          onPlatform={props.onReleasePlatform}
           owner={props.releaseOwner}
           repo={props.releaseRepo}
+          giteeOwner={props.releaseGiteeOwner}
+          giteeRepo={props.releaseGiteeRepo}
           defaultTag={props.releaseDefaultTag}
           githubLoggedIn={props.githubLoggedIn}
+          giteeLoggedIn={props.giteeLoggedIn}
           busy={props.busy || props.updateBusy}
           onBusy={props.onUpdateBusy}
           onNotice={props.onNotice}
@@ -706,6 +722,7 @@ export function ExtraPane(props: Props) {
           onOpenAuth={props.onOpenAuth}
           onConfigureRepo={props.onConfigureReleaseRepo}
           progress={props.updateProgress}
+          locale={loc}
         />
       )}
     </section>

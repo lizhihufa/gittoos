@@ -1,5 +1,7 @@
-//! Check / download / publish GitHub Releases for 青枝.
-use crate::git::{github_access_token, local_proxy, set_app_handle};
+//! Check / download / publish GitHub & Gitee Releases for 青枝.
+use crate::git::{
+    github_access_token, local_proxy, provider_access_token, set_app_handle, Provider,
+};
 use crate::process_win::hide_console;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -667,4 +669,447 @@ fn urlencoding_simple(s: &str) -> String {
         }
     }
     out
+}
+
+// ─── Gitee Releases ───────────────────────────────────────────────
+
+fn optional_gitee_token() -> Option<String> {
+    provider_access_token(Provider::Gitee).ok().flatten()
+}
+
+fn require_gitee_token() -> Result<String, String> {
+    optional_gitee_token()
+        .ok_or_else(|| "请先在「账号登录」里登录 Gitee（需要有仓库写入权限的 Token）".to_string())
+}
+
+fn gitee_owner_repo(owner: Option<String>, repo: Option<String>) -> Result<(String, String), String> {
+    let owner = owner.unwrap_or_default().trim().to_string();
+    let repo = repo.unwrap_or_default().trim().to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return Err("请填写 Gitee 仓库 owner/repo".to_string());
+    }
+    Ok((owner, repo))
+}
+
+fn gitee_get_json(url: &str, token: Option<&str>) -> Result<String, String> {
+    let agent = http_agent(45);
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let full = match token.filter(|t| !t.is_empty()) {
+        Some(t) => format!("{url}{sep}access_token={t}"),
+        None => url.to_string(),
+    };
+    let resp = match agent.get(&full).set("User-Agent", "qingzhi").call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            return Err(format!(
+                "Gitee HTTP {code}：{}",
+                body.chars().take(200).collect::<String>()
+            ));
+        }
+        Err(e) => return Err(format!("请求 Gitee 失败：{e}")),
+    };
+    let status = resp.status();
+    let body = resp.into_string().map_err(|e| format!("读取响应失败：{e}"))?;
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "Gitee HTTP {status}：{}",
+            body.chars().take(200).collect::<String>()
+        ));
+    }
+    Ok(body)
+}
+
+#[derive(Deserialize)]
+struct GiteeRelease {
+    id: Option<u64>,
+    tag_name: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    assets: Vec<GiteeAsset>,
+}
+
+#[derive(Deserialize)]
+struct GiteeAsset {
+    #[serde(default)]
+    id: u64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    browser_download_url: String,
+}
+
+fn gitee_release_to_item(rel: GiteeRelease, owner: &str, repo: &str) -> Option<ReleaseItem> {
+    let id = rel.id?;
+    let html_url = rel.html_url.unwrap_or_else(|| {
+        format!("https://gitee.com/{owner}/{repo}/releases/{id}")
+    });
+    Some(ReleaseItem {
+        id,
+        tag_name: rel.tag_name,
+        name: rel.name.unwrap_or_default(),
+        body: rel.body.unwrap_or_default(),
+        html_url,
+        published_at: rel.created_at.unwrap_or_default(),
+        assets: rel
+            .assets
+            .into_iter()
+            .filter(|a| a.id > 0 && !a.name.is_empty())
+            .map(|a| ReleaseAssetInfo {
+                id: a.id,
+                name: a.name,
+                size: a.size,
+                size_label: format_bytes(a.size),
+                download_url: a.browser_download_url,
+            })
+            .collect(),
+    })
+}
+
+fn gitee_list_attach_files(
+    owner: &str,
+    repo: &str,
+    token: &str,
+    release_id: u64,
+) -> Result<Vec<ReleaseAssetInfo>, String> {
+    let url = format!(
+        "https://gitee.com/api/v5/repos/{owner}/{repo}/releases/{release_id}/attach_files"
+    );
+    let text = gitee_get_json(&url, Some(token))?;
+    let assets: Vec<GiteeAsset> =
+        serde_json::from_str(&text).map_err(|e| format!("解析 Gitee 附件失败：{e}"))?;
+    Ok(assets
+        .into_iter()
+        .filter(|a| a.id > 0 && !a.name.is_empty())
+        .map(|a| ReleaseAssetInfo {
+            id: a.id,
+            name: a.name,
+            size: a.size,
+            size_label: format_bytes(a.size),
+            download_url: a.browser_download_url,
+        })
+        .collect())
+}
+
+pub fn list_gitee_releases(
+    owner: Option<String>,
+    repo: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<ReleaseItem>, String> {
+    let (owner, repo) = gitee_owner_repo(owner, repo)?;
+    let per_page = limit.unwrap_or(20).clamp(1, 50);
+    let token = optional_gitee_token();
+    let url = format!(
+        "https://gitee.com/api/v5/repos/{owner}/{repo}/releases?page=1&per_page={per_page}"
+    );
+    let body = gitee_get_json(&url, token.as_deref())?;
+    let releases: Vec<GiteeRelease> =
+        serde_json::from_str(&body).map_err(|e| format!("解析 Gitee Release 列表失败：{e}"))?;
+    let mut items: Vec<ReleaseItem> = releases
+        .into_iter()
+        .filter_map(|r| gitee_release_to_item(r, &owner, &repo))
+        .collect();
+    // Enrich assets via attach_files when list payload is empty / incomplete.
+    if let Some(tok) = token.as_deref() {
+        for item in &mut items {
+            if item.assets.is_empty() {
+                if let Ok(assets) = gitee_list_attach_files(&owner, &repo, tok, item.id) {
+                    item.assets = assets;
+                }
+            }
+        }
+    }
+    Ok(items)
+}
+
+pub fn delete_gitee_release_asset(
+    release_id: u64,
+    asset_id: u64,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<(), String> {
+    let token = require_gitee_token()?;
+    let (owner, repo) = gitee_owner_repo(owner, repo)?;
+    let agent = http_agent(45);
+    let url = format!(
+        "https://gitee.com/api/v5/repos/{owner}/{repo}/releases/{release_id}/attach_files/{asset_id}?access_token={token}"
+    );
+    let resp = agent
+        .delete(&url)
+        .set("User-Agent", "qingzhi")
+        .call()
+        .map_err(|e| format!("删除 Gitee 附件失败：{e}"))?;
+    let status = resp.status();
+    if status != 204 && !(200..300).contains(&status) {
+        let text = resp.into_string().unwrap_or_default();
+        return Err(format!(
+            "删除 Gitee 附件失败 HTTP {status}：{}",
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    Ok(())
+}
+
+pub fn delete_gitee_release(
+    release_id: u64,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<(), String> {
+    let token = require_gitee_token()?;
+    let (owner, repo) = gitee_owner_repo(owner, repo)?;
+    let agent = http_agent(45);
+    let url = format!(
+        "https://gitee.com/api/v5/repos/{owner}/{repo}/releases/{release_id}?access_token={token}"
+    );
+    let resp = agent
+        .delete(&url)
+        .set("User-Agent", "qingzhi")
+        .call()
+        .map_err(|e| format!("删除 Gitee Release 失败：{e}"))?;
+    let status = resp.status();
+    if status != 204 && !(200..300).contains(&status) {
+        let text = resp.into_string().unwrap_or_default();
+        return Err(format!(
+            "删除 Gitee Release 失败 HTTP {status}：{}",
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    Ok(())
+}
+
+fn gitee_ensure_release(
+    owner: &str,
+    repo: &str,
+    token: &str,
+    tag: &str,
+    name: &str,
+    body: &str,
+) -> Result<GiteeRelease, String> {
+    let get_url = format!(
+        "https://gitee.com/api/v5/repos/{owner}/{repo}/releases/tags/{tag}"
+    );
+    match gitee_get_json(&get_url, Some(token)) {
+        Ok(text) => {
+            return serde_json::from_str(&text)
+                .map_err(|e| format!("解析已有 Gitee Release 失败：{e}"));
+        }
+        Err(e) if e.contains("HTTP 404") => {}
+        Err(e) => return Err(e),
+    }
+
+    let agent = http_agent(60);
+    let payload = serde_json::json!({
+        "access_token": token,
+        "tag_name": tag,
+        "name": name,
+        "body": body,
+        "target_commitish": "master",
+    });
+    let resp = agent
+        .post(&format!(
+            "https://gitee.com/api/v5/repos/{owner}/{repo}/releases"
+        ))
+        .set("User-Agent", "qingzhi")
+        .set("Content-Type", "application/json")
+        .send_json(payload)
+        .map_err(|e| format!("创建 Gitee Release 失败：{e}"))?;
+    let status = resp.status();
+    let text = resp.into_string().unwrap_or_default();
+    if !(200..300).contains(&status) {
+        // Retry with main if master rejected
+        if text.contains("target_commitish") || text.contains("master") {
+            let payload2 = serde_json::json!({
+                "access_token": token,
+                "tag_name": tag,
+                "name": name,
+                "body": body,
+                "target_commitish": "main",
+            });
+            let resp2 = agent
+                .post(&format!(
+                    "https://gitee.com/api/v5/repos/{owner}/{repo}/releases"
+                ))
+                .set("User-Agent", "qingzhi")
+                .set("Content-Type", "application/json")
+                .send_json(payload2)
+                .map_err(|e| format!("创建 Gitee Release 失败：{e}"))?;
+            let status2 = resp2.status();
+            let text2 = resp2.into_string().unwrap_or_default();
+            if !(200..300).contains(&status2) {
+                return Err(format!(
+                    "创建 Gitee Release 失败 HTTP {status2}：{}",
+                    text2.chars().take(240).collect::<String>()
+                ));
+            }
+            return serde_json::from_str(&text2)
+                .map_err(|e| format!("解析新建 Gitee Release 失败：{e}"));
+        }
+        return Err(format!(
+            "创建 Gitee Release 失败 HTTP {status}：{}",
+            text.chars().take(240).collect::<String>()
+        ));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("解析新建 Gitee Release 失败：{e}"))
+}
+
+fn gitee_delete_asset_if_exists(
+    owner: &str,
+    repo: &str,
+    token: &str,
+    release_id: u64,
+    file_name: &str,
+) -> Result<(), String> {
+    let assets = gitee_list_attach_files(owner, repo, token, release_id)?;
+    for a in assets {
+        if a.name == file_name {
+            let _ = delete_gitee_release_asset(
+                release_id,
+                a.id,
+                Some(owner.to_string()),
+                Some(repo.to_string()),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn gitee_upload_attach(
+    owner: &str,
+    repo: &str,
+    token: &str,
+    release_id: u64,
+    path: &Path,
+    file_name: &str,
+) -> Result<(), String> {
+    let mut file_bytes = Vec::new();
+    File::open(path)
+        .and_then(|mut f| f.read_to_end(&mut file_bytes))
+        .map_err(|e| format!("读取上传文件失败：{e}"))?;
+
+    let boundary = format!(
+        "----QingzhiBoundary{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let mut body: Vec<u8> = Vec::new();
+    // access_token
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"access_token\"\r\n\r\n",
+    );
+    body.extend_from_slice(token.as_bytes());
+    body.extend_from_slice(b"\r\n");
+    // file
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+    body.extend_from_slice(&file_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let url = format!(
+        "https://gitee.com/api/v5/repos/{owner}/{repo}/releases/{release_id}/attach_files"
+    );
+    let agent = http_agent(1800);
+    let resp = agent
+        .post(&url)
+        .set("User-Agent", "qingzhi")
+        .set(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .send_bytes(&body)
+        .map_err(|e| format!("上传到 Gitee 失败：{e}"))?;
+    let status = resp.status();
+    let text = resp.into_string().unwrap_or_default();
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "上传到 Gitee 失败 HTTP {status}：{}",
+            text.chars().take(240).collect::<String>()
+        ));
+    }
+    Ok(())
+}
+
+pub fn publish_gitee_release(
+    file_path: &str,
+    tag: &str,
+    title: Option<String>,
+    notes: Option<String>,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<PublishResult, String> {
+    let token = require_gitee_token()?;
+    let (owner, repo) = gitee_owner_repo(owner, repo)?;
+    let tag = tag.trim();
+    if tag.is_empty() {
+        return Err("请填写版本 Tag（例如 v1.4.2）".to_string());
+    }
+    let tag_name = if tag.starts_with('v') || tag.starts_with('V') {
+        tag.to_string()
+    } else {
+        format!("v{tag}")
+    };
+
+    let path = PathBuf::from(file_path);
+    if !path.is_file() {
+        return Err("安装包文件不存在".to_string());
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "无效的文件名".to_string())?
+        .to_string();
+    let file_len = path
+        .metadata()
+        .map_err(|e| format!("读取文件大小失败：{e}"))?
+        .len();
+
+    emit_progress(5, "检查 Gitee Release…");
+    let release = gitee_ensure_release(
+        &owner,
+        &repo,
+        &token,
+        &tag_name,
+        title.as_deref().unwrap_or(&tag_name),
+        notes.as_deref().unwrap_or(""),
+    )?;
+    let release_id = release
+        .id
+        .ok_or_else(|| "Gitee Release 缺少 id".to_string())?;
+
+    emit_progress(15, "准备上传…");
+    gitee_delete_asset_if_exists(&owner, &repo, &token, release_id, &file_name)?;
+
+    emit_progress(
+        20,
+        &format!("上传到 Gitee {}（{}）…", file_name, format_bytes(file_len)),
+    );
+    gitee_upload_attach(&owner, &repo, &token, release_id, &path, &file_name)?;
+
+    let html_url = release.html_url.unwrap_or_else(|| {
+        format!("https://gitee.com/{owner}/{repo}/releases")
+    });
+    emit_progress(100, "发布完成");
+    Ok(PublishResult {
+        tag_name,
+        html_url,
+        asset_name: file_name,
+    })
 }

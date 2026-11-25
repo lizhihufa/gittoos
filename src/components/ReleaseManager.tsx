@@ -3,14 +3,22 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import { confirmAction } from "../confirm";
+import { t as i18n } from "../i18n";
 import { failureLine } from "../statusMessage";
 import type { ReleaseItem } from "../types";
 
+export type ReleasePlatform = "github" | "gitee";
+
 type Props = {
+  platform: ReleasePlatform;
+  onPlatform: (p: ReleasePlatform) => void;
   owner: string;
   repo: string;
+  giteeOwner: string;
+  giteeRepo: string;
   defaultTag: string;
   githubLoggedIn: boolean;
+  giteeLoggedIn: boolean;
   busy: boolean;
   onBusy: (busy: boolean) => void;
   onNotice: (text: string | null) => void;
@@ -18,6 +26,7 @@ type Props = {
   onOpenAuth: () => void;
   onConfigureRepo?: () => void;
   progress: { percent: number; label: string } | null;
+  locale?: string;
 };
 
 /** 去掉标题末尾的版本/Tag，避免「青枝 v1.6.0」这类带回填 */
@@ -56,6 +65,7 @@ function fileName(path: string): string {
 }
 
 export function ReleaseManager(props: Props) {
+  const loc = props.locale || "zh-CN";
   const [items, setItems] = useState<ReleaseItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [filePath, setFilePath] = useState("");
@@ -66,9 +76,13 @@ export function ReleaseManager(props: Props) {
   const [notes, setNotes] = useState("");
   const [showNotes, setShowNotes] = useState(false);
 
-  const { owner, repo, onError } = props;
+  const isGitee = props.platform === "gitee";
+  const owner = isGitee ? props.giteeOwner : props.owner;
+  const repo = isGitee ? props.giteeRepo : props.repo;
+  const loggedIn = isGitee ? props.giteeLoggedIn : props.githubLoggedIn;
+  const hostLabel = isGitee ? "Gitee" : "GitHub";
+  const { onError } = props;
 
-  // 切换仓库时重置，避免沿用上一仓库 / 本软件版本号
   useEffect(() => {
     setTag("");
     setTitle("");
@@ -76,9 +90,8 @@ export function ReleaseManager(props: Props) {
     setTitleTouched(false);
     setFilePath("");
     setNotes("");
-  }, [owner, repo]);
+  }, [owner, repo, props.platform]);
 
-  // Tag 默认取该仓库最新 Release；没有列表时才用外部 defaultTag
   useEffect(() => {
     if (tagTouched) return;
     if (items.length > 0) {
@@ -88,7 +101,6 @@ export function ReleaseManager(props: Props) {
     if (props.defaultTag) setTag(props.defaultTag);
   }, [items, props.defaultTag, tagTouched]);
 
-  // 标题默认取当前 Tag 对应项（或最新一条），并去掉版本后缀
   useEffect(() => {
     if (titleTouched) return;
     const tagName = normalizeTag(tag, props.defaultTag);
@@ -115,14 +127,16 @@ export function ReleaseManager(props: Props) {
     setLoading(true);
     onError(null);
     try {
-      const list = await api.listGithubReleases(owner, repo, 20);
+      const list = isGitee
+        ? await api.listGiteeReleases(owner, repo, 20)
+        : await api.listGithubReleases(owner, repo, 20);
       setItems(list);
     } catch (e) {
       onError(failureLine(e));
     } finally {
       setLoading(false);
     }
-  }, [owner, repo, onError]);
+  }, [owner, repo, isGitee, onError]);
 
   useEffect(() => {
     void refresh();
@@ -133,23 +147,30 @@ export function ReleaseManager(props: Props) {
   async function pickFile() {
     const selected = await open({
       multiple: false,
-      filters: [{ name: "安装包 / 文件", extensions: ["exe", "zip", "msi", "7z"] }],
-      title: "选择要上传的 Release 文件",
+      filters: [
+        {
+          name: i18n(loc, "release.fileFilter"),
+          extensions: ["exe", "zip", "msi", "7z"],
+        },
+      ],
+      title: i18n(loc, "release.pickTitle"),
     });
     if (typeof selected === "string") setFilePath(selected);
   }
 
   async function upload() {
     if (!hasTarget) {
-      props.onError("未识别到 GitHub 仓库：请配置 origin，或在设置中手动指定 Release 仓库");
+      props.onError(
+        i18n(loc, isGitee ? "release.noGiteeRepo" : "release.noGithubRepo"),
+      );
       return;
     }
     if (!filePath.trim()) {
-      props.onError("请先选择要上传的文件");
+      props.onError(i18n(loc, "release.needFile"));
       return;
     }
-    if (!props.githubLoggedIn) {
-      props.onError("请先登录 GitHub（需要仓库写权限）");
+    if (!loggedIn) {
+      props.onError(i18n(loc, isGitee ? "release.needGitee" : "release.needGithub"));
       props.onOpenAuth();
       return;
     }
@@ -158,23 +179,41 @@ export function ReleaseManager(props: Props) {
     const releaseTitle =
       stripVersionSuffix(title.trim() || tagName, tagName) || tagName;
     const ok = await confirmAction(
-      `上传到 ${props.owner}/${props.repo}\n标题：${releaseTitle}\nTag：${tagName}\n文件：${fileName(filePath)}\n若 Tag 不存在会自动创建 Release。`,
-      { title: "上传到 Release", confirmLabel: "上传" },
+      `${i18n(loc, "release.uploadTo")} ${owner}/${repo}\n${i18n(loc, "release.title")}: ${releaseTitle}\nTag：${tagName}\n${i18n(loc, "release.file")}: ${fileName(filePath)}\n${i18n(loc, "release.autoCreate")}`,
+      {
+        title: i18n(loc, "release.uploadConfirm"),
+        confirmLabel: i18n(loc, "release.upload"),
+      },
     );
     if (!ok) return;
     props.onBusy(true);
     props.onError(null);
-    props.onNotice("正在上传到 GitHub Releases…");
+    props.onNotice(
+      isGitee
+        ? i18n(loc, "release.uploadingGitee")
+        : i18n(loc, "release.uploadingGithub"),
+    );
     try {
-      const result = await api.publishGithubRelease({
-        filePath,
-        tag: tagName,
-        title: releaseTitle,
-        notes: notes.trim() || undefined,
-        owner: props.owner,
-        repo: props.repo,
-      });
-      props.onNotice(`已上传 ${result.assetName} → ${result.tagName}`);
+      const result = isGitee
+        ? await api.publishGiteeRelease({
+            filePath,
+            tag: tagName,
+            title: releaseTitle,
+            notes: notes.trim() || undefined,
+            owner,
+            repo,
+          })
+        : await api.publishGithubRelease({
+            filePath,
+            tag: tagName,
+            title: releaseTitle,
+            notes: notes.trim() || undefined,
+            owner,
+            repo,
+          });
+      props.onNotice(
+        `${i18n(loc, "release.uploaded")} ${result.assetName} → ${result.tagName}`,
+      );
       setFilePath("");
       await refresh();
     } catch (e) {
@@ -186,19 +225,27 @@ export function ReleaseManager(props: Props) {
   }
 
   async function removeAsset(release: ReleaseItem, assetId: number, name: string) {
-    if (!props.githubLoggedIn) {
+    if (!loggedIn) {
       props.onOpenAuth();
       return;
     }
     const ok = await confirmAction(
-      `从 ${release.tagName} 删除附件「${name}」？`,
-      { title: "删除附件", danger: true, confirmLabel: "删除" },
+      `${i18n(loc, "release.deleteAssetAsk")} ${release.tagName}「${name}」？`,
+      {
+        title: i18n(loc, "release.deleteAsset"),
+        danger: true,
+        confirmLabel: i18n(loc, "release.delete"),
+      },
     );
     if (!ok) return;
     props.onBusy(true);
     try {
-      await api.deleteGithubReleaseAsset(assetId, props.owner, props.repo);
-      props.onNotice(`已删除附件 ${name}`);
+      if (isGitee) {
+        await api.deleteGiteeReleaseAsset(release.id, assetId, owner, repo);
+      } else {
+        await api.deleteGithubReleaseAsset(assetId, owner, repo);
+      }
+      props.onNotice(`${i18n(loc, "release.deletedAsset")} ${name}`);
       await refresh();
     } catch (e) {
       props.onError(failureLine(e));
@@ -208,19 +255,27 @@ export function ReleaseManager(props: Props) {
   }
 
   async function removeRelease(release: ReleaseItem) {
-    if (!props.githubLoggedIn) {
+    if (!loggedIn) {
       props.onOpenAuth();
       return;
     }
     const ok = await confirmAction(
-      `删除整个 Release「${release.tagName}」及其全部附件？\n不会删除 Git Tag。`,
-      { title: "删除 Release", danger: true, confirmLabel: "删除" },
+      `${i18n(loc, "release.deleteReleaseAsk")}「${release.tagName}」？\n${i18n(loc, "release.keepTag")}`,
+      {
+        title: i18n(loc, "release.deleteRelease"),
+        danger: true,
+        confirmLabel: i18n(loc, "release.delete"),
+      },
     );
     if (!ok) return;
     props.onBusy(true);
     try {
-      await api.deleteGithubRelease(release.id, props.owner, props.repo);
-      props.onNotice(`已删除 Release ${release.tagName}`);
+      if (isGitee) {
+        await api.deleteGiteeRelease(release.id, owner, repo);
+      } else {
+        await api.deleteGithubRelease(release.id, owner, repo);
+      }
+      props.onNotice(`${i18n(loc, "release.deletedRelease")} ${release.tagName}`);
       await refresh();
     } catch (e) {
       props.onError(failureLine(e));
@@ -231,18 +286,34 @@ export function ReleaseManager(props: Props) {
 
   return (
     <div className="panel pad-block release-manager">
+      <div className="wallpaper-mode-tabs" role="tablist" style={{ marginBottom: "0.55rem" }}>
+        <button
+          type="button"
+          className={!isGitee ? "is-active" : ""}
+          onClick={() => props.onPlatform("github")}
+        >
+          GitHub
+        </button>
+        <button
+          type="button"
+          className={isGitee ? "is-active" : ""}
+          onClick={() => props.onPlatform("gitee")}
+        >
+          Gitee
+        </button>
+      </div>
+
       <div className="release-bar">
         <label className="release-field release-field-title">
-          <span>标题</span>
+          <span>{i18n(loc, "release.title")}</span>
           <input
             value={title}
             onChange={(e) => {
               setTitleTouched(true);
               setTitle(e.target.value);
             }}
-            placeholder="例如：青枝；留空则用 Tag"
+            placeholder={i18n(loc, "release.titlePh")}
             disabled={props.busy}
-            title="Release 显示名称（不要带版本号）；默认取自下方列表，留空则用 Tag"
           />
         </label>
         <label className="release-field">
@@ -255,27 +326,26 @@ export function ReleaseManager(props: Props) {
             }}
             placeholder={items[0]?.tagName || props.defaultTag || "v1.0.0"}
             disabled={props.busy}
-            title="版本 Tag（默认取本仓库最新 Release）"
           />
         </label>
 
-        <div className="release-actions" role="group" aria-label="Release 操作">
+        <div className="release-actions" role="group" aria-label="Release">
           <button
             type="button"
             className="pane-btn pane-btn--soft"
             disabled={props.busy || !hasTarget}
             onClick={() => void pickFile()}
           >
-            选择文件
+            {i18n(loc, "release.pick")}
           </button>
           <button
             type="button"
             className="pane-btn pane-btn--primary"
             disabled={props.busy || !hasTarget || !filePath}
             onClick={() => void upload()}
-            title="上传到 GitHub Release"
+            title={`${i18n(loc, "release.upload")} ${hostLabel}`}
           >
-            上传
+            {i18n(loc, "release.upload")}
           </button>
           <span className="release-actions-split" aria-hidden />
           <button
@@ -284,7 +354,7 @@ export function ReleaseManager(props: Props) {
             disabled={props.busy || loading || !hasTarget}
             onClick={() => void refresh()}
           >
-            {loading ? "刷新中" : "刷新"}
+            {loading ? i18n(loc, "release.refreshing") : i18n(loc, "release.refresh")}
           </button>
           <button
             type="button"
@@ -292,7 +362,7 @@ export function ReleaseManager(props: Props) {
             disabled={props.busy}
             onClick={() => setShowNotes((v) => !v)}
           >
-            {showNotes ? "收起说明" : "说明"}
+            {showNotes ? i18n(loc, "release.hideNotes") : i18n(loc, "release.notes")}
           </button>
         </div>
       </div>
@@ -300,11 +370,11 @@ export function ReleaseManager(props: Props) {
       <div className="release-toolbar-meta">
         <span className="muted small" title={filePath || undefined}>
           {!hasTarget
-            ? "未识别到 GitHub 仓库：请配置 origin，或到设置 → 外观 手动指定"
+            ? i18n(loc, isGitee ? "release.noGiteeRepo" : "release.noGithubRepo")
             : filePath
               ? fileName(filePath)
-              : `目标 ${props.owner}/${props.repo}${
-                  props.githubLoggedIn ? "" : " · 上传/删除需登录"
+              : `${hostLabel} ${owner}/${repo}${
+                  loggedIn ? "" : ` · ${i18n(loc, "release.needLoginHint")}`
                 }`}
         </span>
         {!hasTarget && props.onConfigureRepo ? (
@@ -313,7 +383,7 @@ export function ReleaseManager(props: Props) {
             className="pane-btn pane-btn--soft pane-btn--sm"
             onClick={props.onConfigureRepo}
           >
-            去设置
+            {i18n(loc, "release.goSettings")}
           </button>
         ) : null}
       </div>
@@ -323,7 +393,7 @@ export function ReleaseManager(props: Props) {
           className="release-notes-input"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder="新建 Release 时的说明（已有 Tag 则忽略）"
+          placeholder={i18n(loc, "release.notesPh")}
           rows={2}
           disabled={props.busy}
         />
@@ -343,84 +413,86 @@ export function ReleaseManager(props: Props) {
 
       <ul className="record-list">
         {items.length === 0 && !loading && (
-          <li className="muted pad">还没有 Release。选择文件并上传后会自动创建。</li>
+          <li className="muted pad">{i18n(loc, "release.empty")}</li>
         )}
         {items.map((rel) => {
           const relTitle = releaseTitleOf(rel);
           return (
-          <li key={rel.id} className="release-group">
-            <div className="stash-row release-row">
-              <button
-                type="button"
-                className="release-row-main release-row-pick"
-                title="填入上方标题 / Tag"
-                onClick={() => {
-                  setTag(rel.tagName);
-                  setTagTouched(true);
-                  setTitle(relTitle ?? "");
-                  setTitleTouched(true);
-                }}
-              >
-                <strong>{relTitle || rel.tagName}</strong>
-                {relTitle ? (
-                  <span className="release-row-tag">{rel.tagName}</span>
-                ) : null}
-                {rel.publishedAt ? (
-                  <span className="muted small">
-                    {rel.publishedAt.replace("T", " ").slice(0, 16)}
-                  </span>
-                ) : null}
-              </button>
-              <span className="row-actions release-row-actions">
+            <li key={rel.id} className="release-group">
+              <div className="stash-row release-row">
                 <button
                   type="button"
-                  className="pane-btn pane-btn--soft pane-btn--sm"
-                  onClick={() => void openUrl(rel.htmlUrl)}
+                  className="release-row-main release-row-pick"
+                  title={i18n(loc, "release.fillForm")}
+                  onClick={() => {
+                    setTag(rel.tagName);
+                    setTagTouched(true);
+                    setTitle(relTitle ?? "");
+                    setTitleTouched(true);
+                  }}
                 >
-                  打开
+                  <strong>{relTitle || rel.tagName}</strong>
+                  {relTitle ? (
+                    <span className="release-row-tag">{rel.tagName}</span>
+                  ) : null}
+                  {rel.publishedAt ? (
+                    <span className="muted small">
+                      {rel.publishedAt.replace("T", " ").slice(0, 16)}
+                    </span>
+                  ) : null}
                 </button>
-                <button
-                  type="button"
-                  className="pane-btn pane-btn--danger pane-btn--sm"
-                  disabled={props.busy || !props.githubLoggedIn}
-                  onClick={() => void removeRelease(rel)}
-                >
-                  删除
-                </button>
-              </span>
-            </div>
-            {rel.assets.length === 0 ? (
-              <div className="muted small release-asset-empty">无附件</div>
-            ) : (
-              rel.assets.map((asset) => (
-                <div key={asset.id} className="stash-row release-asset-row">
-                  <span className="release-asset-name" title={asset.name}>
-                    {asset.name}
-                    <span className="muted small"> {asset.sizeLabel}</span>
-                  </span>
-                  <span className="row-actions release-row-actions">
-                    <button
-                      type="button"
-                      className="pane-btn pane-btn--soft pane-btn--sm"
-                      onClick={() => void openUrl(asset.downloadUrl)}
-                    >
-                      下载
-                    </button>
-                    <button
-                      type="button"
-                      className="pane-btn pane-btn--danger pane-btn--sm"
-                      disabled={props.busy || !props.githubLoggedIn}
-                      onClick={() =>
-                        void removeAsset(rel, asset.id, asset.name)
-                      }
-                    >
-                      删除
-                    </button>
-                  </span>
+                <span className="row-actions release-row-actions">
+                  <button
+                    type="button"
+                    className="pane-btn pane-btn--soft pane-btn--sm"
+                    onClick={() => void openUrl(rel.htmlUrl)}
+                  >
+                    {i18n(loc, "release.open")}
+                  </button>
+                  <button
+                    type="button"
+                    className="pane-btn pane-btn--danger pane-btn--sm"
+                    disabled={props.busy || !loggedIn}
+                    onClick={() => void removeRelease(rel)}
+                  >
+                    {i18n(loc, "release.delete")}
+                  </button>
+                </span>
+              </div>
+              {rel.assets.length === 0 ? (
+                <div className="muted small release-asset-empty">
+                  {i18n(loc, "release.noAssets")}
                 </div>
-              ))
-            )}
-          </li>
+              ) : (
+                rel.assets.map((asset) => (
+                  <div key={asset.id} className="stash-row release-asset-row">
+                    <span className="release-asset-name" title={asset.name}>
+                      {asset.name}
+                      <span className="muted small"> {asset.sizeLabel}</span>
+                    </span>
+                    <span className="row-actions release-row-actions">
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--soft pane-btn--sm"
+                        onClick={() => void openUrl(asset.downloadUrl)}
+                      >
+                        {i18n(loc, "release.download")}
+                      </button>
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--danger pane-btn--sm"
+                        disabled={props.busy || !loggedIn}
+                        onClick={() =>
+                          void removeAsset(rel, asset.id, asset.name)
+                        }
+                      >
+                        {i18n(loc, "release.delete")}
+                      </button>
+                    </span>
+                  </div>
+                ))
+              )}
+            </li>
           );
         })}
       </ul>

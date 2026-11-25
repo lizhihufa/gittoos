@@ -1,5 +1,4 @@
 import {
-  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -36,8 +35,16 @@ import {
   removeRecent,
 } from "./recent";
 import { clearRepoCache, loadRepoCache, saveRepoCache } from "./repoCache";
-import { formatGithubOwnerRepo, parseGithubOwnerRepo } from "./githubRepo";
-import { applyGithubMirror } from "./githubNetwork";
+import {
+  formatGithubOwnerRepo,
+  parseGiteeOwnerRepo,
+  parseGithubOwnerRepo,
+} from "./githubRepo";
+import type { ReleasePlatform } from "./components/ReleaseManager";
+import {
+  applyGithubMirror,
+  DEFAULT_GITHUB_HOSTS,
+} from "./githubNetwork";
 import { t as i18n } from "./i18n";
 import {
   SettingsAboutPage,
@@ -45,6 +52,12 @@ import {
   SettingsNetworkPage,
   SettingsResetPage,
 } from "./components/SettingsExtraPages";
+import {
+  UPDATE_REPO_NAME,
+  UPDATE_REPO_OWNER,
+  useAuthBootstrap,
+} from "./hooks/useAuthBootstrap";
+import { useRepoActions } from "./hooks/useRepoActions";
 import {
   applyPrefsToDocument,
   clearAllLocalAppData,
@@ -71,13 +84,9 @@ type SettingsPage =
   | "about";
 import {
   failureLine,
-  isAuthFailure,
-  successLine,
-  syncConflictKind,
   type SyncConflictKind,
 } from "./statusMessage";
 import type {
-  AuthAccounts,
   AuthProvider,
   BranchInfo,
   CommitInfo,
@@ -97,8 +106,6 @@ import type {
 } from "./types";
 
 const LARGE_FILE_LIMIT_BYTES = 100 * 1024 * 1024;
-const UPDATE_REPO_OWNER = "lizhihufa";
-const UPDATE_REPO_NAME = "gittoos";
 import "./App.css";
 
 function folderName(path: string): string {
@@ -147,17 +154,6 @@ type BootState = {
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
-
-/** Let the browser paint / handle input between heavy steps. */
-function yieldToUi(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => {
-      window.setTimeout(resolve, 0);
-    });
-  });
-}
-
-const ACTION_WATCHDOG_MS = 90_000;
 
 export default function App() {
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
@@ -293,7 +289,6 @@ export default function App() {
     files: LargeFileInfo[];
     exclude: Record<string, boolean>;
   } | null>(null);
-  const [accounts, setAccounts] = useState<AuthAccounts | null>(null);
   const [authTab, setAuthTab] = useState<AuthProvider>("github");
   const [drafts, setDrafts] = useState<Record<AuthProvider, ProviderDraft>>({
     github: {
@@ -363,46 +358,57 @@ export default function App() {
     };
   }, []);
 
-  const checkForUpdate = useCallback(
-    async (silent = false) => {
-      const ver = appVersion === "…" ? "" : appVersion;
-      if (!ver) return null;
-      try {
-        if (!silent) {
-          setUpdateBusy(true);
-          setNotice("正在检查更新…");
-        }
-        const info = await api.checkAppUpdate(
-          ver,
-          UPDATE_REPO_OWNER,
-          UPDATE_REPO_NAME,
-        );
-        setUpdateInfo(info.updateAvailable ? info : info);
-        if (!silent) {
-          setNotice(
-            info.updateAvailable
-              ? `发现新版本 v${info.latestVersion}`
-              : `已是最新版本 v${info.currentVersion}`,
-          );
-        }
-        return info;
-      } catch (e) {
-        if (!silent) setError(failureLine(e));
-        return null;
-      } finally {
-        if (!silent) setUpdateBusy(false);
-      }
-    },
-    [appVersion],
-  );
+  const {
+    accounts,
+    setAccounts,
+    refreshAccounts,
+    checkForUpdate,
+  } = useAuthBootstrap({
+    appVersion,
+    setGitInfo,
+    setTerminal,
+    setError,
+    setNotice,
+    setUpdateInfo,
+    setUpdateBusy,
+    setSessionWarnings,
+    setDrafts,
+    setAddingAccount,
+  });
 
+  // Hosts auto: refresh GitHub IPs on launch when previously enabled.
   useEffect(() => {
-    if (!appVersion || appVersion === "…") return;
+    if (!prefs.hostsAuto) return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
-      void checkForUpdate(true);
-    }, 2500);
-    return () => window.clearTimeout(timer);
-  }, [appVersion, checkForUpdate]);
+      void (async () => {
+        try {
+          let block = "";
+          try {
+            block = await api.resolveGithubHosts();
+          } catch {
+            block = (prefs.hostsText || DEFAULT_GITHUB_HOSTS).trim();
+          }
+          if (!block || cancelled) return;
+          await api.applySystemHosts(block);
+          if (!cancelled) {
+            setPrefs((prev) => {
+              const next = { ...prev, hostsText: block, hostsAuto: true };
+              savePrefs(next);
+              return next;
+            });
+          }
+        } catch {
+          /* UAC cancel / offline — keep prior hosts */
+        }
+      })();
+    }, 1800);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once on mount if auto
+  }, []);
 
   async function downloadAndInstallUpdate() {
     if (!updateInfo?.updateAvailable) return;
@@ -484,17 +490,6 @@ export default function App() {
       void unlisten.then((fn) => fn());
       void unlistenProgress.then((fn) => fn());
     };
-  }, []);
-
-  useEffect(() => {
-    setTerminal((prev) => `${prev}# 正在准备 Git…\n`);
-    api
-      .getGitInfo()
-      .then((info) => {
-        setGitInfo(info);
-        setTerminal((prev) => `${prev}# ${info.version}\n# ${info.path}\n`);
-      })
-      .catch((e) => setError(failureLine(e)));
   }, []);
 
   useEffect(() => {
@@ -628,14 +623,34 @@ export default function App() {
     if (fromPrefs) {
       return { ...fromPrefs, source: "settings" as const };
     }
-    const origin =
-      remotes.find((remote) => remote.name === "origin") ?? remotes[0];
-    const fromRemote = parseGithubOwnerRepo(origin?.url);
+    const githubRemote =
+      remotes.find((r) => r.name === "github") ??
+      remotes.find((r) => /github\.com/i.test(r.url)) ??
+      remotes.find((r) => r.name === "origin");
+    const fromRemote = parseGithubOwnerRepo(githubRemote?.url);
     if (fromRemote) {
       return { ...fromRemote, source: "remote" as const };
     }
     return { owner: "", repo: "", source: "none" as const };
   }, [prefs.releaseRepoOverride, remotes]);
+
+  const releaseGiteeTarget = useMemo(() => {
+    const fromPrefs = parseGiteeOwnerRepo(prefs.releaseGiteeRepoOverride);
+    if (fromPrefs && prefs.releaseGiteeRepoOverride.trim()) {
+      return { ...fromPrefs, source: "settings" as const };
+    }
+    const giteeRemote =
+      remotes.find((r) => r.name === "gitee") ??
+      remotes.find((r) => /gitee\.com/i.test(r.url));
+    const fromRemote = parseGiteeOwnerRepo(giteeRemote?.url);
+    if (fromRemote) {
+      return { ...fromRemote, source: "remote" as const };
+    }
+    return { owner: "", repo: "", source: "none" as const };
+  }, [prefs.releaseGiteeRepoOverride, remotes]);
+
+  const [releasePlatform, setReleasePlatform] =
+    useState<ReleasePlatform>("github");
 
   const refreshStatusQuiet = useCallback(async (path: string) => {
     if (busyRef.current) return;
@@ -1008,21 +1023,34 @@ export default function App() {
 
   async function runMirrorPush() {
     if (!repoPath || !mirrorTarget) return;
-    const useActions =
-      prefs.mirrorSyncMethod === "actions" &&
-      mirrorTarget === "gitee" &&
-      primaryHost === "github";
-    if (useActions) {
+    const useActions = prefs.mirrorSyncMethod === "actions";
+    // GitHub → Gitee：只推 GitHub，由 forward workflow 同步
+    if (useActions && mirrorTarget === "gitee" && primaryHost === "github") {
       void runAction(async () => {
         const status = await api.getActionsMirrorStatus(repoPath);
         if (!status.workflowExists) {
           throw new Error(
-            "尚未安装 Actions 工作流。请到设置 → 行为，点「安装 Actions 镜像」。",
+            "尚未安装 Actions 工作流。请到设置 → 行为，点「一键安装双向 Actions 镜像」。",
           );
         }
         const text = await api.push(repoPath, false, null);
-        return `${text}\n——\n已推送到 GitHub；Gitee 将由 Actions 自动同步（需已配置 Secrets）。`;
+        return `${text}\n——\n已推送到 GitHub；Gitee 将由 Actions 自动同步。`;
       }, "正在推送（Actions 镜像）…");
+      return;
+    }
+    // Gitee → GitHub：先推 Gitee，再触发 reverse workflow 从 Gitee 拉回 GitHub
+    if (useActions && mirrorTarget === "github") {
+      void runAction(async () => {
+        const status = await api.getActionsMirrorStatus(repoPath);
+        if (!status.reverseWorkflowExists) {
+          throw new Error(
+            "尚未安装反向镜像工作流。请到设置 → 行为，点「一键安装双向 Actions 镜像」。",
+          );
+        }
+        const pushText = await api.push(repoPath, false, null, "gitee");
+        const triggerText = await api.triggerReverseActionsMirror(repoPath);
+        return `${pushText}\n——\n${triggerText}`;
+      }, "正在同步推送并触发 Actions…");
       return;
     }
     void runAction(
@@ -1107,37 +1135,6 @@ export default function App() {
     }
   }, []);
 
-  const refreshAccounts = useCallback(async () => {
-    try {
-      const next = await api.authAccounts();
-      setAccounts(next);
-      const expired: string[] = [];
-      if (next.github.sessionExpired) expired.push("GitHub");
-      if (next.gitee.sessionExpired) expired.push("Gitee");
-      setSessionWarnings(expired);
-      setDrafts((prev) => ({
-        github: {
-          ...prev.github,
-          clientId: next.github.clientId || prev.github.clientId,
-        },
-        gitee: {
-          ...prev.gitee,
-          clientId: next.gitee.clientId || prev.gitee.clientId,
-        },
-      }));
-      if (next.github.loggedIn || next.gitee.loggedIn) {
-        setAddingAccount(false);
-      }
-    } catch (e) {
-      const msg = String(e);
-      // Don't flash a red banner for HMR/IPC blips at startup.
-      if (/Failed to fetch|IPC custom protocol|Couldn't find callback/i.test(msg)) {
-        return;
-      }
-      setError(failureLine(e));
-    }
-  }, []);
-
   const refreshSsh = useCallback(async () => {
     try {
       setSshStatus(await api.authSshStatus());
@@ -1145,25 +1142,6 @@ export default function App() {
       /* SSH optional */
     }
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    // Delay past first paint / HMR so IPC custom protocol is ready.
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        try {
-          await api.authEnsureCredentials();
-        } catch {
-          /* ignore — often transient during vite reload */
-        }
-        if (!cancelled) await refreshAccounts();
-      })();
-    }, 400);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [refreshAccounts]);
 
   useEffect(() => {
     if (!showSettings) return;
@@ -1643,155 +1621,23 @@ export default function App() {
     defaultRemoteName,
   ]);
 
-  function isNetworkLabel(label?: string) {
-    return /拉取|推送|获取|克隆|同步/.test(label ?? "");
-  }
-
-  async function runAction(action: () => Promise<unknown>, label?: string) {
-    if (!repoPath || busyRef.current) return;
-    const path = repoPath;
-    const network = isNetworkLabel(label);
-    busyRef.current = true;
-    setBusy(true);
-    setError(null);
-    setAuthHint(false);
-    setNotice(label ?? "正在执行…");
-    if (network) {
-      syncProgressActive.current = true;
-      setSyncProgress({
-        label: label ?? "同步中",
-        percent: 3,
-        detail: "准备中",
-      });
-    } else {
-      syncProgressActive.current = false;
-      setSyncProgress(null);
-    }
-    // If a git/network call hangs, unlock the UI so Windows never shows "未响应".
-    let timedOut = false;
-    const watchdog = window.setTimeout(() => {
-      if (!busyRef.current) return;
-      timedOut = true;
-      busyRef.current = false;
-      setBusy(false);
-      syncProgressActive.current = false;
-      setSyncProgress(null);
-      setNotice(null);
-      setError(
-        "操作时间过长，界面已恢复可操作。后台命令可能仍在运行，请查看终端；必要时点「刷新」。",
-      );
-    }, ACTION_WATCHDOG_MS);
-    try {
-      await yieldToUi();
-      let result: unknown;
-      try {
-        result = await action();
-      } catch (firstErr) {
-        if (!isAuthFailure(firstErr)) throw firstErr;
-        setNotice("认证失败，正在同步本地凭据并重试…");
-        try {
-          await api.authEnsureCredentials();
-        } catch {
-          /* still retry once */
-        }
-        await yieldToUi();
-        result = await action();
-      }
-      await yieldToUi();
-      window.clearTimeout(watchdog);
-      if (timedOut) {
-        void refresh(path, { background: true }).catch(() => {});
-        return;
-      }
-      setSyncDialog(null);
-      {
-        const text = successLine(label, result);
-        const stickyPush =
-          Boolean(label && /推送/.test(label)) ||
-          /推送完成|已强制推送|已推送/.test(text);
-        // 推送完成提示需手动点掉，或被后续操作覆盖。
-        setNotice(text, stickyPush);
-      }
-      if (network) {
-        setSyncProgress((prev) =>
-          prev ? { ...prev, percent: 100, detail: "完成" } : prev,
-        );
-      }
-      // Fast path: unlock UI after a light refresh; history loads in background.
-      let coreForCache: Awaited<ReturnType<typeof api.getRepoCore>> | null = null;
-      try {
-        const core = await api.getRepoCore(path);
-        coreForCache = core;
-        if (repoPathRef.current === path) applyCore(core);
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-        syncProgressActive.current = false;
-        setSyncProgress(null);
-      }
-      await yieldToUi();
-      void api
-        .getRepoExtras(path)
-        .then((extras) => {
-          if (repoPathRef.current !== path) return;
-          startTransition(() => {
-            setCommits(extras.commits);
-            setStashes(extras.stashes);
-            setTags(extras.tags);
-          });
-          if (coreForCache) saveRepoCache(path, coreForCache, extras);
-        })
-        .catch(() => {
-          if (coreForCache) saveRepoCache(path, coreForCache);
-        });
-    } catch (e) {
-      window.clearTimeout(watchdog);
-      if (timedOut) {
-        void refresh(path, { background: true }).catch(() => {});
-        return;
-      }
-      setNotice(null);
-      const kind = syncConflictKind(e);
-      if (kind) {
-        setError(null);
-        setSyncDialog(kind);
-        busyRef.current = false;
-        setBusy(false);
-        syncProgressActive.current = false;
-        setSyncProgress(null);
-        try {
-          await refresh(path, { background: true });
-        } catch {
-          /* keep dialog error state */
-        }
-      } else {
-      setError(failureLine(e));
-        setAuthHint(isAuthFailure(e));
-        try {
-          const core = await api.getRepoCore(path);
-          if (repoPathRef.current === path) applyCore(core);
-        } catch {
-          /* keep original error */
-        } finally {
-          busyRef.current = false;
-      setBusy(false);
-          syncProgressActive.current = false;
-          setSyncProgress(null);
-        }
-        void api
-          .getRepoExtras(path)
-          .then((extras) => {
-            if (repoPathRef.current !== path) return;
-            startTransition(() => {
-              setCommits(extras.commits);
-              setStashes(extras.stashes);
-              setTags(extras.tags);
-            });
-          })
-          .catch(() => {});
-      }
-    }
-  }
+  const { runAction } = useRepoActions({
+    repoPath,
+    repoPathRef,
+    busyRef,
+    syncProgressActive,
+    applyCore,
+    refresh,
+    setBusy,
+    setError,
+    setAuthHint,
+    setNotice,
+    setSyncProgress,
+    setSyncDialog,
+    setCommits,
+    setStashes,
+    setTags,
+  });
 
   async function loadFileHistory(file: string) {
     if (!repoPath) return;
@@ -3196,19 +3042,19 @@ export default function App() {
           )}
           <div className="welcome-actions">
             <button type="button" className="primary" onClick={pickFolder} disabled={busy || !gitInfo}>
-              打开文件夹
+              {i18n(prefs.locale || "zh-CN", "welcome.open")}
             </button>
             <button type="button" onClick={() => openSettings()} disabled={busy}>
-              设置
+              {i18n(prefs.locale || "zh-CN", "welcome.settings")}
             </button>
             <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
-              说明书
+              {i18n(prefs.locale || "zh-CN", "welcome.help")}
             </button>
             <button type="button" onClick={() => openSettings("about")} disabled={busy}>
-              关于
+              {i18n(prefs.locale || "zh-CN", "nav.about")}
             </button>
             <button type="button" onClick={() => void cloneRepo()} disabled={busy || !gitInfo}>
-              克隆
+              {i18n(prefs.locale || "zh-CN", "welcome.clone")}
             </button>
           </div>
           {recent.length > 0 && (
@@ -3346,7 +3192,7 @@ export default function App() {
               <li>获取：只下载远程，不改本地文件。</li>
               <li>拉取：合并拉取或变基拉取（▾ 切换；Ctrl+Shift+L）。</li>
               <li>推送：直接推送 / 同步另一平台 / 强制推送（▾；Ctrl+Shift+P）。</li>
-              <li>同步方式：设置里可选「应用内同步」或「GitHub Actions 镜像」（GitHub→Gitee）。</li>
+              <li>同步方式：设置里可选「应用内同步」或「GitHub Actions 双向镜像」（一键安装）。</li>
               <li>克隆：可指定分支、浅克隆深度。</li>
               <li>↑↓ 数字：相对远程超前 / 落后的提交数。</li>
             </ul>
@@ -3703,7 +3549,12 @@ export default function App() {
                         清除
                       </button>
                     </div>
-                    {systemWallpapers.length > 0 && (
+                    {systemWallpapers.length > 0 &&
+                      systemWallpapers.some((w) =>
+                        loadWpMode === "dynamic"
+                          ? w.kind === "video"
+                          : w.kind === "image",
+                      ) && (
                       <div className="wallpaper-system-grid">
                         {systemWallpapers
                           .filter((w) =>
@@ -3746,6 +3597,13 @@ export default function App() {
                           })}
                       </div>
                     )}
+                    {loadWpMode === "dynamic" &&
+                      !systemWallpapers.some((w) => w.kind === "video") && (
+                        <p className="muted small" style={{ marginTop: "0.45rem" }}>
+                          未在「视频」文件夹找到可用视频。可点「本地文件」选择
+                          mp4/webm/mov，或把视频放到用户目录下的 Videos。
+                        </p>
+                      )}
                     <div
                       className={`wallpaper-sliders${
                         prefs.wallpaperKind === "none" ? " is-disabled" : ""
@@ -4010,8 +3868,8 @@ export default function App() {
                   <div className="settings-card mirror-method-card">
                     <h4>同步推送方式</h4>
                     <p className="muted small">
-                      「推送到 Gitee / GitHub」时，选择本机再推一次，或只用 GitHub
-                      Actions 镜像到 Gitee（仅 GitHub → Gitee）。
+                      「推送到 Gitee / GitHub」时，可选本机再推一次，或用 GitHub
+                      Actions 双向镜像（无需去网页配置 Secrets）。
                     </p>
                     <div className="pref-cards" role="radiogroup" aria-label="同步推送方式">
                       <label
@@ -4047,8 +3905,10 @@ export default function App() {
                           }
                         />
                         <span className="pref-card-text">
-                          <strong>GitHub Actions 镜像</strong>
-                          <span>只推 GitHub，由 Actions 自动同步到 Gitee</span>
+                          <strong>GitHub Actions 双向镜像</strong>
+                          <span>
+                            GitHub↔Gitee：推送后由 Actions 自动同步（一键安装）
+                          </span>
                         </span>
                         <span className="pref-switch" aria-hidden />
                       </label>
@@ -4058,7 +3918,7 @@ export default function App() {
                         type="button"
                         className="primary"
                         disabled={busy || !repoPath}
-                        title="写入 workflow、确保 Gitee 仓，并尝试配置 Secrets"
+                        title="写入双向 workflow、自动配置 Secrets，并尽量提交推送到 GitHub"
                         onClick={() => {
                           if (!repoPath) return;
                           void runAction(async () => {
@@ -4071,10 +3931,10 @@ export default function App() {
                             }
                             updatePrefs({ mirrorSyncMethod: "actions" });
                             return result.message;
-                          }, "正在安装 Actions 镜像…");
+                          }, "正在一键安装双向 Actions 镜像…");
                         }}
                       >
-                        安装 Actions 镜像
+                        一键安装双向 Actions 镜像
                       </button>
                       <button
                         type="button"
@@ -4084,45 +3944,45 @@ export default function App() {
                           void runAction(async () => {
                             const status =
                               await api.getActionsMirrorStatus(repoPath);
-                            if (status.secretsUrl) {
-                              void openUrl(status.secretsUrl);
-                            }
-                            return status.workflowExists
-                              ? `工作流已存在：${status.workflowPath}`
-                              : "尚未安装工作流，请先点「安装 Actions 镜像」。";
+                            const fwd = status.workflowExists
+                              ? `正向已装：${status.workflowPath}`
+                              : "正向未装";
+                            const rev = status.reverseWorkflowExists
+                              ? `反向已装：${status.reverseWorkflowPath}`
+                              : "反向未装";
+                            return `${fwd}；${rev}`;
                           }, "正在检查 Actions…");
                         }}
                       >
-                        打开 Secrets 页
+                        检查安装状态
                       </button>
                     </div>
                     <p className="muted small" style={{ marginTop: "0.4rem" }}>
-                      安装后请提交并推送 workflow 文件；GitHub 登录需含
-                      workflow 权限（可重新授权）。Gitee → GitHub
-                      仍使用应用内同步。
+                      一键安装会写入双向 workflow、自动写 GitHub Secrets，并尽量提交推送。
+                      需已登录 GitHub（含 workflow 权限）与 Gitee。之后选「Actions
+                      双向镜像」再点同步推送即可。
                     </p>
                   </div>
 
                   <div className="settings-card">
                     <h5>Release 仓库</h5>
-          <p className="muted small">
-                      管理 GitHub Release 时使用的仓库。留空则自动用当前打开仓库的
-                      origin（仅 GitHub）。青枝自身的「检查更新」仍固定为{" "}
+                    <p className="muted small">
+                      Release 页可切换 GitHub / Gitee。留空则从远程自动识别。青枝「检查更新」仍固定为{" "}
                       {UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}。
                     </p>
-          <label className="settings-field">
-                      <span>手动指定（owner/repo）</span>
-            <input
+                    <label className="settings-field">
+                      <span>GitHub（owner/repo）</span>
+                      <input
                         value={prefs.releaseRepoOverride}
                         onChange={(e) =>
                           updatePrefs({ releaseRepoOverride: e.target.value })
                         }
-                        placeholder="例如 lizhihufa/huaweiyunapp，留空=当前仓库"
+                        placeholder="例如 lizhihufa/huaweiyunapp，留空=自动"
                         spellCheck={false}
-            />
-          </label>
+                      />
+                    </label>
                     <p className="muted small">
-                      当前生效：
+                      GitHub 当前：
                       {releaseTarget.owner
                         ? `${formatGithubOwnerRepo(
                             releaseTarget.owner,
@@ -4130,9 +3990,35 @@ export default function App() {
                           )}（${
                             releaseTarget.source === "settings"
                               ? "设置指定"
-                              : "当前仓库远程"
+                              : "远程"
                           }）`
-                        : "未识别到 GitHub 仓库，请填写上方或配置 origin"}
+                        : "未识别"}
+                    </p>
+                    <label className="settings-field" style={{ marginTop: "0.55rem" }}>
+                      <span>Gitee（owner/repo）</span>
+                      <input
+                        value={prefs.releaseGiteeRepoOverride}
+                        onChange={(e) =>
+                          updatePrefs({
+                            releaseGiteeRepoOverride: e.target.value,
+                          })
+                        }
+                        placeholder="例如 lizhihufa/huaweiyunapp，留空=自动"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <p className="muted small">
+                      Gitee 当前：
+                      {releaseGiteeTarget.owner
+                        ? `${formatGithubOwnerRepo(
+                            releaseGiteeTarget.owner,
+                            releaseGiteeTarget.repo,
+                          )}（${
+                            releaseGiteeTarget.source === "settings"
+                              ? "设置指定"
+                              : "远程"
+                          }）`
+                        : "未识别"}
                     </p>
                   </div>
                 </section>
@@ -4323,7 +4209,7 @@ export default function App() {
       <header className="toolbar">
         <div className="toolbar-left">
           <button type="button" onClick={pickFolder} disabled={busy} title="打开其他项目文件夹">
-            打开…
+            {i18n(prefs.locale || "zh-CN", "toolbar.open")}…
           </button>
           <button
             type="button"
@@ -4331,13 +4217,13 @@ export default function App() {
             disabled={busy}
             title="重新读取仓库状态（F5 / Ctrl+R）"
           >
-            刷新
+            {i18n(prefs.locale || "zh-CN", "toolbar.refresh")}
           </button>
           <button type="button" onClick={() => openSettings()} disabled={busy}>
-            设置
+            {i18n(prefs.locale || "zh-CN", "welcome.settings")}
           </button>
           <button type="button" onClick={() => setShowHelp(true)} disabled={busy}>
-            说明书
+            {i18n(prefs.locale || "zh-CN", "welcome.help")}
           </button>
           <button
             type="button"
@@ -4345,7 +4231,7 @@ export default function App() {
             disabled={busy}
             title={`关于青枝 v${appVersion}`}
           >
-            关于
+            {i18n(prefs.locale || "zh-CN", "nav.about")}
           </button>
           <div className="repo-title">
             <strong title={repoPath ?? undefined}>{status?.branch ?? "…"}</strong>
@@ -4412,7 +4298,7 @@ export default function App() {
               );
             }}
           >
-              获取
+              {i18n(prefs.locale || "zh-CN", "toolbar.fetch")}
           </button>
             {remotes.length > 0 && (
               <>
@@ -4503,11 +4389,11 @@ export default function App() {
                 ? "…"
                 : pullMode === "rebase"
                   ? behind > 0
-                    ? `变基拉取 ↓${behind}`
-                    : "变基拉取"
+                    ? `${i18n(prefs.locale || "zh-CN", "toolbar.pull")}↓${behind}`
+                    : i18n(prefs.locale || "zh-CN", "toolbar.pull")
                   : behind > 0
-                    ? `拉取 ↓${behind}`
-                    : "拉取"}
+                    ? `${i18n(prefs.locale || "zh-CN", "toolbar.pull")} ↓${behind}`
+                    : i18n(prefs.locale || "zh-CN", "toolbar.pull")}
           </button>
             <button
               type="button"
@@ -4595,12 +4481,12 @@ export default function App() {
                   : ahead > 0
                     ? activePushRemote &&
                       activePushRemote !== defaultRemoteName
-                      ? `推送 ${activePushRemote} ↑${ahead}`
-                      : `推送 ↑${ahead}`
+                      ? `${i18n(prefs.locale || "zh-CN", "toolbar.push")} ${activePushRemote} ↑${ahead}`
+                      : `${i18n(prefs.locale || "zh-CN", "toolbar.push")} ↑${ahead}`
                     : activePushRemote &&
                         activePushRemote !== defaultRemoteName
-                      ? `推送 ${activePushRemote}`
-                      : "推送"}
+                      ? `${i18n(prefs.locale || "zh-CN", "toolbar.push")} ${activePushRemote}`
+                      : i18n(prefs.locale || "zh-CN", "toolbar.push")}
           </button>
             <button
               type="button"
@@ -5667,15 +5553,23 @@ export default function App() {
           terminalWallpaperUrl={terminalWallpaperUrl}
           terminalWallpaperKind={prefs.terminalWallpaperKind}
           terminalWallpaperScrim={prefs.terminalWallpaperScrim}
+          locale={prefs.locale || "zh-CN"}
           releaseOwner={releaseTarget.owner}
           releaseRepo={releaseTarget.repo}
+          releaseGiteeOwner={releaseGiteeTarget.owner}
+          releaseGiteeRepo={releaseGiteeTarget.repo}
+          releasePlatform={releasePlatform}
+          onReleasePlatform={setReleasePlatform}
+          giteeLoggedIn={Boolean(accounts?.gitee.loggedIn)}
           releaseDefaultTag=""
           githubLoggedIn={Boolean(accounts?.github.loggedIn)}
           updateBusy={updateBusy}
           onUpdateBusy={setUpdateBusy}
           onNotice={setNotice}
           onError={setError}
-          onOpenAuth={() => openSettingsAuth("github")}
+          onOpenAuth={() =>
+            openSettingsAuth(releasePlatform === "gitee" ? "gitee" : "github")
+          }
           onConfigureReleaseRepo={() => openSettings("behavior")}
           updateProgress={updateProgress}
           onRunCommand={(line) => {

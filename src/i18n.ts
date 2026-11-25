@@ -3,37 +3,26 @@ export type LocaleOption = {
   label: string;
 };
 
-/** Full built-in language catalog (add from this list only). */
+/** Supported UI languages (Chinese + English only). */
 export const LOCALE_CATALOG: LocaleOption[] = [
   { code: "zh-CN", label: "中文（简体）" },
-  { code: "zh-TW", label: "中文（繁體）" },
   { code: "en", label: "English" },
-  { code: "ja", label: "日本語" },
-  { code: "ko", label: "한국어" },
-  { code: "fr", label: "Français" },
-  { code: "de", label: "Deutsch" },
-  { code: "es", label: "Español" },
-  { code: "pt", label: "Português" },
-  { code: "ru", label: "Русский" },
-  { code: "it", label: "Italiano" },
-  { code: "vi", label: "Tiếng Việt" },
-  { code: "th", label: "ไทย" },
-  { code: "id", label: "Bahasa Indonesia" },
-  { code: "ar", label: "العربية" },
-  { code: "hi", label: "हिन्दी" },
-  { code: "tr", label: "Türkçe" },
-  { code: "pl", label: "Polski" },
-  { code: "nl", label: "Nederlands" },
-  { code: "sv", label: "Svenska" },
 ];
 
-/** @deprecated use LOCALE_CATALOG — kept for any old imports */
-export const BUILTIN_LOCALES = LOCALE_CATALOG.filter((l) =>
-  ["zh-CN", "en"].includes(l.code),
-).map((l) => ({ ...l, builtin: true as const }));
+/** @deprecated use LOCALE_CATALOG */
+export const BUILTIN_LOCALES = LOCALE_CATALOG.map((l) => ({
+  ...l,
+  builtin: true as const,
+}));
 
 export function localeLabel(code: string): string {
   return LOCALE_CATALOG.find((l) => l.code === code)?.label ?? code;
+}
+
+export function normalizeLocale(code: string): string {
+  const c = (code || "").trim();
+  if (c.toLowerCase() === "en" || c.toLowerCase().startsWith("en-")) return "en";
+  return "zh-CN";
 }
 
 type Dict = Record<string, string>;
@@ -59,11 +48,7 @@ const ZH: Dict = {
   "nav.about": "关于",
   "nav.about.desc": "版本与更新",
   "lang.title": "语言",
-  "lang.hint":
-    "从内置语言中添加并切换。可删除不需要的语言（至少保留一种）。",
-  "lang.add": "添加语言",
-  "lang.pick": "选择要添加的语言",
-  "lang.remove": "删除",
+  "lang.hint": "界面支持中文与英文，切换后立即生效。",
   "lang.current": "当前界面语言",
   "net.title": "网络",
   "net.mirror.title": "GitHub 加速镜像",
@@ -73,7 +58,7 @@ const ZH: Dict = {
   "net.mirror.custom": "自定义镜像前缀",
   "net.hosts.title": "Hosts 自动改 IP",
   "net.hosts.hint":
-    "开启后自动解析 GitHub IP 并写入系统 Hosts（Windows 可能弹出 UAC）。IP 会变化，可随时刷新；长期更推荐代理/镜像。",
+    "开启后自动解析 GitHub IP 并写入系统 Hosts（Windows 可能弹出 UAC）。开启期间会定期刷新 IP；长期更推荐代理/镜像。",
   "net.hosts.auto": "自动写入 GitHub Hosts",
   "net.hosts.auto.desc": "解析 IP 并写入；关闭时清除青枝写入的片段",
   "net.hosts.refresh": "刷新 IP 并写入",
@@ -94,6 +79,59 @@ const ZH: Dict = {
   "reset.data.desc":
     "清空最近打开、仓库缓存、壁纸副本与本地偏好等应用数据（系统 Git 凭据需另行退出登录）。",
   "about.title": "关于青枝",
+  "pane.diff": "差异",
+  "pane.history": "历史",
+  "pane.stash": "储藏",
+  "pane.tags": "标签",
+  "pane.terminal": "终端",
+  "pane.releases": "Release",
+  "welcome.open": "打开文件夹",
+  "welcome.clone": "克隆",
+  "welcome.settings": "设置",
+  "welcome.help": "说明书",
+  "toolbar.open": "打开",
+  "toolbar.refresh": "刷新",
+  "toolbar.fetch": "获取",
+  "toolbar.pull": "拉取",
+  "toolbar.push": "推送",
+  "release.title": "标题",
+  "release.titlePh": "例如：青枝；留空则用 Tag",
+  "release.pick": "选择文件",
+  "release.upload": "上传",
+  "release.refresh": "刷新",
+  "release.refreshing": "刷新中",
+  "release.notes": "说明",
+  "release.hideNotes": "收起说明",
+  "release.notesPh": "新建 Release 时的说明（已有 Tag 则忽略）",
+  "release.empty": "还没有 Release。选择文件并上传后会自动创建。",
+  "release.open": "打开",
+  "release.delete": "删除",
+  "release.download": "下载",
+  "release.noAssets": "无附件",
+  "release.goSettings": "去设置",
+  "release.fileFilter": "安装包 / 文件",
+  "release.pickTitle": "选择要上传的 Release 文件",
+  "release.noGithubRepo": "未识别到 GitHub 仓库：请配置 origin，或在设置中手动指定",
+  "release.noGiteeRepo": "未识别到 Gitee 仓库：请配置 gitee 远程，或在设置中手动指定",
+  "release.needFile": "请先选择要上传的文件",
+  "release.needGithub": "请先登录 GitHub（需要仓库写权限）",
+  "release.needGitee": "请先登录 Gitee（需要仓库写权限）",
+  "release.needLoginHint": "上传/删除需登录",
+  "release.uploadTo": "上传到",
+  "release.file": "文件",
+  "release.autoCreate": "若 Tag 不存在会自动创建 Release。",
+  "release.uploadConfirm": "上传到 Release",
+  "release.uploadingGithub": "正在上传到 GitHub Releases…",
+  "release.uploadingGitee": "正在上传到 Gitee Releases…",
+  "release.uploaded": "已上传",
+  "release.deleteAssetAsk": "从",
+  "release.deleteAsset": "删除附件",
+  "release.deletedAsset": "已删除附件",
+  "release.deleteReleaseAsk": "删除整个 Release",
+  "release.deleteRelease": "删除 Release",
+  "release.keepTag": "不会删除 Git Tag。",
+  "release.deletedRelease": "已删除 Release",
+  "release.fillForm": "填入上方标题 / Tag",
 };
 
 const EN: Dict = {
@@ -117,11 +155,7 @@ const EN: Dict = {
   "nav.about": "About",
   "nav.about.desc": "Version & updates",
   "lang.title": "Language",
-  "lang.hint":
-    "Enable languages from the built-in catalog. You can remove unused ones (keep at least one).",
-  "lang.add": "Add language",
-  "lang.pick": "Choose a language to add",
-  "lang.remove": "Remove",
+  "lang.hint": "Chinese and English are supported. Changes apply immediately.",
   "lang.current": "Current UI language",
   "net.title": "Network",
   "net.mirror.title": "GitHub download mirror",
@@ -131,7 +165,7 @@ const EN: Dict = {
   "net.mirror.custom": "Custom mirror prefix",
   "net.hosts.title": "Hosts auto IP",
   "net.hosts.hint":
-    "When enabled, resolve GitHub IPs and write system hosts (may prompt UAC on Windows). IPs change — refresh anytime; prefer proxy/mirror long-term.",
+    "When enabled, resolve GitHub IPs and write system hosts (may prompt UAC on Windows). IPs refresh periodically while enabled; prefer proxy/mirror long-term.",
   "net.hosts.auto": "Auto-write GitHub hosts",
   "net.hosts.auto.desc": "Resolve IPs and write; turning off removes Qingzhi’s block",
   "net.hosts.refresh": "Refresh IPs & write",
@@ -152,6 +186,59 @@ const EN: Dict = {
   "reset.data.desc":
     "Clear recent repos, cache, wallpaper copies and local prefs (sign out separately for Git credentials).",
   "about.title": "About Qingzhi",
+  "pane.diff": "Diff",
+  "pane.history": "History",
+  "pane.stash": "Stash",
+  "pane.tags": "Tags",
+  "pane.terminal": "Terminal",
+  "pane.releases": "Release",
+  "welcome.open": "Open folder",
+  "welcome.clone": "Clone",
+  "welcome.settings": "Settings",
+  "welcome.help": "Guide",
+  "toolbar.open": "Open",
+  "toolbar.refresh": "Refresh",
+  "toolbar.fetch": "Fetch",
+  "toolbar.pull": "Pull",
+  "toolbar.push": "Push",
+  "release.title": "Title",
+  "release.titlePh": "e.g. Qingzhi; leave blank to use Tag",
+  "release.pick": "Choose file",
+  "release.upload": "Upload",
+  "release.refresh": "Refresh",
+  "release.refreshing": "Refreshing",
+  "release.notes": "Notes",
+  "release.hideNotes": "Hide notes",
+  "release.notesPh": "Notes for a new Release (ignored if Tag exists)",
+  "release.empty": "No releases yet. Choose a file and upload to create one.",
+  "release.open": "Open",
+  "release.delete": "Delete",
+  "release.download": "Download",
+  "release.noAssets": "No assets",
+  "release.goSettings": "Settings",
+  "release.fileFilter": "Installer / file",
+  "release.pickTitle": "Choose a Release asset to upload",
+  "release.noGithubRepo": "No GitHub repo detected — set origin or override in Settings",
+  "release.noGiteeRepo": "No Gitee repo detected — set a gitee remote or override in Settings",
+  "release.needFile": "Choose a file to upload first",
+  "release.needGithub": "Sign in to GitHub first (write access required)",
+  "release.needGitee": "Sign in to Gitee first (write access required)",
+  "release.needLoginHint": "sign in to upload/delete",
+  "release.uploadTo": "Upload to",
+  "release.file": "File",
+  "release.autoCreate": "A Release will be created if the Tag does not exist.",
+  "release.uploadConfirm": "Upload to Release",
+  "release.uploadingGithub": "Uploading to GitHub Releases…",
+  "release.uploadingGitee": "Uploading to Gitee Releases…",
+  "release.uploaded": "Uploaded",
+  "release.deleteAssetAsk": "Delete asset from",
+  "release.deleteAsset": "Delete asset",
+  "release.deletedAsset": "Deleted asset",
+  "release.deleteReleaseAsk": "Delete entire Release",
+  "release.deleteRelease": "Delete Release",
+  "release.keepTag": "The Git tag will not be deleted.",
+  "release.deletedRelease": "Deleted Release",
+  "release.fillForm": "Fill title / Tag above",
 };
 
 const TABLES: Record<string, Dict> = {
@@ -160,11 +247,11 @@ const TABLES: Record<string, Dict> = {
 };
 
 export function t(locale: string, key: string): string {
-  const primary = TABLES[locale] ?? TABLES["zh-CN"]!;
-  const fallback = ZH;
-  return primary[key] ?? TABLES.en?.[key] ?? fallback[key] ?? key;
+  const loc = normalizeLocale(locale);
+  const primary = TABLES[loc] ?? TABLES["zh-CN"]!;
+  return primary[key] ?? TABLES.en?.[key] ?? ZH[key] ?? key;
 }
 
 export function applyDocumentLocale(locale: string) {
-  document.documentElement.lang = locale || "zh-CN";
+  document.documentElement.lang = normalizeLocale(locale);
 }

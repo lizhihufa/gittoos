@@ -18,6 +18,7 @@ use git::{
     push_tag, push_with_options, read_identity, read_workdir_file, rebase_branch,
     rebase_interactive, remove_remote, rename_branch, repo_status, repo_status_light_nonblocking,
     reset_to_commit, revert_commit, run_shell, set_app_handle, set_remote_url, setup_actions_mirror,
+    trigger_reverse_actions_mirror,
     set_upstream, skip_rebase, stage_paths, staged_large_files, stash_apply, stash_drop, stash_pop,
     stash_push, stash_show, undo_last_commit, unstage_paths, with_git_quiet, write_identity,
     write_workdir_file,
@@ -388,6 +389,28 @@ fn list_system_wallpapers() -> Result<Vec<SystemWallpaperItem>, String> {
         collect_dir_wallpapers(&mut out, &mut seen, &dir, source, true);
     }
 
+    // Dynamic wallpapers: user Videos + common sample clips under Windows
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        let videos = PathBuf::from(&user_profile).join("Videos");
+        collect_dir_wallpapers(&mut out, &mut seen, &videos, "videos", true);
+        // One more level for nested album folders
+        if let Ok(entries) = std::fs::read_dir(&videos) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    collect_dir_wallpapers(&mut out, &mut seen, &p, "videos", true);
+                }
+            }
+        }
+    }
+    collect_dir_wallpapers(
+        &mut out,
+        &mut seen,
+        Path::new(r"C:\Windows\Web"),
+        "windows-video",
+        true,
+    );
+
     // Prefer desktop first; then cap list size for UI
     out.sort_by(|a, b| {
         let rank = |s: &str| match s {
@@ -395,13 +418,16 @@ fn list_system_wallpapers() -> Result<Vec<SystemWallpaperItem>, String> {
             "themes" => 1,
             "cached" => 2,
             "spotlight" => 3,
-            _ => 4,
+            "windows" => 4,
+            "windows-video" => 5,
+            "videos" => 6,
+            _ => 7,
         };
         rank(&a.source)
             .cmp(&rank(&b.source))
             .then(a.label.cmp(&b.label))
     });
-    out.truncate(48);
+    out.truncate(64);
     Ok(out)
 }
 
@@ -970,6 +996,15 @@ fn get_actions_mirror_status(
 ) -> Result<ActionsMirrorStatus, String> {
     let repo = repo_path(&path)?;
     with_git_quiet(|| with_git(&state, |git| actions_mirror_status(git, &repo)))
+}
+
+#[tauri::command]
+async fn trigger_reverse_actions_mirror_cmd(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    let repo = repo_path(&path)?;
+    with_git_async(&state, move |git| trigger_reverse_actions_mirror(git, &repo)).await
 }
 
 #[tauri::command]
@@ -1720,6 +1755,62 @@ async fn delete_github_release(
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn publish_gitee_release(
+    file_path: String,
+    tag: String,
+    title: Option<String>,
+    notes: Option<String>,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<update::PublishResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::publish_gitee_release(&file_path, &tag, title, notes, owner, repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn list_gitee_releases(
+    owner: Option<String>,
+    repo: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<update::ReleaseItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::list_gitee_releases(owner, repo, limit)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn delete_gitee_release_asset(
+    release_id: u64,
+    asset_id: u64,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::delete_gitee_release_asset(release_id, asset_id, owner, repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn delete_gitee_release(
+    release_id: u64,
+    owner: Option<String>,
+    repo: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::delete_gitee_release(release_id, owner, repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(windows)]
@@ -1769,6 +1860,7 @@ pub fn run() {
             amend_last_commit,
             clone_repo,
             setup_actions_mirror_cmd,
+            trigger_reverse_actions_mirror_cmd,
             get_actions_mirror_status,
             get_branches,
             get_remote_branches,
@@ -1843,6 +1935,10 @@ pub fn run() {
             list_github_releases,
             delete_github_release_asset,
             delete_github_release,
+            publish_gitee_release,
+            list_gitee_releases,
+            delete_gitee_release_asset,
+            delete_gitee_release,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

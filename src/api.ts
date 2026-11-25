@@ -89,6 +89,8 @@ export const api = {
     invoke<import("./types").ActionsMirrorStatus>("get_actions_mirror_status", {
       path,
     }),
+  triggerReverseActionsMirror: (path: string) =>
+    invoke<string>("trigger_reverse_actions_mirror_cmd", { path }),
   getStatus: (path: string) => invoke<RepoStatus>("get_status", { path }),
   getStatusLight: (path: string) =>
     invoke<RepoStatus>("get_status_light", { path }),
@@ -342,6 +344,46 @@ export const api = {
     }),
   deleteGithubRelease: (releaseId: number, owner?: string, repo?: string) =>
     invoke<void>("delete_github_release", {
+      releaseId,
+      owner: owner ?? null,
+      repo: repo ?? null,
+    }),
+  publishGiteeRelease: (opts: {
+    filePath: string;
+    tag: string;
+    title?: string;
+    notes?: string;
+    owner?: string;
+    repo?: string;
+  }) =>
+    invoke<PublishResult>("publish_gitee_release", {
+      filePath: opts.filePath,
+      tag: opts.tag,
+      title: opts.title ?? null,
+      notes: opts.notes ?? null,
+      owner: opts.owner ?? null,
+      repo: opts.repo ?? null,
+    }),
+  listGiteeReleases: (owner?: string, repo?: string, limit?: number) =>
+    invoke<ReleaseItem[]>("list_gitee_releases", {
+      owner: owner ?? null,
+      repo: repo ?? null,
+      limit: limit ?? null,
+    }),
+  deleteGiteeReleaseAsset: (
+    releaseId: number,
+    assetId: number,
+    owner?: string,
+    repo?: string,
+  ) =>
+    invoke<void>("delete_gitee_release_asset", {
+      releaseId,
+      assetId,
+      owner: owner ?? null,
+      repo: repo ?? null,
+    }),
+  deleteGiteeRelease: (releaseId: number, owner?: string, repo?: string) =>
+    invoke<void>("delete_gitee_release", {
       releaseId,
       owner: owner ?? null,
       repo: repo ?? null,

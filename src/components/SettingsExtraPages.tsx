@@ -6,11 +6,7 @@ import {
   DEFAULT_GITHUB_HOSTS,
   GITHUB_MIRROR_PRESETS,
 } from "../githubNetwork";
-import {
-  LOCALE_CATALOG,
-  localeLabel,
-  t as i18n,
-} from "../i18n";
+import { LOCALE_CATALOG, t as i18n } from "../i18n";
 import {
   DEFAULT_PREFS,
   type AppPrefs,
@@ -39,21 +35,7 @@ export function SettingsLanguagePage({
   prefs,
   locale,
   updatePrefs,
-  setNotice,
 }: Pick<Props, "prefs" | "locale" | "updatePrefs" | "setNotice">) {
-  const enabled = prefs.enabledLocales.length
-    ? prefs.enabledLocales
-    : ["zh-CN", "en"];
-  const available = LOCALE_CATALOG.filter(
-    (l) => !enabled.some((c) => c.toLowerCase() === l.code.toLowerCase()),
-  );
-  const [pick, setPick] = useState(available[0]?.code ?? "");
-
-  const enabledOptions = enabled.map((code) => ({
-    code,
-    label: localeLabel(code),
-  }));
-
   return (
     <section className="settings-section">
       <div className="settings-pane-intro">
@@ -68,7 +50,7 @@ export function SettingsLanguagePage({
           role="radiogroup"
           aria-label={i18n(locale, "lang.current")}
         >
-          {enabledOptions.map((opt) => (
+          {LOCALE_CATALOG.map((opt) => (
             <label
               key={opt.code}
               className={`pref-card${prefs.locale === opt.code ? " is-on" : ""}`}
@@ -77,7 +59,12 @@ export function SettingsLanguagePage({
                 type="radio"
                 name="uiLocale"
                 checked={prefs.locale === opt.code}
-                onChange={() => updatePrefs({ locale: opt.code })}
+                onChange={() =>
+                  updatePrefs({
+                    locale: opt.code,
+                    enabledLocales: ["zh-CN", "en"],
+                  })
+                }
               />
               <span className="pref-card-text">
                 <strong>{opt.label}</strong>
@@ -87,87 +74,6 @@ export function SettingsLanguagePage({
             </label>
           ))}
         </div>
-      </div>
-
-      <div className="settings-card" style={{ marginTop: "0.75rem" }}>
-        <h5>{i18n(locale, "lang.add")}</h5>
-        {available.length === 0 ? (
-          <p className="muted small">已添加全部内置语言。</p>
-        ) : (
-          <div className="row-actions" style={{ alignItems: "center" }}>
-            <label className="settings-field" style={{ flex: 1 }}>
-              <span>{i18n(locale, "lang.pick")}</span>
-              <select
-                value={pick || available[0]!.code}
-                onChange={(e) => setPick(e.target.value)}
-              >
-                {available.map((l) => (
-                  <option key={l.code} value={l.code}>
-                    {l.label} ({l.code})
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              className="primary"
-              onClick={() => {
-                const code = (pick || available[0]?.code || "").trim();
-                const item = LOCALE_CATALOG.find((l) => l.code === code);
-                if (!item) return;
-                if (
-                  enabled.some((c) => c.toLowerCase() === code.toLowerCase())
-                ) {
-                  setNotice("该语言已添加");
-                  return;
-                }
-                const next = [...enabled, code];
-                updatePrefs({ enabledLocales: next, locale: code });
-                const rest = available.filter((l) => l.code !== code);
-                setPick(rest[0]?.code ?? "");
-                setNotice(`已添加 ${item.label}`);
-              }}
-            >
-              {i18n(locale, "lang.add")}
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="settings-card" style={{ marginTop: "0.75rem" }}>
-        <h5>已启用语言</h5>
-        <ul className="settings-locale-list">
-          {enabledOptions.map((c) => (
-            <li key={c.code}>
-              <span>
-                {c.label} <code>{c.code}</code>
-                {prefs.locale === c.code ? " · 当前" : ""}
-              </span>
-              <button
-                type="button"
-                className="linkish"
-                disabled={enabled.length <= 1}
-                onClick={() => {
-                  if (enabled.length <= 1) {
-                    setNotice("至少保留一种语言");
-                    return;
-                  }
-                  const next = enabled.filter((x) => x !== c.code);
-                  updatePrefs({
-                    enabledLocales: next,
-                    locale:
-                      prefs.locale === c.code
-                        ? next[0] ?? "zh-CN"
-                        : prefs.locale,
-                  });
-                  setNotice(`已删除 ${c.label}`);
-                }}
-              >
-                {i18n(locale, "lang.remove")}
-              </button>
-            </li>
-          ))}
-        </ul>
       </div>
     </section>
   );
@@ -217,6 +123,42 @@ export function SettingsNetworkPage({
     await refreshHostsStatus();
     return path;
   };
+
+  // While auto mode is on, periodically re-resolve IPs (GitHub addresses drift).
+  useEffect(() => {
+    if (!prefs.hostsAuto) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        let block = "";
+        try {
+          block = await api.resolveGithubHosts();
+        } catch {
+          block = (prefs.hostsText || DEFAULT_GITHUB_HOSTS).trim();
+        }
+        if (!block || cancelled) return;
+        await api.applySystemHosts(block);
+        updatePrefs({ hostsText: block, hostsAuto: true });
+        await refreshHostsStatus();
+      } catch {
+        /* keep last known hosts */
+      }
+    };
+    // Refresh once shortly after enabling / opening this page
+    const soon = window.setTimeout(() => {
+      void tick();
+    }, 2500);
+    const timer = window.setInterval(() => {
+      void tick();
+    }, 6 * 60 * 60 * 1000); // 6h
+    return () => {
+      cancelled = true;
+      window.clearTimeout(soon);
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when auto toggles
+  }, [prefs.hostsAuto]);
 
   const clearHosts = async (): Promise<string> => {
     const path = await api.applySystemHosts("");

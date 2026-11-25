@@ -73,6 +73,8 @@ export interface AppPrefs {
   terminalWallpaperKind: "none" | "image";
   terminalWallpaperScrim: number;
   releaseRepoOverride: string;
+  /** Manual Gitee owner/repo for Release pane; empty = detect from remotes. */
+  releaseGiteeRepoOverride: string;
   mirrorSyncMethod: "app" | "actions";
   locale: string;
   /** Enabled locale codes chosen from the built-in catalog. */
@@ -100,6 +102,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   terminalWallpaperKind: "none",
   terminalWallpaperScrim: 55,
   releaseRepoOverride: "",
+  releaseGiteeRepoOverride: "",
   mirrorSyncMethod: "app",
   locale: "zh-CN",
   enabledLocales: ["zh-CN", "en"],
@@ -132,31 +135,18 @@ function parseHexColor(value: unknown, fallback: string): string {
   return fallback;
 }
 
-function parseEnabledLocales(value: unknown, locale: string): string[] {
-  const raw = Array.isArray(value)
-    ? value.filter((x): x is string => typeof x === "string" && !!x.trim())
-    : [];
-  // Migrate old customLocales shape
-  const fromCustom =
-    Array.isArray(value) &&
-    value.some((x) => x && typeof x === "object" && "code" in (x as object))
-      ? (value as { code?: string }[])
-          .map((x) => String(x.code ?? "").trim())
-          .filter(Boolean)
-      : [];
-  let list = (raw.length ? raw : fromCustom).map((s) => s.trim());
-  if (!list.length) list = [...DEFAULT_PREFS.enabledLocales];
-  if (locale && !list.includes(locale)) list = [...list, locale];
-  // unique
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const c of list) {
-    const key = c.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(c);
+function parseEnabledLocales(_value: unknown, _locale: string): string[] {
+  // Only zh-CN / en are supported; always keep both available.
+  return ["zh-CN", "en"];
+}
+
+function parseLocale(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return "zh-CN";
+  if (raw.toLowerCase() === "en" || raw.toLowerCase().startsWith("en-")) {
+    return "en";
   }
-  return out.slice(0, 32);
+  return "zh-CN";
 }
 
 export function loadCloneUrl(): string {
@@ -188,10 +178,7 @@ export function loadPrefs(): AppPrefs {
     const parsed = JSON.parse(raw) as Partial<AppPrefs> & {
       customLocales?: unknown;
     };
-    const locale =
-      typeof parsed.locale === "string" && parsed.locale.trim()
-        ? parsed.locale.trim()
-        : "zh-CN";
+    const locale = parseLocale(parsed.locale);
     const termKindRaw = parseWallpaperKind(parsed.terminalWallpaperKind);
     const terminalWallpaperKind: "none" | "image" =
       termKindRaw === "image" ? "image" : "none";
@@ -226,6 +213,10 @@ export function loadPrefs(): AppPrefs {
       releaseRepoOverride:
         typeof parsed.releaseRepoOverride === "string"
           ? parsed.releaseRepoOverride.trim()
+          : "",
+      releaseGiteeRepoOverride:
+        typeof parsed.releaseGiteeRepoOverride === "string"
+          ? parsed.releaseGiteeRepoOverride.trim()
           : "",
       mirrorSyncMethod:
         parsed.mirrorSyncMethod === "actions" ? "actions" : "app",
