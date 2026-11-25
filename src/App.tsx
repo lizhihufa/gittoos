@@ -1765,25 +1765,45 @@ export default function App() {
     }
 
     setError(null);
-    setNotice("正在检查大文件…");
+    setNotice(null);
+    // Show the always-on slim progress bar while scanning staged blobs.
+    busyRef.current = true;
+    setBusy(true);
+    setSyncProgress({
+      label: "检查大文件",
+      percent: 12,
+      detail: "扫描暂存区",
+    });
     try {
       const files = await api.listStagedLargeFiles(
         repoPath,
         LARGE_FILE_LIMIT_BYTES,
       );
-      setNotice(null);
+      setSyncProgress({
+        label: "检查大文件",
+        percent: 100,
+        detail: "完成",
+      });
       if (files.length > 0) {
         const exclude: Record<string, boolean> = {};
         for (const f of files) exclude[f.path] = true;
         setLargeCommit({ mode, message: msg, files, exclude });
+        busyRef.current = false;
+        setBusy(false);
+        setSyncProgress(null);
         return;
       }
     } catch (e) {
-      setNotice(null);
+      busyRef.current = false;
+      setBusy(false);
+      setSyncProgress(null);
       setError(failureLine(e));
       return;
     }
 
+    busyRef.current = false;
+    setBusy(false);
+    setSyncProgress(null);
     void runAction(
       async () => {
         if (mode === "amend") {
