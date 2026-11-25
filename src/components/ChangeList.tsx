@@ -21,15 +21,18 @@ interface Props {
 }
 
 function collapseKey(sectionId: string) {
-  return `gittool.collapse.${sectionId}`;
+  return `gittool.collapse.v2.${sectionId}`;
 }
 
-function loadCollapsed(sectionId: string): boolean {
+function loadCollapsed(sectionId: string, fallback = true): boolean {
   try {
-    return sessionStorage.getItem(collapseKey(sectionId)) === "1";
+    const raw = sessionStorage.getItem(collapseKey(sectionId));
+    if (raw === "1") return true;
+    if (raw === "0") return false;
   } catch {
-    return false;
+    /* ignore */
   }
+  return fallback;
 }
 
 function saveCollapsed(sectionId: string, collapsed: boolean) {
@@ -55,7 +58,9 @@ export function ChangeList({
   onIgnore,
   onFileHistory,
 }: Props) {
-  const [collapsed, setCollapsed] = useState(() => loadCollapsed(sectionId));
+  const [collapsed, setCollapsed] = useState(() =>
+    loadCollapsed(sectionId, true),
+  );
 
   useEffect(() => {
     saveCollapsed(sectionId, collapsed);
@@ -107,11 +112,7 @@ export function ChangeList({
         </div>
       </div>
       {!collapsed &&
-        (files.length === 0 ? (
-          <p className="muted small pad">
-            {stagedSection ? "暂无已暂存文件" : "暂无未暂存改动"}
-          </p>
-        ) : (
+        (files.length === 0 ? null : (
           <ul className="file-list">
             {files.map((file) => (
               <li

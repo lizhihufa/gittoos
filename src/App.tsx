@@ -310,7 +310,6 @@ export default function App() {
     remote: string;
     remoteBranch: string;
   } | null>(null);
-  const [fetchMenuOpen, setFetchMenuOpen] = useState(false);
   const [pushRemote, setPushRemote] = useState<string | null>(null);
   const [blameText, setBlameText] = useState<string | null>(null);
   const [showReflog, setShowReflog] = useState(false);
@@ -604,9 +603,22 @@ export default function App() {
     setIdentitySaved(
       Boolean(core.identity.name.trim() && core.identity.email.includes("@")),
     );
-    setRemotes(core.remotes);
+    // Ensure remotes referenced by remote-tracking branches still appear
+    // even if a stale cache omitted them.
+    const mergedRemotes = [...core.remotes];
+    const seen = new Set(mergedRemotes.map((r) => r.name));
+    for (const rb of core.remoteBranches) {
+      const name = (rb.remote || rb.name.split("/")[0] || "").trim();
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        mergedRemotes.push({ name, url: "" });
+      }
+    }
+    setRemotes(mergedRemotes);
     const origin =
-      core.remotes.find((remote) => remote.name === "origin") ?? core.remotes[0];
+      mergedRemotes.find((remote) => remote.name === "origin") ??
+      mergedRemotes.find((remote) => /github\.com/i.test(remote.url)) ??
+      mergedRemotes[0];
     setRemoteUrl(origin?.url ?? "");
   }, []);
 
@@ -1004,6 +1016,71 @@ export default function App() {
     },
     [openFolder, openRepos, repoPath],
   );
+
+  /** Leave the current repo UI and return to the welcome page; keep open tabs. */
+  const goHome = useCallback(() => {
+    if (!repoPath) return;
+    repoPathRef.current = null;
+    setRepoPath(null);
+    setStatus(null);
+    setSelected(null);
+    setDiff("");
+    setMessage("");
+    setBoot(null);
+    setEntering(false);
+    busyRef.current = false;
+    setBusy(false);
+    setError(null);
+    setNotice(null);
+  }, [repoPath]);
+
+  const renderRepoTabs = () => {
+    if (openRepos.length === 0) return null;
+    return (
+      <div className="repo-tabs" role="tablist" aria-label="已打开仓库">
+        {openRepos.map((path) => (
+          <div
+            key={path}
+            className={`repo-tab ${path === repoPath ? "active" : ""}`}
+            role="tab"
+            aria-selected={path === repoPath}
+          >
+            <button
+              type="button"
+              className="repo-tab-open"
+              disabled={busy}
+              title={path}
+              onClick={() => {
+                if (path !== repoPath) void openFolder(path);
+              }}
+            >
+              {folderName(path)}
+            </button>
+            <button
+              type="button"
+              className="repo-tab-close"
+              disabled={busy}
+              title="关闭标签"
+              aria-label={`关闭 ${folderName(path)}`}
+              onClick={() => closeRepoTab(path)}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="repo-tab-add"
+          disabled={busy}
+          title="回到首页，打开或克隆仓库"
+          aria-label="回到首页，打开或克隆仓库"
+          onClick={goHome}
+        >
+          +
+        </button>
+      </div>
+    );
+  };
 
   const updatePrefs = useCallback((patch: Partial<AppPrefs>) => {
     setPrefs((prev) => {
@@ -1637,23 +1714,38 @@ export default function App() {
   const activePushRemote = pushRemote ?? defaultRemoteName;
 
   const remoteBranchGroups = useMemo(() => {
+    const urlOf = (remoteName: string) =>
+      remotes.find((r) => r.name === remoteName)?.url ?? "";
+
     const byRemote = new Map<string, RemoteBranchInfo[]>();
     for (const rb of remoteBranches) {
-      const list = byRemote.get(rb.remote) ?? [];
-      list.push(rb);
-      byRemote.set(rb.remote, list);
+      // Guard: some git versions expose odd short names; prefer explicit remote.
+      const remoteName = (rb.remote || rb.name.split("/")[0] || "").trim();
+      if (!remoteName) continue;
+      const list = byRemote.get(remoteName) ?? [];
+      list.push({ ...rb, remote: remoteName });
+      byRemote.set(remoteName, list);
     }
-    // Always include every configured remote (e.g. GitHub origin), even if
-    // its branches have not been fetched yet — otherwise only Gitee may appear.
+
+    // Always list every configured remote (GitHub origin, Gitee, …),
+    // even when its branches have not been fetched yet.
     const names: string[] = [];
-    for (const r of remotes) {
-      if (!names.includes(r.name)) names.push(r.name);
-    }
-    for (const name of byRemote.keys()) {
-      if (!names.includes(name)) names.push(name);
-    }
+    const pushName = (name: string) => {
+      if (name && !names.includes(name)) names.push(name);
+    };
+    for (const r of remotes) pushName(r.name);
+    for (const name of byRemote.keys()) pushName(name);
+
+    const rank = (remoteName: string) => {
+      const p = labelRemotePlatform(remoteName, urlOf(remoteName));
+      if (p === "GitHub") return 0;
+      if (p === "Gitee") return 1;
+      return 2;
+    };
+    names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+
     return names.map((remoteName) => {
-      const url = remotes.find((r) => r.name === remoteName)?.url ?? "";
+      const url = urlOf(remoteName);
       const platform = labelRemotePlatform(remoteName, url);
       const items = (byRemote.get(remoteName) ?? [])
         .slice()
@@ -1691,19 +1783,16 @@ export default function App() {
   }, [status?.operation, conflictFiles]);
 
   useEffect(() => {
-    if (!pushMenuOpen && !pullMenuOpen && !fetchMenuOpen) return;
+    if (!pushMenuOpen && !pullMenuOpen) return;
     const onPointer = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target?.closest(".push-split")) return;
-      if (target?.closest(".pull-split")) return;
-      if (target?.closest(".fetch-split")) return;
+      if (target?.closest(".tool-split")) return;
       setPushMenuOpen(false);
       setPullMenuOpen(false);
-      setFetchMenuOpen(false);
     };
     window.addEventListener("mousedown", onPointer);
     return () => window.removeEventListener("mousedown", onPointer);
-  }, [pushMenuOpen, pullMenuOpen, fetchMenuOpen]);
+  }, [pushMenuOpen, pullMenuOpen]);
 
   useEffect(() => {
     if (!pushRemote) return;
@@ -3401,11 +3490,10 @@ export default function App() {
               <li>打开 / 刷新：换项目或重新读取状态（F5、Ctrl+R）。</li>
               <li>关于：在设置 → 关于中查看版本、检查更新、下载安装。</li>
               <li>下方「Release」页：管理 GitHub Release 附件（上传/删除安装包）。</li>
-              <li>获取：只下载远程，不改本地文件。</li>
-              <li>拉取：合并拉取或变基拉取（▾ 切换；Ctrl+Shift+L）。</li>
-              <li>推送：直接推送 / 同步另一平台 / 强制推送（▾；Ctrl+Shift+P）。</li>
-              <li>同步方式：设置里可选「应用内同步」或「GitHub Actions 双向镜像」（一键安装）。</li>
-              <li>克隆：可指定分支、浅克隆深度。</li>
+              <li>克隆 · 拉取 · 推送：三个独立按钮，避免挤在一组。</li>
+              <li>拉取 ▾：合并 / 变基拉取，以及「仅获取」（不改本地）；Ctrl+Shift+L。</li>
+              <li>推送 ▾：推送到指定远程 / 同步另一平台 / 强制推送；Ctrl+Shift+P。</li>
+              <li>同步方式：设置里可选「应用内同步」或「GitHub Actions 双向镜像」。</li>
               <li>↑↓ 数字：相对远程超前 / 落后的提交数。</li>
             </ul>
             <h4>改动与提交</h4>
@@ -4858,334 +4946,341 @@ export default function App() {
                 ? "登录已失效"
                 : "未登录"}
           </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void cloneRepo()}
-            title="克隆到空文件夹"
-          >
-            克隆
-          </button>
-          <div className="sync-group" role="group" aria-label="同步">
-          <div
-            className={`push-split fetch-split${fetchMenuOpen ? " is-open" : ""}`}
-          >
-          <button
-            type="button"
-            disabled={busy}
-              title="只下载远程更新，不改本地文件"
-            onClick={() => {
-              setFetchMenuOpen(false);
-              void runAction(
-                () => api.fetch(repoPath, defaultRemoteName),
-                defaultRemoteName
-                  ? `正在获取 ${defaultRemoteName}…`
-                  : "正在获取…",
-              );
-            }}
-          >
-              {i18n(prefs.locale || "zh-CN", "toolbar.fetch")}
-          </button>
-            {remotes.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  className="push-caret"
-                  disabled={busy}
-                  title="选择获取的远程"
-                  aria-expanded={fetchMenuOpen}
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setPushMenuOpen(false);
-                    setPullMenuOpen(false);
-                    setFetchMenuOpen((v) => !v);
-                  }}
-                >
-                  ▾
-                </button>
-                {fetchMenuOpen && (
-                  <div
-                    className="push-menu"
-                    role="menu"
-                    onMouseDown={(event) => event.stopPropagation()}
-                  >
-                    {remotes.map((r) => (
-                      <button
-                        key={`fetch-${r.name}`}
-                        type="button"
-                        role="menuitem"
-                        className={
-                          defaultRemoteName === r.name ? "is-active" : undefined
-                        }
-                        disabled={busy}
-                        onClick={() => {
-                          setFetchMenuOpen(false);
-                          void runAction(
-                            () => api.fetch(repoPath, r.name),
-                            `正在获取 ${r.name}…`,
-                          );
-                        }}
-                      >
-                        <strong>{r.name}</strong>
-                        <span className="muted small">{r.url}</span>
-                      </button>
-                    ))}
-                    {remotes.length > 1 && (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        disabled={busy}
-                        onClick={() => {
-                          setFetchMenuOpen(false);
-                          void runAction(
-                            () => api.fetch(repoPath, "all"),
-                            "正在获取全部远程…",
-                          );
-                        }}
-                      >
-                        <strong>全部远程</strong>
-                        <span>fetch --all --prune</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-          <div className={`push-split pull-split${pullMenuOpen ? " is-open" : ""}`}>
-          <button
-            type="button"
-              className={behind > 0 ? "primary" : undefined}
-            disabled={busy}
-              title={
-                pullMode === "rebase"
-                  ? "变基拉取（Ctrl+Shift+L）"
-                  : "下载并合并到当前分支（Ctrl+Shift+L）"
-              }
-            onClick={() => {
-              setPullMenuOpen(false);
-              void runAction(
-                () => api.pull(repoPath, false, pullMode === "rebase"),
-                pullMode === "rebase" ? "正在变基拉取…" : "正在拉取…",
-              );
-            }}
-          >
-              {busy
-                ? "…"
-                : pullMode === "rebase"
-                  ? behind > 0
-                    ? `${i18n(prefs.locale || "zh-CN", "toolbar.pull")}↓${behind}`
-                    : i18n(prefs.locale || "zh-CN", "toolbar.pull")
-                  : behind > 0
-                    ? `${i18n(prefs.locale || "zh-CN", "toolbar.pull")} ↓${behind}`
-                    : i18n(prefs.locale || "zh-CN", "toolbar.pull")}
-          </button>
+          <div className="sync-actions" role="group" aria-label="同步">
             <button
               type="button"
-              className={`push-caret${behind > 0 ? " primary" : ""}`}
+              className="tool-btn"
               disabled={busy}
-              title="选择拉取方式"
-              aria-expanded={pullMenuOpen}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                setPushMenuOpen(false);
-                setPullMenuOpen((v) => !v);
-              }}
+              onClick={() => void cloneRepo()}
+              title="克隆到空文件夹"
             >
-              ▾
+              克隆
             </button>
-            {pullMenuOpen && (
-              <div
-                className="push-menu"
-                role="menu"
-                onMouseDown={(event) => event.stopPropagation()}
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className={pullMode === "merge" ? "is-active" : undefined}
-                  disabled={busy}
-                  onClick={() => {
-                    setPullMode("merge");
-                    setPullMenuOpen(false);
-                  }}
-                >
-                  <strong>合并拉取</strong>
-                  <span>下载后合并进当前分支</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className={pullMode === "rebase" ? "is-active" : undefined}
-                  disabled={busy}
-                  onClick={() => {
-                    setPullMode("rebase");
-                    setPullMenuOpen(false);
-                  }}
-                >
-                  <strong>变基拉取</strong>
-                  <span>把本地提交接到远程之后</span>
-                </button>
-              </div>
-            )}
-          </div>
-          <div className={`push-split${pushMenuOpen ? " is-open" : ""}`}>
-          <button
-            type="button"
-              className={ahead > 0 && behind === 0 ? "primary" : undefined}
-            disabled={busy}
-              title={
-                pushMode === "mirror" && mirrorButtonLabel
-                  ? prefs.mirrorSyncMethod === "actions" &&
-                    mirrorTarget === "gitee"
-                    ? `${mirrorButtonLabel}：推送 GitHub，由 Actions 同步 Gitee（Ctrl+Shift+P）`
-                    : `${mirrorButtonLabel}：本机先推默认远程再同步（Ctrl+Shift+P）`
-                  : "直接推送到默认远程（Ctrl+Shift+P）"
-              }
-              onClick={() => {
-                setPushMenuOpen(false);
-                if (pushMode === "mirror" && mirrorTarget) {
-                  void runMirrorPush();
-                } else {
-                  void runAction(
-                    () => api.push(repoPath, false, null, activePushRemote),
-                    activePushRemote && activePushRemote !== defaultRemoteName
-                      ? `正在推送到 ${activePushRemote}…`
-                      : "正在推送…",
-                  );
+
+            <div
+              className={`tool-split${pullMenuOpen ? " is-open" : ""}${
+                behind > 0 ? " is-emphasis" : ""
+              }`}
+            >
+              <button
+                type="button"
+                className="tool-split-main"
+                disabled={busy}
+                title={
+                  pullMode === "rebase"
+                    ? "变基拉取（Ctrl+Shift+L）"
+                    : "拉取并合并到当前分支（Ctrl+Shift+L）"
                 }
-              }}
-            >
-              {busy
-                ? "…"
-                : pushMode === "mirror" && mirrorButtonLabel
-                  ? ahead > 0
-                    ? `${mirrorButtonLabel} ↑${ahead}`
-                    : mirrorButtonLabel
-                  : ahead > 0
-                    ? activePushRemote &&
-                      activePushRemote !== defaultRemoteName
-                      ? `${i18n(prefs.locale || "zh-CN", "toolbar.push")} ${activePushRemote} ↑${ahead}`
-                      : `${i18n(prefs.locale || "zh-CN", "toolbar.push")} ↑${ahead}`
-                    : activePushRemote &&
-                        activePushRemote !== defaultRemoteName
-                      ? `${i18n(prefs.locale || "zh-CN", "toolbar.push")} ${activePushRemote}`
-                      : i18n(prefs.locale || "zh-CN", "toolbar.push")}
-          </button>
-            <button
-              type="button"
-              className={`push-caret${ahead > 0 && behind === 0 ? " primary" : ""}`}
-              disabled={busy}
-              title="选择推送方式"
-              aria-expanded={pushMenuOpen}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                setPullMenuOpen(false);
-                setPushMenuOpen((v) => !v);
-              }}
-            >
-              ▾
-            </button>
-            {pushMenuOpen && (
-              <div
-                className="push-menu"
-                role="menu"
-                onMouseDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  setPullMenuOpen(false);
+                  void runAction(
+                    () => api.pull(repoPath, false, pullMode === "rebase"),
+                    pullMode === "rebase" ? "正在变基拉取…" : "正在拉取…",
+                  );
+                }}
               >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className={
-                    pushMode === "direct" && !pushRemote ? "is-active" : undefined
-                  }
-                  disabled={busy}
-                  onClick={() => {
-                    setPushMode("direct");
-                    setPushRemote(null);
-                    setPushMenuOpen(false);
-                  }}
+                {busy
+                  ? "…"
+                  : behind > 0
+                    ? `拉取 ↓${behind}`
+                    : pullMode === "rebase"
+                      ? "变基拉取"
+                      : "拉取"}
+              </button>
+              <button
+                type="button"
+                className="tool-split-caret"
+                disabled={busy}
+                title="拉取 / 获取选项"
+                aria-expanded={pullMenuOpen}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPushMenuOpen(false);
+                  setPullMenuOpen((v) => !v);
+                }}
+              >
+                ▾
+              </button>
+              {pullMenuOpen && (
+                <div
+                  className="push-menu"
+                  role="menu"
+                  onMouseDown={(event) => event.stopPropagation()}
                 >
-                  <strong>直接推送</strong>
-                  <span>
-                    {defaultRemoteName
-                      ? `推送到默认远程（${defaultRemoteName}）`
-                      : "推送到默认远程"}
-                  </span>
-                </button>
-                {remotes.map((r) => (
                   <button
-                    key={`push-remote-${r.name}`}
+                    type="button"
+                    role="menuitem"
+                    className={pullMode === "merge" ? "is-active" : undefined}
+                    disabled={busy}
+                    onClick={() => {
+                      setPullMode("merge");
+                      setPullMenuOpen(false);
+                      void runAction(
+                        () => api.pull(repoPath, false, false),
+                        "正在拉取…",
+                      );
+                    }}
+                  >
+                    <strong>拉取（合并）</strong>
+                    <span>下载并合并进当前分支</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={pullMode === "rebase" ? "is-active" : undefined}
+                    disabled={busy}
+                    onClick={() => {
+                      setPullMode("rebase");
+                      setPullMenuOpen(false);
+                      void runAction(
+                        () => api.pull(repoPath, false, true),
+                        "正在变基拉取…",
+                      );
+                    }}
+                  >
+                    <strong>拉取（变基）</strong>
+                    <span>把本地提交接到远程之后</span>
+                  </button>
+                  <div className="push-menu-sep" role="separator" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={busy}
+                    onClick={() => {
+                      setPullMenuOpen(false);
+                      void runAction(
+                        () => api.fetch(repoPath, defaultRemoteName),
+                        defaultRemoteName
+                          ? `正在获取 ${defaultRemoteName}…`
+                          : "正在获取…",
+                      );
+                    }}
+                  >
+                    <strong>仅获取</strong>
+                    <span>只更新远程信息，不改本地文件</span>
+                  </button>
+                  {remotes.length > 1 && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={busy}
+                      onClick={() => {
+                        setPullMenuOpen(false);
+                        void runAction(
+                          () => api.fetch(repoPath, "all"),
+                          "正在获取全部远程…",
+                        );
+                      }}
+                    >
+                      <strong>获取全部远程</strong>
+                      <span>fetch --all --prune</span>
+                    </button>
+                  )}
+                  {remotes.map((r) => (
+                    <button
+                      key={`fetch-${r.name}`}
+                      type="button"
+                      role="menuitem"
+                      disabled={busy}
+                      onClick={() => {
+                        setPullMenuOpen(false);
+                        void runAction(
+                          () => api.fetch(repoPath, r.name),
+                          `正在获取 ${r.name}…`,
+                        );
+                      }}
+                    >
+                      <strong>获取 {r.name}</strong>
+                      <span className="muted small">{r.url}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div
+              className={`tool-split${pushMenuOpen ? " is-open" : ""}${
+                ahead > 0 && behind === 0 ? " is-emphasis" : ""
+              }`}
+            >
+              <button
+                type="button"
+                className="tool-split-main"
+                disabled={busy}
+                title={
+                  pushMode === "mirror" && mirrorButtonLabel
+                    ? prefs.mirrorSyncMethod === "actions" &&
+                      mirrorTarget === "gitee"
+                      ? `${mirrorButtonLabel}：推送 GitHub，由 Actions 同步 Gitee（Ctrl+Shift+P）`
+                      : `${mirrorButtonLabel}：本机先推默认远程再同步（Ctrl+Shift+P）`
+                    : "推送到远程（Ctrl+Shift+P）"
+                }
+                onClick={() => {
+                  setPushMenuOpen(false);
+                  if (pushMode === "mirror" && mirrorTarget) {
+                    void runMirrorPush();
+                  } else {
+                    void runAction(
+                      () => api.push(repoPath, false, null, activePushRemote),
+                      activePushRemote &&
+                        activePushRemote !== defaultRemoteName
+                        ? `正在推送到 ${activePushRemote}…`
+                        : "正在推送…",
+                    );
+                  }
+                }}
+              >
+                {busy
+                  ? "…"
+                  : pushMode === "mirror" && mirrorButtonLabel
+                    ? ahead > 0
+                      ? `${mirrorButtonLabel} ↑${ahead}`
+                      : mirrorButtonLabel
+                    : ahead > 0
+                      ? activePushRemote &&
+                        activePushRemote !== defaultRemoteName
+                        ? `推送 ${activePushRemote} ↑${ahead}`
+                        : `推送 ↑${ahead}`
+                      : activePushRemote &&
+                          activePushRemote !== defaultRemoteName
+                        ? `推送 ${activePushRemote}`
+                        : "推送"}
+              </button>
+              <button
+                type="button"
+                className="tool-split-caret"
+                disabled={busy}
+                title="推送选项"
+                aria-expanded={pushMenuOpen}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPullMenuOpen(false);
+                  setPushMenuOpen((v) => !v);
+                }}
+              >
+                ▾
+              </button>
+              {pushMenuOpen && (
+                <div
+                  className="push-menu"
+                  role="menu"
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <button
                     type="button"
                     role="menuitem"
                     className={
-                      pushMode === "direct" && pushRemote === r.name
+                      pushMode === "direct" && !pushRemote
                         ? "is-active"
                         : undefined
                     }
                     disabled={busy}
                     onClick={() => {
                       setPushMode("direct");
-                      setPushRemote(r.name);
+                      setPushRemote(null);
                       setPushMenuOpen(false);
+                      void runAction(
+                        () => api.push(repoPath, false, null, null),
+                        "正在推送…",
+                      );
                     }}
                   >
-                    <strong>推送到 {r.name}</strong>
-                    <span className="muted small">{r.url}</span>
+                    <strong>推送</strong>
+                    <span>
+                      {defaultRemoteName
+                        ? `推送到 ${defaultRemoteName}`
+                        : "推送到默认远程"}
+                    </span>
                   </button>
-                ))}
-                {mirrorMenuLabel && mirrorTarget && (
+                  {remotes.map((r) => (
+                    <button
+                      key={`push-remote-${r.name}`}
+                      type="button"
+                      role="menuitem"
+                      className={
+                        pushMode === "direct" && pushRemote === r.name
+                          ? "is-active"
+                          : undefined
+                      }
+                      disabled={busy}
+                      onClick={() => {
+                        setPushMode("direct");
+                        setPushRemote(r.name);
+                        setPushMenuOpen(false);
+                        void runAction(
+                          () => api.push(repoPath, false, null, r.name),
+                          `正在推送到 ${r.name}…`,
+                        );
+                      }}
+                    >
+                      <strong>推送到 {r.name}</strong>
+                      <span className="muted small">{r.url}</span>
+                    </button>
+                  ))}
+                  {mirrorMenuLabel && mirrorTarget && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={
+                        pushMode === "mirror" ? "is-active" : undefined
+                      }
+                      disabled={busy}
+                      onClick={() => {
+                        setPushMode("mirror");
+                        setPushMenuOpen(false);
+                        void runMirrorPush();
+                      }}
+                    >
+                      <strong>{mirrorMenuLabel}</strong>
+                      <span>
+                        {prefs.mirrorSyncMethod === "actions" &&
+                        mirrorTarget === "gitee"
+                          ? "推送 GitHub，Actions 自动镜像 Gitee"
+                          : "本机先推默认远程，再同步到另一平台"}
+                      </span>
+                    </button>
+                  )}
+                  <div className="push-menu-sep" role="separator" />
                   <button
                     type="button"
                     role="menuitem"
-                    className={pushMode === "mirror" ? "is-active" : undefined}
+                    className="is-danger"
                     disabled={busy}
                     onClick={() => {
-                      setPushMode("mirror");
                       setPushMenuOpen(false);
+                      withConfirm(
+                        "强制推送会覆盖远程同名分支上的提交，确定继续？",
+                        () => {
+                          void runAction(
+                            () =>
+                              api.push(
+                                repoPath,
+                                true,
+                                null,
+                                activePushRemote,
+                              ),
+                            "正在强制推送…",
+                          );
+                        },
+                        {
+                          title: "强制推送",
+                          danger: true,
+                          confirmLabel: "强制推送",
+                        },
+                      );
                     }}
                   >
-                    <strong>{mirrorMenuLabel}</strong>
+                    <strong>强制推送</strong>
                     <span>
-                      {prefs.mirrorSyncMethod === "actions" &&
-                      mirrorTarget === "gitee"
-                        ? "推送 GitHub，Actions 自动镜像 Gitee"
-                        : "本机先推默认远程，再同步到另一平台"}
+                      覆盖
+                      {activePushRemote ? ` ${activePushRemote}` : "远程"}
                     </span>
                   </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="is-danger"
-                  disabled={busy}
-                  onClick={() => {
-                    setPushMenuOpen(false);
-                    withConfirm(
-                      "强制推送会覆盖远程同名分支上的提交，确定继续？",
-                      () => {
-                        void runAction(
-                          () =>
-                            api.push(repoPath, true, null, activePushRemote),
-                          "正在强制推送…",
-                        );
-                      },
-                      { title: "强制推送", danger: true, confirmLabel: "强制推送" },
-                    );
-                  }}
-                >
-                  <strong>强制推送</strong>
-                  <span>
-                    覆盖
-                    {activePushRemote ? ` ${activePushRemote}` : "远程"}
-                    （--force-with-lease）
-                  </span>
-                </button>
-              </div>
-            )}
-          </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -5420,40 +5515,7 @@ export default function App() {
       {renderLargeCommitDialog()}
       {renderRebaseInteractiveDialog()}
 
-      {openRepos.length > 0 && (
-        <div className="repo-tabs" role="tablist" aria-label="已打开仓库">
-          {openRepos.map((path) => (
-            <div
-              key={path}
-              className={`repo-tab ${path === repoPath ? "active" : ""}`}
-              role="tab"
-              aria-selected={path === repoPath}
-            >
-              <button
-                type="button"
-                className="repo-tab-open"
-                disabled={busy}
-                title={path}
-                onClick={() => {
-                  if (path !== repoPath) void openFolder(path);
-                }}
-              >
-                {folderName(path)}
-              </button>
-              <button
-                type="button"
-                className="repo-tab-close"
-                disabled={busy}
-                title="关闭标签"
-                aria-label={`关闭 ${folderName(path)}`}
-                onClick={() => closeRepoTab(path)}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      {renderRepoTabs()}
 
       <div className="main">
         <aside className="sidebar">
@@ -5524,7 +5586,7 @@ export default function App() {
             sectionId="branches"
             count={branches.length}
             stickyTop="0"
-            hint={branches.find((b) => b.isCurrent)?.name}
+            defaultCollapsed
           >
             <ul className="branch-list">
               {branches.map((b) => (
@@ -5809,27 +5871,17 @@ export default function App() {
             sectionId="remote-branches"
             count={remoteBranches.length}
             stickyTop="0"
-            defaultCollapsed={remoteBranches.length > 8}
-            hint={
-              remotes.length === 0
-                ? "未配置远程"
-                : remoteBranchGroups
-                    .map((g) => g.platform)
-                    .filter((v, i, a) => a.indexOf(v) === i)
-                    .join(" / ")
-            }
+            defaultCollapsed
           >
-            {remotes.length === 0 && remoteBranches.length === 0 ? (
-              <p className="muted small pad side-section-empty">
-                还没有配置远程仓库。可在设置里添加 GitHub / Gitee 地址。
-              </p>
-            ) : (
+            {remotes.length === 0 && remoteBranches.length === 0 ? null : (
               <div className="remote-branch-groups">
-                <p className="muted small remote-branch-help">
-                  「拉到本地」：还没有本地分支时会新建并跟踪远程；已有则直接切换过去。每个平台一组。
-                </p>
                 {remoteBranchGroups.map((group) => (
-                  <div key={group.remoteName} className="remote-group">
+                  <div
+                    key={`remote-group:${group.remoteName}`}
+                    className="remote-group"
+                    data-remote={group.remoteName}
+                    data-platform={group.platform}
+                  >
                     <div className="remote-group-header">
                       <span
                         className={`remote-platform-badge ${platformBadgeClass(group.platform)}`}
@@ -5850,21 +5902,22 @@ export default function App() {
                         {group.items.length}
                       </span>
                     </div>
-                    {group.items.length === 0 ? (
-                      <p className="muted small pad remote-group-empty">
-                        还没有「{group.platform}」的分支记录。请点工具栏「获取」从{" "}
-                        {group.host || group.remoteName} 下载。
-                      </p>
-                    ) : (
+                    {group.items.length === 0 ? null : (
                       <ul className="branch-list remote-branch-list">
                         {group.items.map((rb) => (
-                          <li key={rb.name}>
+                          <li key={`${group.remoteName}:${rb.name}:${rb.tip}`}>
                             <span className="remote-branch-name">
-                              <span className="branch-name">{rb.branch}</span>
+                              <span className="branch-name">
+                                <span
+                                  className={`remote-platform-badge inline ${platformBadgeClass(group.platform)}`}
+                                >
+                                  {group.platform}
+                                </span>{" "}
+                                {rb.branch}
+                              </span>
                               <span className="muted small branch-upstream">
-                                {group.platform} · {rb.name}
+                                {rb.name}
                                 {rb.tip ? ` · ${rb.tip}` : ""}
-                                {rb.hasLocal ? " · 本地已有" : ""}
                               </span>
                             </span>
                             <span className="row-actions branch-row-actions">

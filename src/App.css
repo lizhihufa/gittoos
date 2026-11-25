@@ -704,6 +704,33 @@ button.danger {
   line-height: 1;
 }
 
+.repo-tab-add {
+  flex: none;
+  align-self: stretch;
+  min-width: 1.85rem;
+  margin-left: 0.15rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px dashed var(--line);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.repo-tab-add:hover:not(:disabled) {
+  color: var(--accent, #0f6b4c);
+  border-color: color-mix(in srgb, var(--accent, #0f6b4c) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent, #0f6b4c) 8%, transparent);
+}
+
+.repo-tab-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .hunk-list {
   overflow: auto;
   min-height: 0;
@@ -1021,6 +1048,90 @@ html[data-scheme="dark"] .hunk-lines .diff-line--selected {
   align-items: center;
 }
 
+.sync-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.tool-btn {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel, #fff);
+  color: var(--text);
+  padding: 0.35rem 0.75rem;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.tool-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent, #0f6b4c) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent, #0f6b4c) 6%, #fff);
+}
+
+.tool-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel, #fff);
+  overflow: visible;
+}
+
+.tool-split.is-open {
+  z-index: 60;
+}
+
+.tool-split-main,
+.tool-split-caret {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.tool-split-main {
+  padding: 0.35rem 0.7rem;
+}
+
+.tool-split-caret {
+  min-width: 1.55rem;
+  padding: 0.35rem 0.35rem;
+  border-left: 1px solid var(--line);
+  opacity: 0.85;
+}
+
+.tool-split:hover:not(:has(button:disabled)) {
+  border-color: color-mix(in srgb, var(--accent, #0f6b4c) 35%, var(--line));
+}
+
+.tool-split-main:hover:not(:disabled),
+.tool-split-caret:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #0f6b4c) 8%, transparent);
+}
+
+.tool-split.is-emphasis {
+  border-color: var(--accent, #0f6b4c);
+  background: var(--accent, #0f6b4c);
+  color: #fff;
+}
+
+.tool-split.is-emphasis .tool-split-caret {
+  border-left-color: color-mix(in srgb, #fff 35%, transparent);
+}
+
+.tool-split.is-emphasis .tool-split-main:hover:not(:disabled),
+.tool-split.is-emphasis .tool-split-caret:hover:not(:disabled) {
+  background: color-mix(in srgb, #000 12%, var(--accent, #0f6b4c));
+}
+
+.tool-split button:disabled {
+  opacity: 0.55;
+}
+
 .push-split {
   position: relative;
   display: inline-flex;
@@ -1093,6 +1204,13 @@ html[data-scheme="dark"] .hunk-lines .diff-line--selected {
 .push-menu button span {
   font-size: 11px;
   color: var(--muted);
+}
+
+.push-menu-sep {
+  height: 1px;
+  margin: 0.25rem 0.2rem;
+  background: var(--line);
+  border: none;
 }
 
 .publish-checks {
@@ -3594,7 +3712,7 @@ button.release-row-pick:hover strong {
 }
 
 .side-section-hint {
-  max-width: 7.5rem;
+  max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3766,13 +3884,69 @@ button.release-row-pick:hover strong {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  padding-bottom: 0.35rem;
+  padding-bottom: 0.55rem;
+}
+
+.branch-remotes-note {
+  margin: 0;
+  padding: 0.4rem 0.7rem 0.35rem;
+  line-height: 1.35;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--header-bg) 40%, var(--surface));
+}
+
+.remote-configured {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.45rem 0.65rem 0.25rem;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--header-bg) 65%, var(--surface));
+}
+
+.remote-configured-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.remote-configured-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel, #fff);
+  font-size: 11.5px;
+  line-height: 1.2;
+}
+
+.remote-configured-chip > span:nth-child(2) {
+  font-weight: 650;
+}
+
+.remote-configured-chip .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 7.5rem;
+}
+
+.remote-platform-badge.inline {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 0.15rem;
 }
 
 .remote-branch-help {
   margin: 0;
   padding: 0.45rem 0.7rem 0.35rem;
   line-height: 1.35;
+}
+
+.remote-group {
+  flex: none;
 }
 
 .remote-group + .remote-group {
@@ -3855,8 +4029,10 @@ button.release-row-pick:hover strong {
 }
 
 .remote-branch-list {
-  max-height: 220px;
-  overflow: auto;
+  /* Keep all remotes (GitHub + Gitee) in normal document flow so none are
+     trapped inside a nested scroll box the user never opens. */
+  max-height: none;
+  overflow: visible;
 }
 
 .remote-branch-list .remote-branch-name {

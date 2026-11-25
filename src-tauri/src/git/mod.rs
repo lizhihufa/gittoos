@@ -1131,28 +1131,29 @@ pub fn list_remote_branches(
         .map(|b| b.name)
         .collect();
 
-    // Use full refname: short form of refs/remotes/origin/HEAD is just "origin",
-    // which would be skipped inconsistently and confuse grouping.
+    // Full refname + tab separator. Avoid NUL (Windows pipes) and avoid
+    // "%01" (cmd.exe percent-expansion). Short name of origin/HEAD is just
+    // "origin", so full refname is required for reliable parsing.
     let output = run_git(
         git,
         repo,
         &[
             "for-each-ref",
-            "--format=%(refname)%00%(objectname:short)",
+            "--format=%(refname)%09%(objectname:short)",
             "refs/remotes",
         ],
     )?;
 
     let mut branches = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for line in output.stdout.lines() {
         if line.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.split('\0').collect();
-        if parts.len() < 2 {
+        let Some((full_ref, tip)) = line.split_once('\t') else {
             continue;
-        }
-        let Some(short) = parts[0].strip_prefix("refs/remotes/") else {
+        };
+        let Some(short) = full_ref.strip_prefix("refs/remotes/") else {
             continue;
         };
         // Skip remote HEAD pointers (refs/remotes/origin/HEAD).
@@ -1165,11 +1166,14 @@ pub fn list_remote_branches(
         if remote.is_empty() || branch.is_empty() {
             continue;
         }
+        if !seen.insert(short.to_string()) {
+            continue;
+        }
         branches.push(RemoteBranchInfo {
             name: short.to_string(),
             remote: remote.to_string(),
             branch: branch.to_string(),
-            tip: parts[1].to_string(),
+            tip: tip.trim().to_string(),
             has_local: locals.contains(branch),
         });
     }
@@ -2458,12 +2462,66 @@ mod parse_tests {
 #[cfg(test)]
 mod integration {
     use super::*;
+    use crate::git::runner::resolve_git;
     use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn lists_github_and_gitee_remotes_for_this_workspace() {
+        let git = resolve_git().expect("git installed");
+        // src-tauri/src/git -> repo root is ../../..
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri parent")
+            .to_path_buf();
+        if !is_repository(&git, &repo).unwrap_or(false) {
+            return;
+        }
+        let remotes = list_remotes(&git, &repo).expect("list remotes");
+        let names: Vec<_> = remotes.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"origin") || remotes.iter().any(|r| r.url.contains("github")),
+            "expected a GitHub remote, got {remotes:?}"
+        );
+        assert!(
+            names.contains(&"gitee") || remotes.iter().any(|r| r.url.contains("gitee")),
+            "expected a Gitee remote, got {remotes:?}"
+        );
+
+        let remote_branches = list_remote_branches(&git, &repo).expect("list remote branches");
+        let remote_names: std::collections::HashSet<_> = remote_branches
+            .iter()
+            .map(|b| b.remote.as_str())
+            .collect();
+        assert!(
+            remote_names.contains("origin") || remote_names.contains("gitee"),
+            "expected origin/main and/or gitee/main, got {remote_branches:?}"
+        );
+        // If origin/main exists on disk, it must appear (this was the UI bug).
+        if repo.join(".git/refs/remotes/origin/main").is_file()
+            || repo.join(".git/packed-refs").is_file()
+        {
+            let has_origin = remote_branches.iter().any(|b| b.remote == "origin");
+            let has_ref = std::process::Command::new(&git.path)
+                .args(["show-ref", "--verify", "--quiet", "refs/remotes/origin/main"])
+                .current_dir(&repo)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if has_ref {
+                assert!(
+                    has_origin,
+                    "refs/remotes/origin/main exists but list_remote_branches omitted it: {remote_branches:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn stage_commit_and_diff_on_real_repo() {
         let git = resolve_git().expect("git installed");
-        let dir = std::env::temp_dir().join(format!("local-git-it-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("local-git-it-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 

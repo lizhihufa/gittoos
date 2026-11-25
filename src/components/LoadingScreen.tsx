@@ -37,12 +37,6 @@ export function LoadingScreen({
         <div className="boot-scrim" />
       </div>
 
-      {/* Top edge progress — no text on the bar itself */}
-      <div className="boot-progress-track" aria-hidden>
-        <div className="boot-progress-fill" style={{ width: `${pct}%` }} />
-        <div className="boot-progress-glow" style={{ left: `${pct}%` }} />
-      </div>
-
       <div className="boot-center">
         <img className="boot-mark" src="/app-icon.png" alt="" width={72} height={72} />
         <p className="boot-brand">青枝</p>

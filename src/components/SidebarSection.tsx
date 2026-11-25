@@ -12,13 +12,15 @@ interface Props {
   /** Extra actions on the header (shown when expanded, or always if alwaysShowActions). */
   actions?: ReactNode;
   alwaysShowActions?: boolean;
-  /** Hint text on the right when collapsed/expanded. */
+  /** Hint text on the right of the header. */
   hint?: string;
+  /** Keep hint visible while the section is expanded (default: only when collapsed). */
+  showHintWhenExpanded?: boolean;
   children: ReactNode;
 }
 
 function collapseKey(sectionId: string) {
-  return `gittool.collapse.${sectionId}`;
+  return `gittool.collapse.v2.${sectionId}`;
 }
 
 function loadCollapsed(sectionId: string, fallback: boolean): boolean {
@@ -44,11 +46,12 @@ export function SidebarSection({
   title,
   count,
   sectionId,
-  defaultCollapsed = false,
+  defaultCollapsed = true,
   stickyTop = "0",
   actions,
   alwaysShowActions = false,
   hint,
+  showHintWhenExpanded = false,
   children,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() =>
@@ -58,6 +61,8 @@ export function SidebarSection({
   useEffect(() => {
     saveCollapsed(sectionId, collapsed);
   }, [sectionId, collapsed]);
+
+  const showHint = Boolean(hint) && (collapsed || showHintWhenExpanded);
 
   return (
     <div className={`change-group side-section${collapsed ? " is-collapsed" : ""}`}>
@@ -83,7 +88,7 @@ export function SidebarSection({
           </span>
         </button>
         <div className="side-section-trail">
-          {hint && collapsed ? (
+          {showHint ? (
             <span className="muted small side-section-hint">{hint}</span>
           ) : null}
           {actions && (!collapsed || alwaysShowActions) ? (
