@@ -2235,6 +2235,12 @@ pub fn run() {
             set_app_handle(app.handle().clone());
             update::init_update_handle(app.handle().clone());
             init_mirror_handle(app.handle().clone());
+            // Frameless windows still need an explicit icon for taskbar / Alt+Tab.
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(icon) = app.default_window_icon() {
+                    let _ = window.set_icon(icon.clone());
+                }
+            }
             Ok(())
         })
         .manage(AppState {

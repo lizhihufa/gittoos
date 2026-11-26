@@ -175,6 +175,14 @@ export function WindowChrome({
             })();
           }}
         >
+          <img
+            className="window-chrome-icon"
+            src="/app-icon.png"
+            alt=""
+            width={16}
+            height={16}
+            draggable={false}
+          />
           <span className="window-chrome-title">{titleText}</span>
         </div>
         {(onCheckUpdate || onUpdateClick) && (

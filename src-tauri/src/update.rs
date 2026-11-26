@@ -35,6 +35,77 @@ fn emit_progress(percent: u32, label: &str) {
     }
 }
 
+/// Streams bytes while emitting upload/download progress.
+struct ProgressReader<R> {
+    inner: R,
+    total: u64,
+    done: u64,
+    last_pct: u32,
+    last_emit_at: u64,
+    /// Map reader 0..=100 into this range (e.g. upload 20..=95).
+    pct_from: u32,
+    pct_to: u32,
+    label_prefix: String,
+}
+
+impl<R: Read> ProgressReader<R> {
+    fn new(inner: R, total: u64, pct_from: u32, pct_to: u32, label_prefix: impl Into<String>) -> Self {
+        Self {
+            inner,
+            total,
+            done: 0,
+            last_pct: pct_from.saturating_sub(1),
+            last_emit_at: 0,
+            pct_from,
+            pct_to: pct_to.max(pct_from),
+            label_prefix: label_prefix.into(),
+        }
+    }
+
+    fn emit_if_needed(&mut self, force: bool) {
+        let span = (self.pct_to - self.pct_from) as u64;
+        let pct = if self.total > 0 {
+            self.pct_from + ((self.done.min(self.total) * span) / self.total) as u32
+        } else {
+            // Unknown size: nudge within range every ~512KB.
+            let step = (self.done / (512 * 1024)) as u32;
+            (self.pct_from + (step % (span.max(1) as u32 + 1))).min(self.pct_to.saturating_sub(1))
+        };
+        let should = force
+            || pct >= self.last_pct + 1
+            || self.done.saturating_sub(self.last_emit_at) >= 256 * 1024;
+        if !should {
+            return;
+        }
+        self.last_pct = pct;
+        self.last_emit_at = self.done;
+        let label = if self.total > 0 {
+            format!(
+                "{} {} / {}",
+                self.label_prefix,
+                format_bytes(self.done),
+                format_bytes(self.total)
+            )
+        } else {
+            format!("{} {}", self.label_prefix, format_bytes(self.done))
+        };
+        emit_progress(pct.min(self.pct_to), &label);
+    }
+}
+
+impl<R: Read> Read for ProgressReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 {
+            self.emit_if_needed(true);
+            return Ok(0);
+        }
+        self.done += n as u64;
+        self.emit_if_needed(false);
+        Ok(n)
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProgressEvent {
@@ -274,11 +345,9 @@ pub fn download_update(asset_url: &str, asset_name: &str) -> Result<String, Stri
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
 
-    let mut reader = resp.into_reader();
+    let mut reader = ProgressReader::new(resp.into_reader(), total, 2, 99, "下载中");
     let mut file = File::create(&dest).map_err(|e| format!("无法写入下载文件：{e}"))?;
     let mut buf = [0u8; 64 * 1024];
-    let mut done: u64 = 0;
-    let mut last_pct: u32 = 0;
 
     loop {
         let n = reader
@@ -289,26 +358,6 @@ pub fn download_update(asset_url: &str, asset_name: &str) -> Result<String, Stri
         }
         file.write_all(&buf[..n])
             .map_err(|e| format!("写入失败：{e}"))?;
-        done += n as u64;
-        if total > 0 {
-            let pct = ((done * 100) / total) as u32;
-            if pct >= last_pct + 1 || pct == 100 {
-                last_pct = pct;
-                emit_progress(
-                    pct,
-                    &format!(
-                        "下载中 {} / {}",
-                        format_bytes(done),
-                        format_bytes(total)
-                    ),
-                );
-            }
-        } else if done % (8 * 1024 * 1024) < 64 * 1024 {
-            emit_progress(
-                ((done / (1024 * 1024)) % 99) as u32,
-                &format!("已下载 {}", format_bytes(done)),
-            );
-        }
     }
     file.flush().ok();
     emit_progress(100, "下载完成");
@@ -635,6 +684,7 @@ fn upload_asset(
         "https://uploads.github.com/repos/{owner}/{repo}/releases/{release_id}/assets?name={encoded}"
     );
     let file = File::open(path).map_err(|e| format!("打开安装包失败：{e}"))?;
+    let reader = ProgressReader::new(file, file_len, 20, 95, "上传中");
     // ureq sends the reader; for large files this streams.
     let agent = http_agent(1800);
     let resp = agent
@@ -645,7 +695,7 @@ fn upload_asset(
         .set("Content-Type", "application/octet-stream")
         .set("Content-Length", &file_len.to_string())
         .set("X-GitHub-Api-Version", "2022-11-28")
-        .send(file)
+        .send(reader)
         .map_err(|e| format!("上传失败：{e}"))?;
     let status = resp.status();
     let text = resp.into_string().unwrap_or_default();
@@ -655,6 +705,7 @@ fn upload_asset(
             text.chars().take(240).collect::<String>()
         ));
     }
+    emit_progress(98, "上传完成，确认中…");
     Ok(())
 }
 
@@ -990,9 +1041,15 @@ fn gitee_upload_attach(
     path: &Path,
     file_name: &str,
 ) -> Result<(), String> {
-    let mut file_bytes = Vec::new();
-    File::open(path)
-        .and_then(|mut f| f.read_to_end(&mut file_bytes))
+    let file_len = path
+        .metadata()
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let file = File::open(path).map_err(|e| format!("读取上传文件失败：{e}"))?;
+    let mut reader = ProgressReader::new(file, file_len, 20, 55, "读取安装包");
+    let mut file_bytes = Vec::with_capacity(file_len as usize);
+    reader
+        .read_to_end(&mut file_bytes)
         .map_err(|e| format!("读取上传文件失败：{e}"))?;
 
     let boundary = format!(
@@ -1023,6 +1080,7 @@ fn gitee_upload_attach(
     body.extend_from_slice(b"\r\n");
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
+    emit_progress(60, &format!("上传到 Gitee（{}）…", format_bytes(file_len)));
     let url = format!(
         "https://gitee.com/api/v5/repos/{owner}/{repo}/releases/{release_id}/attach_files"
     );
@@ -1044,6 +1102,7 @@ fn gitee_upload_attach(
             text.chars().take(240).collect::<String>()
         ));
     }
+    emit_progress(98, "上传完成，确认中…");
     Ok(())
 }
 

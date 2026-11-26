@@ -220,6 +220,20 @@ body,
   height: 100%;
   display: flex;
   align-items: center;
+  gap: 0.4rem;
+}
+
+.window-chrome-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.window-chrome.is-overlay .window-chrome-icon {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
 .window-chrome-drag-fill {
@@ -236,7 +250,7 @@ body,
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  padding: 0 0.15rem 0 0.35rem;
+  padding: 0 0.15rem 0 0;
 }
 
 .window-chrome.is-overlay .window-chrome-title {
@@ -3045,6 +3059,7 @@ html[data-scheme="dark"] .auth-ssh-feedback.is-ok {
   display: block;
   height: 100%;
   background: var(--accent);
+  transition: width 0.2s ease;
 }
 
 .about-modal .settings-field textarea {
@@ -3080,6 +3095,15 @@ html[data-scheme="dark"] .auth-ssh-feedback.is-ok {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+.update-banner-progress {
+  flex: 1 1 100%;
+  margin-top: 0.15rem;
+}
+
+.update-banner-progress .about-progress-bar {
+  height: 10px;
 }
 
 .release-manager {

@@ -3,9 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const PORT = Number(process.env.PACKAGER_PORT || 3920);
+const WSL_DISTRO = process.env.PACKAGER_WSL_DISTRO || "Ubuntu";
 
 const FILES = {
   packageJson: path.join(ROOT, "package.json"),
@@ -19,6 +21,7 @@ const sseClients = new Set();
 
 const TARGET_DIR = path.join(ROOT, "src-tauri", "target");
 const DIST_DIR = path.join(ROOT, "dist");
+const NODE_MODULES = path.join(ROOT, "node_modules");
 
 function dirSizeBytes(dir) {
   if (!fs.existsSync(dir)) return 0;
@@ -158,10 +161,10 @@ function estimateProgress(line, prev) {
   if (/Finished .*release|Finished `release`/i.test(text)) {
     next = Math.max(next, 78);
   }
-  if (/Built application|Patching|Target: x64/i.test(text)) {
+  if (/Built application|Patching|Target: x64|Bundling/i.test(text)) {
     next = Math.max(next, 84);
   }
-  if (/Running makensis|produce .*setup\.exe/i.test(text)) {
+  if (/Running makensis|produce .*setup\.exe|debian|appimage|AppImage|\.deb/i.test(text)) {
     next = Math.max(next, 90);
   }
   if (/Finished \d+ bundle/i.test(text)) {
@@ -170,27 +173,66 @@ function estimateProgress(line, prev) {
   return Math.min(100, next);
 }
 
-function findInstaller(version) {
-  const nsisDir = path.join(
-    ROOT,
-    "src-tauri",
-    "target",
-    "release",
-    "bundle",
-    "nsis",
-  );
-  if (!fs.existsSync(nsisDir)) return null;
-  const files = fs
-    .readdirSync(nsisDir)
-    .filter((f) => f.toLowerCase().endsWith("-setup.exe"))
+function listBundleFiles(dir, pred) {
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter(pred)
     .map((f) => ({
       name: f,
-      path: path.join(nsisDir, f),
-      mtime: fs.statSync(path.join(nsisDir, f)).mtimeMs,
+      path: path.join(dir, f),
+      mtime: fs.statSync(path.join(dir, f)).mtimeMs,
     }))
     .sort((a, b) => b.mtime - a.mtime);
-  const preferred = files.find((f) => f.name.includes(version));
-  return preferred ?? files[0] ?? null;
+}
+
+function findArtifacts(version, target) {
+  const bundleRoot = path.join(ROOT, "src-tauri", "target", "release", "bundle");
+  const items = [];
+
+  if (target === "win" || target === "both") {
+    const nsis = listBundleFiles(path.join(bundleRoot, "nsis"), (f) =>
+      f.toLowerCase().endsWith("-setup.exe"),
+    );
+    const preferred = nsis.find((f) => f.name.includes(version));
+    if (preferred) items.push({ ...preferred, kind: "windows-nsis" });
+    else if (nsis[0]) items.push({ ...nsis[0], kind: "windows-nsis" });
+  }
+
+  if (target === "linux" || target === "both") {
+    const deb = listBundleFiles(path.join(bundleRoot, "deb"), (f) =>
+      f.toLowerCase().endsWith(".deb"),
+    );
+    const appimage = listBundleFiles(path.join(bundleRoot, "appimage"), (f) =>
+      f.toLowerCase().endsWith(".appimage"),
+    );
+    const pick = (list, kind) => {
+      const preferred = list.find((f) => f.name.includes(version));
+      if (preferred) items.push({ ...preferred, kind });
+      else if (list[0]) items.push({ ...list[0], kind });
+    };
+    pick(deb, "linux-deb");
+    pick(appimage, "linux-appimage");
+  }
+
+  return items;
+}
+
+function toWslPath(winPath) {
+  const resolved = path.resolve(winPath);
+  const m = resolved.match(/^([A-Za-z]):\\(.*)$/);
+  if (!m) return resolved.replace(/\\/g, "/");
+  return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, "/")}`;
+}
+
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+function normalizeTarget(raw) {
+  const t = String(raw || "win").toLowerCase();
+  if (t === "linux" || t === "both" || t === "win") return t;
+  throw new Error(`未知打包目标：${raw}（可选 win / linux / both）`);
 }
 
 function startClean() {
@@ -293,83 +335,151 @@ function startClean() {
   });
 }
 
-function startBuild() {
+function spawnLogged(command, opts, onLine) {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      ...opts,
+      shell: true,
+      windowsHide: true,
+      env: { ...process.env, FORCE_COLOR: "0", ...(opts.env || {}) },
+    });
+    buildProc = child;
+
+    const onChunk = (buf) => {
+      const text = buf.toString("utf8");
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        onLine(line);
+      }
+    };
+
+    child.stdout.on("data", onChunk);
+    child.stderr.on("data", onChunk);
+
+    child.on("error", (err) => {
+      buildProc = null;
+      onLine(err.message);
+      resolve({ code: 1, error: err.message });
+    });
+
+    child.on("close", (code) => {
+      buildProc = null;
+      resolve({ code: code ?? 1 });
+    });
+  });
+}
+
+function winBuildCommand() {
+  return "npm run tauri:build:win";
+}
+
+function linuxBuildCommand() {
+  const wslRoot = toWslPath(ROOT);
+  // 使用干净 Linux PATH，避免继承 Windows 的 node/npm。
+  const script = [
+    "set -e",
+    'export PATH="$HOME/.cargo/bin:$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node 2>/dev/null | tail -1)/bin:/usr/local/bin:/usr/bin:/bin"',
+    '[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"',
+    '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"',
+    `cd ${shellQuote(wslRoot)}`,
+    "command -v node >/dev/null",
+    "command -v cargo >/dev/null",
+    "command -v rustc >/dev/null",
+    "npm run tauri:build:linux",
+  ].join("; ");
+
+  return `wsl -d ${WSL_DISTRO} -e bash -lc ${shellQuote(script)}`;
+}
+
+async function startBuild(target) {
   if (busy()) {
     throw new Error("已有任务在进行中");
   }
 
+  const platform = normalizeTarget(target);
   let progress = 2;
+  const label =
+    platform === "both"
+      ? "Windows + Linux"
+      : platform === "linux"
+        ? "Linux"
+        : "Windows";
+
   broadcast("status", {
     running: true,
     kind: "build",
+    target: platform,
     progress,
-    message: "开始打包…",
-  });
-  broadcast("log", { text: `$ npm run build:installer\n` });
-
-  // Windows 下直接 spawn npm.cmd 常会报 spawn EINVAL，需走 shell。
-  buildProc = spawn("npm run build:installer", {
-    cwd: ROOT,
-    env: { ...process.env, FORCE_COLOR: "0" },
-    shell: true,
-    windowsHide: true,
+    message: `开始打包（${label}）…`,
   });
 
-  const onChunk = (buf) => {
-    const text = buf.toString("utf8");
-    for (const line of text.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      progress = estimateProgress(line, progress);
+  const steps = [];
+  if (platform === "win" || platform === "both") {
+    steps.push({ name: "Windows", command: winBuildCommand() });
+  }
+  if (platform === "linux" || platform === "both") {
+    steps.push({ name: "Linux (WSL)", command: linuxBuildCommand() });
+  }
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const base = Math.floor((i / steps.length) * 100);
+    progress = Math.max(progress, base + 2);
+    broadcast("log", { text: `\n$ ${step.command}\n# —— ${step.name} ——\n` });
+    broadcast("status", {
+      running: true,
+      kind: "build",
+      target: platform,
+      progress,
+      message: `正在打包 ${step.name}…`,
+    });
+
+    const result = await spawnLogged(step.command, { cwd: ROOT }, (line) => {
+      progress = Math.max(
+        progress,
+        base + Math.floor(estimateProgress(line, 0) / steps.length),
+      );
       broadcast("log", { text: `${line}\n` });
       broadcast("status", {
         running: true,
         kind: "build",
+        target: platform,
         progress,
-        message: line.slice(0, 160),
+        message: `[${step.name}] ${line.slice(0, 140)}`,
       });
-    }
-  };
-
-  buildProc.stdout.on("data", onChunk);
-  buildProc.stderr.on("data", onChunk);
-
-  buildProc.on("error", (err) => {
-    buildProc = null;
-    broadcast("log", { text: `${err.message}\n` });
-    broadcast("status", {
-      running: false,
-      kind: "build",
-      progress,
-      ok: false,
-      message: `启动打包失败：${err.message}`,
     });
-  });
 
-  buildProc.on("close", (code) => {
-    buildProc = null;
-    const version = currentVersion();
-    const installer = findInstaller(version);
-    if (code === 0) {
+    if (result.code !== 0) {
       broadcast("status", {
         running: false,
         kind: "build",
-        progress: 100,
-        ok: true,
-        message: "打包完成",
-        installer: installer
-          ? { name: installer.name, path: installer.path }
-          : null,
-        disk: diskUsage(),
-      });
-    } else {
-      broadcast("status", {
-        running: false,
-        kind: "build",
+        target: platform,
         progress,
         ok: false,
-        message: `打包失败（退出码 ${code}）`,
+        message: `${step.name} 打包失败（退出码 ${result.code}）`,
       });
+      return;
     }
+  }
+
+  const version = currentVersion();
+  const artifacts = findArtifacts(version, platform);
+  const installer = artifacts.find((a) => a.kind === "windows-nsis") || artifacts[0] || null;
+
+  broadcast("status", {
+    running: false,
+    kind: "build",
+    target: platform,
+    progress: 100,
+    ok: true,
+    message: `打包完成（${label}）`,
+    installer: installer ? { name: installer.name, path: installer.path } : null,
+    artifacts: artifacts.map((a) => ({
+      kind: a.kind,
+      name: a.name,
+      path: a.path,
+    })),
+    disk: diskUsage(),
   });
 }
 
@@ -416,6 +526,9 @@ const server = http.createServer(async (req, res) => {
       propose: proposeNext(current),
       building: busy(),
       disk: diskUsage(),
+      targets: ["win", "linux", "both"],
+      wslDistro: WSL_DISTRO,
+      nodeModulesPresent: fs.existsSync(NODE_MODULES),
     });
     return;
   }
@@ -426,8 +539,9 @@ const server = http.createServer(async (req, res) => {
       if (body.version) {
         writeVersions(String(body.version).trim());
       }
-      startBuild();
-      sendJson(res, 200, { ok: true, current: currentVersion() });
+      const target = normalizeTarget(body.target || "win");
+      void startBuild(target);
+      sendJson(res, 200, { ok: true, current: currentVersion(), target });
     } catch (e) {
       sendJson(res, 400, { ok: false, error: String(e.message || e) });
     }
@@ -459,13 +573,21 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/open-folder") {
     try {
       const body = await readBody(req);
-      const target = body.path
-        ? path.dirname(String(body.path))
-        : path.join(ROOT, "src-tauri", "target", "release", "bundle", "nsis");
+      let target;
+      if (body.path) {
+        target = path.dirname(String(body.path));
+      } else if (body.kind === "linux") {
+        target = path.join(ROOT, "src-tauri", "target", "release", "bundle");
+      } else {
+        target = path.join(ROOT, "src-tauri", "target", "release", "bundle", "nsis");
+      }
+      if (!fs.existsSync(target)) {
+        target = path.join(ROOT, "src-tauri", "target", "release", "bundle");
+      }
       if (process.platform === "win32") {
         spawn("explorer", [target], { detached: true, stdio: "ignore" }).unref();
       }
-      sendJson(res, 200, { ok: true });
+      sendJson(res, 200, { ok: true, path: target });
     } catch (e) {
       sendJson(res, 400, { ok: false, error: String(e.message || e) });
     }
@@ -478,6 +600,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "127.0.0.1", () => {
   const url = `http://127.0.0.1:${PORT}/`;
   console.log(`青枝打包工具已启动：${url}`);
+  console.log("功能：Windows / Linux 打包、清理构建缓存、版本号同步");
   if (process.platform === "win32") {
     spawn("cmd", ["/c", "start", "", url], {
       detached: true,

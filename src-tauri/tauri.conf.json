@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "青枝",
   "mainBinaryName": "qingzhi",
-  "version": "1.6.1",
+  "version": "1.6.3",
   "identifier": "com.qingzhi.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -52,11 +52,14 @@
   "bundle": {
     "active": true,
     "targets": [
-      "nsis"
+      "nsis",
+      "deb",
+      "appimage"
     ],
     "publisher": "理智护发",
     "shortDescription": "青枝 — 本地 Git 桌面工具",
     "longDescription": "选一个项目文件夹，在图形界面里完成日常 Git 操作。",
+    "category": "DeveloperTool",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -84,6 +87,17 @@
         "uninstallerIcon": "icons/icon.ico",
         "template": "./windows/installer.nsi",
         "installerHooks": "./windows/hooks.nsh"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      },
+      "appimage": {
+        "bundleMediaFramework": false
       }
     }
   }

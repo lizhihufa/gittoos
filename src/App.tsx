@@ -1958,7 +1958,13 @@ export default function App() {
     refresh,
     setBusy,
     setError,
-    setAuthHint,
+    setAuthHint: (show) => {
+      if (!show) {
+        setAuthHint(null);
+        return;
+      }
+      setAuthHint(primaryHost === "gitee" ? "gitee" : "github");
+    },
     setNotice,
     setSyncProgress,
     setSyncDialog,
@@ -3493,11 +3499,18 @@ export default function App() {
               </ul>
             </div>
           )}
-          {updateInfo?.updateAvailable &&
-            updateInfo.tagName !== dismissedUpdateTag && (
+          {((updateInfo?.updateAvailable &&
+            updateInfo.tagName !== dismissedUpdateTag) ||
+            updateProgress) && (
             <div className="update-banner" role="status">
               <div className="update-banner-text">
-                发现新版本 <strong>v{updateInfo.latestVersion}</strong>
+                {updateProgress
+                  ? updateProgress.label
+                  : (
+                    <>
+                      发现新版本 <strong>v{updateInfo!.latestVersion}</strong>
+                    </>
+                  )}
               </div>
               <div className="update-banner-actions">
                 <button
@@ -3506,12 +3519,23 @@ export default function App() {
                   disabled={updateBusy || busy}
                   onClick={() => void downloadAndInstallUpdate()}
                 >
-                  下载并安装
+                  {updateBusy ? "下载中…" : "下载并安装"}
                 </button>
                 <button type="button" onClick={() => openSettings("about")}>
                   关于
                 </button>
               </div>
+              {updateProgress && (
+                <div className="about-progress update-banner-progress">
+                  <div className="about-progress-head">
+                    <span>下载进度</span>
+                    <span>{updateProgress.percent}%</span>
+                  </div>
+                  <div className="about-progress-bar">
+                    <i style={{ width: `${updateProgress.percent}%` }} />
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <div className="welcome-terminal">
@@ -5374,12 +5398,19 @@ export default function App() {
           </button>
         </div>
       )}
-      {updateInfo?.updateAvailable &&
-        updateInfo.tagName !== dismissedUpdateTag && (
+      {((updateInfo?.updateAvailable &&
+        updateInfo.tagName !== dismissedUpdateTag) ||
+        updateProgress) && (
         <div className="update-banner" role="status">
           <div className="update-banner-text">
-            发现新版本 <strong>v{updateInfo.latestVersion}</strong>
-            （当前 v{updateInfo.currentVersion}）
+            {updateProgress
+              ? updateProgress.label
+              : (
+                <>
+                  发现新版本 <strong>v{updateInfo!.latestVersion}</strong>
+                  （当前 v{updateInfo!.currentVersion}）
+                </>
+              )}
           </div>
           <div className="update-banner-actions">
             <button
@@ -5388,19 +5419,32 @@ export default function App() {
               disabled={updateBusy || busy}
               onClick={() => void downloadAndInstallUpdate()}
             >
-              下载并安装
+              {updateBusy ? "下载中…" : "下载并安装"}
             </button>
             <button type="button" onClick={() => openSettings("about")} disabled={busy}>
               详情
             </button>
-            <button
-              type="button"
-              className="linkish"
-              onClick={() => setDismissedUpdateTag(updateInfo.tagName)}
-            >
-              稍后
-            </button>
+            {!updateBusy && updateInfo && (
+              <button
+                type="button"
+                className="linkish"
+                onClick={() => setDismissedUpdateTag(updateInfo.tagName)}
+              >
+                稍后
+              </button>
+            )}
           </div>
+          {updateProgress && (
+            <div className="about-progress update-banner-progress">
+              <div className="about-progress-head">
+                <span>下载进度</span>
+                <span>{updateProgress.percent}%</span>
+              </div>
+              <div className="about-progress-bar">
+                <i style={{ width: `${updateProgress.percent}%` }} />
+              </div>
+            </div>
+          )}
         </div>
       )}
       {!identitySaved && (
