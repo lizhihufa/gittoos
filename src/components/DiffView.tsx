@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { buildSplitRows, hunkStarts } from "../diffSplit";
 import {
   buildHunkPatch,
   buildPartialHunkPatch,
@@ -7,6 +8,8 @@ import {
   type DiffHunk,
 } from "../hunks";
 import { DiffLines } from "./DiffLines";
+
+export type DiffViewMode = "unified" | "split";
 
 interface Props {
   path: string | null;
@@ -17,6 +20,8 @@ interface Props {
   busy?: boolean;
   /** Whole-file untracked etc. — hide hunk actions. */
   allowHunks?: boolean;
+  viewMode?: DiffViewMode;
+  onViewMode?: (mode: DiffViewMode) => void;
   /** Return false (or throw) to keep line selection after failure. */
   onApplyHunk?: (
     patch: string,
@@ -37,6 +42,8 @@ export function DiffView({
   hasChanges = false,
   busy = false,
   allowHunks = true,
+  viewMode = "unified",
+  onViewMode,
   onApplyHunk,
   onDiscardHunk,
   onBlame,
@@ -127,6 +134,8 @@ export function DiffView({
     }
   }
 
+  const splitMode = viewMode === "split";
+
   return (
     <div className="panel diff-panel">
       <div className="panel-header">
@@ -134,8 +143,36 @@ export function DiffView({
         <span className="row-actions">
           <span className="muted">
             {staged ? "已暂存" : "未暂存"}
-            {parsed && onApplyHunk ? " · 可按块/按行操作" : ""}
+            {parsed && onApplyHunk && !splitMode ? " · 可按块/按行操作" : ""}
           </span>
+          {onViewMode ? (
+            <span className="diff-view-toggle" role="group" aria-label="Diff layout">
+              <button
+                type="button"
+                className={
+                  !splitMode
+                    ? "pane-btn pane-btn--sm is-on"
+                    : "pane-btn pane-btn--ghost pane-btn--sm"
+                }
+                disabled={busy}
+                onClick={() => onViewMode("unified")}
+              >
+                统一
+              </button>
+              <button
+                type="button"
+                className={
+                  splitMode
+                    ? "pane-btn pane-btn--sm is-on"
+                    : "pane-btn pane-btn--ghost pane-btn--sm"
+                }
+                disabled={busy}
+                onClick={() => onViewMode("split")}
+              >
+                并排
+              </button>
+            </span>
+          ) : null}
           {onBlame && (
             <button
               type="button"
@@ -151,7 +188,7 @@ export function DiffView({
       </div>
       {loading ? (
         <p className="muted pad">加载中…</p>
-      ) : parsed && onApplyHunk ? (
+      ) : parsed && onApplyHunk && !splitMode ? (
         <div className="hunk-list">
           <p className="muted small hunk-hint">
             点击 +/- 行可选中；Shift+点击连选。选中后可只操作这些行。
@@ -273,12 +310,99 @@ export function DiffView({
             );
           })}
         </div>
+      ) : parsed && splitMode ? (
+        <SplitDiffBody text={text} hunks={parsed.hunks} />
       ) : (
         <DiffLines
           text={text}
           empty="无文本差异（可能是二进制、新建或仅模式变更）"
         />
       )}
+    </div>
+  );
+}
+
+function SplitDiffBody({
+  text,
+  hunks,
+}: {
+  text: string;
+  hunks: DiffHunk[];
+}) {
+  const leftRef = useRef<HTMLDivElement>(null);
+  const rightRef = useRef<HTMLDivElement>(null);
+  const syncing = useRef(false);
+
+  function syncScroll(from: "left" | "right") {
+    if (syncing.current) return;
+    const a = from === "left" ? leftRef.current : rightRef.current;
+    const b = from === "left" ? rightRef.current : leftRef.current;
+    if (!a || !b) return;
+    syncing.current = true;
+    b.scrollTop = a.scrollTop;
+    b.scrollLeft = a.scrollLeft;
+    requestAnimationFrame(() => {
+      syncing.current = false;
+    });
+  }
+
+  if (!text.trim() && hunks.length === 0) {
+    return <p className="muted pad">无内容</p>;
+  }
+
+  return (
+    <div className="diff-split">
+      {hunks.map((hunk, hi) => {
+        const { oldStart, newStart } = hunkStarts(hunk.header);
+        const rows = buildSplitRows(hunk.lines, oldStart, newStart);
+        return (
+          <div key={`${hunk.header}-${hi}`} className="diff-split-hunk">
+            <div className="muted small hunk-title diff-split-header">
+              {hunk.header}
+            </div>
+            <div className="diff-split-cols">
+              <div
+                className="diff-split-pane"
+                ref={hi === 0 ? leftRef : undefined}
+                onScroll={hi === 0 ? () => syncScroll("left") : undefined}
+              >
+                {rows.map((row, ri) => (
+                  <div
+                    key={ri}
+                    className={`diff-split-line is-${row.left.kind}`}
+                  >
+                    <span className="diff-split-no">
+                      {row.left.lineNo ?? ""}
+                    </span>
+                    <span className="diff-split-text">
+                      {row.left.text || " "}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div
+                className="diff-split-pane"
+                ref={hi === 0 ? rightRef : undefined}
+                onScroll={hi === 0 ? () => syncScroll("right") : undefined}
+              >
+                {rows.map((row, ri) => (
+                  <div
+                    key={ri}
+                    className={`diff-split-line is-${row.right.kind}`}
+                  >
+                    <span className="diff-split-no">
+                      {row.right.lineNo ?? ""}
+                    </span>
+                    <span className="diff-split-text">
+                      {row.right.text || " "}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

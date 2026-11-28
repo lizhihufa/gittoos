@@ -1,7 +1,10 @@
 mod git;
+mod permissions;
+mod platform_stats;
 mod process_win;
 mod update;
 mod webview2;
+mod wiki;
 
 use git::{
     abort_operation, actions_mirror_status, add_to_gitignore, amend_commit, apply_cached_patch,
@@ -1368,11 +1371,26 @@ async fn clone_repo(
 }
 
 #[tauri::command]
+fn save_feature_permissions(
+    app: AppHandle,
+    permissions: permissions::FeaturePermissions,
+) -> Result<(), String> {
+    permissions::save(&app, &permissions)
+}
+
+#[tauri::command]
+fn get_feature_permissions(app: AppHandle) -> permissions::FeaturePermissions {
+    permissions::load(&app)
+}
+
+#[tauri::command]
 async fn setup_actions_mirror_cmd(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     configure_secret: Option<bool>,
 ) -> Result<ActionsMirrorSetup, String> {
+    permissions::require(&app, "mirror")?;
     let repo = repo_path(&path)?;
     let configure_secret = configure_secret.unwrap_or(true);
     with_git_async(&state, move |git| {
@@ -1392,19 +1410,23 @@ fn get_actions_mirror_status(
 
 #[tauri::command]
 async fn trigger_reverse_actions_mirror_cmd(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
 ) -> Result<String, String> {
+    permissions::require(&app, "mirror")?;
     let repo = repo_path(&path)?;
     with_git_async(&state, move |git| trigger_reverse_actions_mirror(git, &repo)).await
 }
 
 #[tauri::command]
 async fn remove_actions_mirror_cmd(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     push: Option<bool>,
 ) -> Result<String, String> {
+    permissions::require(&app, "mirror")?;
     let repo = repo_path(&path)?;
     let push = push.unwrap_or(true);
     with_git_async(&state, move |git| remove_actions_mirror(git, &repo, push)).await
@@ -1779,14 +1801,27 @@ async fn git_pull(
 
 #[tauri::command]
 async fn git_push(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     force: Option<bool>,
     sync_mirror: Option<String>,
     remote: Option<String>,
 ) -> Result<String, String> {
-    let repo = repo_path(&path)?;
+    permissions::require(&app, "push")?;
     let force = force.unwrap_or(false);
+    if force {
+        permissions::require(&app, "forcePush")?;
+    }
+    if sync_mirror
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some()
+    {
+        permissions::require(&app, "mirror")?;
+    }
+    let repo = repo_path(&path)?;
     let sync_mirror = sync_mirror
         .as_deref()
         .map(str::trim)
@@ -1811,11 +1846,13 @@ async fn git_push(
 
 #[tauri::command]
 async fn create_hosting_repo(
+    app: AppHandle,
     provider: String,
     name: String,
     private: Option<bool>,
     description: Option<String>,
 ) -> Result<HostingRepo, String> {
+    permissions::require(&app, "publishRemote")?;
     let private = private.unwrap_or(false);
     let description = description.unwrap_or_default();
     create_or_get_hosting_repo(&provider, &name, private, &description).map_err(|e| e.to_string())
@@ -1823,6 +1860,7 @@ async fn create_hosting_repo(
 
 #[tauri::command]
 async fn publish_remotes(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     name: String,
@@ -1830,6 +1868,7 @@ async fn publish_remotes(
     to_gitee: Option<bool>,
     private: Option<bool>,
 ) -> Result<String, String> {
+    permissions::require(&app, "publishRemote")?;
     let repo = repo_path(&path)?;
     let to_github = to_github.unwrap_or(false);
     let to_gitee = to_gitee.unwrap_or(false);
@@ -1957,26 +1996,35 @@ async fn tag_delete(
 
 #[tauri::command]
 async fn tag_push(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     name: String,
 ) -> Result<String, String> {
+    permissions::require(&app, "push")?;
     let repo = repo_path(&path)?;
     with_git_async(&state, move |git| push_tag(git, &repo, &name)).await
 }
 
 #[tauri::command]
-async fn tag_push_all(state: State<'_, AppState>, path: String) -> Result<String, String> {
+async fn tag_push_all(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    permissions::require(&app, "push")?;
     let repo = repo_path(&path)?;
     with_git_async(&state, move |git| push_all_tags(git, &repo)).await
 }
 
 #[tauri::command]
 async fn tag_delete_remote(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     name: String,
 ) -> Result<String, String> {
+    permissions::require(&app, "push")?;
     let repo = repo_path(&path)?;
     with_git_async(&state, move |git| delete_remote_tag(git, &repo, &name)).await
 }
@@ -2114,6 +2162,7 @@ async fn launch_app_installer(path: String, exit_app: bool) -> Result<(), String
 
 #[tauri::command]
 async fn publish_github_release(
+    app: AppHandle,
     file_path: String,
     tag: String,
     title: Option<String>,
@@ -2121,6 +2170,7 @@ async fn publish_github_release(
     owner: Option<String>,
     repo: Option<String>,
 ) -> Result<update::PublishResult, String> {
+    permissions::require(&app, "release")?;
     tauri::async_runtime::spawn_blocking(move || {
         update::publish_github_release(&file_path, &tag, title, notes, owner, repo)
     })
@@ -2130,10 +2180,12 @@ async fn publish_github_release(
 
 #[tauri::command]
 async fn list_github_releases(
+    app: AppHandle,
     owner: Option<String>,
     repo: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<update::ReleaseItem>, String> {
+    permissions::require(&app, "release")?;
     tauri::async_runtime::spawn_blocking(move || {
         update::list_github_releases(owner, repo, limit)
     })
@@ -2143,10 +2195,12 @@ async fn list_github_releases(
 
 #[tauri::command]
 async fn delete_github_release_asset(
+    app: AppHandle,
     asset_id: u64,
     owner: Option<String>,
     repo: Option<String>,
 ) -> Result<(), String> {
+    permissions::require(&app, "release")?;
     tauri::async_runtime::spawn_blocking(move || {
         update::delete_github_release_asset(asset_id, owner, repo)
     })
@@ -2156,10 +2210,12 @@ async fn delete_github_release_asset(
 
 #[tauri::command]
 async fn delete_github_release(
+    app: AppHandle,
     release_id: u64,
     owner: Option<String>,
     repo: Option<String>,
 ) -> Result<(), String> {
+    permissions::require(&app, "release")?;
     tauri::async_runtime::spawn_blocking(move || {
         update::delete_github_release(release_id, owner, repo)
     })
@@ -2169,6 +2225,7 @@ async fn delete_github_release(
 
 #[tauri::command]
 async fn publish_gitee_release(
+    app: AppHandle,
     file_path: String,
     tag: String,
     title: Option<String>,
@@ -2176,6 +2233,7 @@ async fn publish_gitee_release(
     owner: Option<String>,
     repo: Option<String>,
 ) -> Result<update::PublishResult, String> {
+    permissions::require(&app, "release")?;
     tauri::async_runtime::spawn_blocking(move || {
         update::publish_gitee_release(&file_path, &tag, title, notes, owner, repo)
     })
@@ -2185,10 +2243,12 @@ async fn publish_gitee_release(
 
 #[tauri::command]
 async fn list_gitee_releases(
+    app: AppHandle,
     owner: Option<String>,
     repo: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<update::ReleaseItem>, String> {
+    permissions::require(&app, "release")?;
     tauri::async_runtime::spawn_blocking(move || {
         update::list_gitee_releases(owner, repo, limit)
     })
@@ -2198,11 +2258,13 @@ async fn list_gitee_releases(
 
 #[tauri::command]
 async fn delete_gitee_release_asset(
+    app: AppHandle,
     release_id: u64,
     asset_id: u64,
     owner: Option<String>,
     repo: Option<String>,
 ) -> Result<(), String> {
+    permissions::require(&app, "release")?;
     tauri::async_runtime::spawn_blocking(move || {
         update::delete_gitee_release_asset(release_id, asset_id, owner, repo)
     })
@@ -2212,12 +2274,160 @@ async fn delete_gitee_release_asset(
 
 #[tauri::command]
 async fn delete_gitee_release(
+    app: AppHandle,
     release_id: u64,
     owner: Option<String>,
     repo: Option<String>,
 ) -> Result<(), String> {
+    permissions::require(&app, "release")?;
     tauri::async_runtime::spawn_blocking(move || {
         update::delete_gitee_release(release_id, owner, repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_status(
+    platform: String,
+    owner: String,
+    repo: String,
+) -> Result<wiki::WikiStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || wiki::wiki_status(&platform, &owner, &repo))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_list_pages(
+    platform: String,
+    owner: String,
+    repo: String,
+) -> Result<Vec<wiki::WikiPageInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || wiki::wiki_list_pages(&platform, &owner, &repo))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_read_page(
+    platform: String,
+    owner: String,
+    repo: String,
+    slug: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        wiki::wiki_read_page(&platform, &owner, &repo, &slug)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_write_page(
+    app: AppHandle,
+    platform: String,
+    owner: String,
+    repo: String,
+    slug: String,
+    content: String,
+) -> Result<(), String> {
+    permissions::require(&app, "wiki")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        wiki::wiki_write_page(&platform, &owner, &repo, &slug, &content)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_delete_page(
+    app: AppHandle,
+    platform: String,
+    owner: String,
+    repo: String,
+    slug: String,
+) -> Result<(), String> {
+    permissions::require(&app, "wiki")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        wiki::wiki_delete_page(&platform, &owner, &repo, &slug)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_sync(
+    app: AppHandle,
+    platform: String,
+    owner: String,
+    repo: String,
+) -> Result<wiki::WikiStatus, String> {
+    permissions::require(&app, "wiki")?;
+    tauri::async_runtime::spawn_blocking(move || wiki::wiki_sync(&platform, &owner, &repo))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_enable(
+    app: AppHandle,
+    platform: String,
+    owner: String,
+    repo: String,
+) -> Result<(), String> {
+    permissions::require(&app, "wiki")?;
+    tauri::async_runtime::spawn_blocking(move || wiki::wiki_enable(&platform, &owner, &repo))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_init(
+    app: AppHandle,
+    platform: String,
+    owner: String,
+    repo: String,
+) -> Result<wiki::WikiStatus, String> {
+    permissions::require(&app, "wiki")?;
+    tauri::async_runtime::spawn_blocking(move || wiki::wiki_init(&platform, &owner, &repo))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_commit_push(
+    app: AppHandle,
+    platform: String,
+    owner: String,
+    repo: String,
+    message: Option<String>,
+) -> Result<wiki::WikiStatus, String> {
+    permissions::require(&app, "wiki")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        wiki::wiki_commit_push(&platform, &owner, &repo, message)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn wiki_web_url(
+    platform: String,
+    owner: String,
+    repo: String,
+) -> Result<String, String> {
+    wiki::wiki_web_url(&platform, &owner, &repo)
+}
+
+#[tauri::command]
+async fn get_platform_repo_stats(
+    platform: String,
+    owner: String,
+    repo: String,
+) -> Result<platform_stats::PlatformRepoStats, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        platform_stats::fetch_platform_repo_stats(&platform, &owner, &repo)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2235,6 +2445,7 @@ pub fn run() {
             set_app_handle(app.handle().clone());
             update::init_update_handle(app.handle().clone());
             init_mirror_handle(app.handle().clone());
+            wiki::init_wiki_handle(app.handle().clone());
             // Frameless windows still need an explicit icon for taskbar / Alt+Tab.
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon() {
@@ -2279,6 +2490,8 @@ pub fn run() {
             create_commit,
             amend_last_commit,
             clone_repo,
+            save_feature_permissions,
+            get_feature_permissions,
             setup_actions_mirror_cmd,
             trigger_reverse_actions_mirror_cmd,
             remove_actions_mirror_cmd,
@@ -2363,6 +2576,17 @@ pub fn run() {
             list_gitee_releases,
             delete_gitee_release_asset,
             delete_gitee_release,
+            wiki_status,
+            wiki_list_pages,
+            wiki_read_page,
+            wiki_write_page,
+            wiki_delete_page,
+            wiki_sync,
+            wiki_enable,
+            wiki_init,
+            wiki_commit_push,
+            wiki_web_url,
+            get_platform_repo_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

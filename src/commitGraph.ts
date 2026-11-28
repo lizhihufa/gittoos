@@ -1,13 +1,38 @@
 import type { CommitInfo } from "./types";
 
+export interface GraphEdge {
+  /** Lane of the vertical rail in this row. */
+  lane: number;
+  /** If set, draw a merge fork from `lane` toward `toLane` at the node. */
+  mergeTo?: number;
+}
+
 export interface GraphRow {
   commit: CommitInfo;
   /** Lane index of this commit's node (0-based). */
   lane: number;
   /** Active lane indexes that draw a vertical line through this row. */
   through: number[];
+  /** Edges for SVG rails / merge elbows. */
+  edges: GraphEdge[];
   /** Max lane count in this row (for column width). */
   width: number;
+  /** Local tip (HEAD or branch tip badge). */
+  isTip: boolean;
+}
+
+function commitIsTip(refs: string | undefined): boolean {
+  if (!refs) return false;
+  const badges = parseRefBadges(refs);
+  return badges.some(
+    (b) =>
+      b.startsWith("HEAD") ||
+      (!b.startsWith("tag:") &&
+        !b.startsWith("refs/") &&
+        !b.includes("origin/") &&
+        !b.includes("gitee/") &&
+        !b.includes("/")),
+  );
 }
 
 /** Assign commit lanes for a simple left-to-right branch graph. */
@@ -56,11 +81,23 @@ export function layoutCommitGraph(commits: CommitInfo[]): GraphRow[] {
       if (lanes[i] !== null || i === lane) through.push(i);
     }
 
+    const edges: GraphEdge[] = through.map((l) => ({ lane: l }));
+    // Mark merge elbows: secondary parents occupy other lanes this row
+    for (let i = 0; i < rest.length; i++) {
+      const parent = rest[i]!;
+      const parentLane = lanes.findIndex((h) => h === parent);
+      if (parentLane >= 0 && parentLane !== lane) {
+        edges.push({ lane, mergeTo: parentLane });
+      }
+    }
+
     rows.push({
       commit,
       lane,
       through,
+      edges,
       width: Math.max(lanes.length, lane + 1, 1),
+      isTip: commitIsTip(commit.refs),
     });
   }
 

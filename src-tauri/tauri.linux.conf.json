@@ -1,5 +1,16 @@
 {
+  "productName": "qingzhi",
   "bundle": {
-    "resources": []
+    "resources": [],
+    "shortDescription": "qingzhi — local Git desktop tool",
+    "longDescription": "Pick a project folder and do everyday Git work in a GUI.",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      }
+    }
   }
 }

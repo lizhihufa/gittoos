@@ -101,6 +101,13 @@ export const api = {
       branch: opts?.branch ?? null,
       depth: opts?.depth ?? null,
     }),
+  saveFeaturePermissions: (
+    permissions: import("./permissions").FeaturePermissions,
+  ) => invoke<void>("save_feature_permissions", { permissions }),
+  getFeaturePermissions: () =>
+    invoke<import("./permissions").FeaturePermissions>(
+      "get_feature_permissions",
+    ),
   setupActionsMirror: (path: string, configureSecret = true) =>
     invoke<import("./types").ActionsMirrorSetup>("setup_actions_mirror_cmd", {
       path,
@@ -414,5 +421,80 @@ export const api = {
       releaseId,
       owner: owner ?? null,
       repo: repo ?? null,
+    }),
+
+  wikiStatus: (platform: string, owner: string, repo: string) =>
+    invoke<import("./types").WikiStatus>("wiki_status", {
+      platform,
+      owner,
+      repo,
+    }),
+  wikiListPages: (platform: string, owner: string, repo: string) =>
+    invoke<import("./types").WikiPageInfo[]>("wiki_list_pages", {
+      platform,
+      owner,
+      repo,
+    }),
+  wikiReadPage: (
+    platform: string,
+    owner: string,
+    repo: string,
+    slug: string,
+  ) =>
+    invoke<string>("wiki_read_page", { platform, owner, repo, slug }),
+  wikiWritePage: (
+    platform: string,
+    owner: string,
+    repo: string,
+    slug: string,
+    content: string,
+  ) =>
+    invoke<void>("wiki_write_page", {
+      platform,
+      owner,
+      repo,
+      slug,
+      content,
+    }),
+  wikiDeletePage: (
+    platform: string,
+    owner: string,
+    repo: string,
+    slug: string,
+  ) =>
+    invoke<void>("wiki_delete_page", { platform, owner, repo, slug }),
+  wikiSync: (platform: string, owner: string, repo: string) =>
+    invoke<import("./types").WikiStatus>("wiki_sync", {
+      platform,
+      owner,
+      repo,
+    }),
+  wikiEnable: (platform: string, owner: string, repo: string) =>
+    invoke<void>("wiki_enable", { platform, owner, repo }),
+  wikiInit: (platform: string, owner: string, repo: string) =>
+    invoke<import("./types").WikiStatus>("wiki_init", {
+      platform,
+      owner,
+      repo,
+    }),
+  wikiCommitPush: (
+    platform: string,
+    owner: string,
+    repo: string,
+    message?: string,
+  ) =>
+    invoke<import("./types").WikiStatus>("wiki_commit_push", {
+      platform,
+      owner,
+      repo,
+      message: message ?? null,
+    }),
+  wikiWebUrl: (platform: string, owner: string, repo: string) =>
+    invoke<string>("wiki_web_url", { platform, owner, repo }),
+  getPlatformRepoStats: (platform: string, owner: string, repo: string) =>
+    invoke<import("./types").PlatformRepoStats>("get_platform_repo_stats", {
+      platform,
+      owner,
+      repo,
     }),
 };

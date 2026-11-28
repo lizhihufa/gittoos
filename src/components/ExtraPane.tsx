@@ -1,33 +1,56 @@
 import { useMemo, useState } from "react";
-import { layoutCommitGraph, parseRefBadges } from "../commitGraph";
+import {
+  layoutCommitGraph,
+  parseRefBadges,
+  type GraphRow,
+} from "../commitGraph";
 import type { CommitInfo, ReflogInfo, StashInfo, TagInfo } from "../types";
 import { ConflictEditor } from "./ConflictEditor";
 import { DiffLines } from "./DiffLines";
-import { DiffView } from "./DiffView";
+import { DiffView, type DiffViewMode } from "./DiffView";
 import { t as i18n } from "../i18n";
 import {
   ReleaseManager,
   type ReleasePlatform,
 } from "./ReleaseManager";
+import { WikiManager } from "./WikiManager";
+import {
+  OverviewPane,
+  type OverviewPlatform,
+} from "./OverviewPane";
 import { Terminal } from "./Terminal";
+import type { BranchInfo, RepoStatus } from "../types";
 
 export type Pane =
+  | "overview"
   | "diff"
   | "history"
   | "stash"
   | "tags"
   | "terminal"
-  | "releases";
+  | "releases"
+  | "wiki";
 
 interface Props {
   pane: Pane;
   onPane: (pane: Pane) => void;
+  overviewStatus?: RepoStatus | null;
+  overviewBranches?: BranchInfo[];
+  overviewPlatform?: OverviewPlatform;
+  onOverviewPlatform?: (p: OverviewPlatform) => void;
+  overviewGithubOwner?: string;
+  overviewGithubRepo?: string;
+  overviewGiteeOwner?: string;
+  overviewGiteeRepo?: string;
+  overviewRepoPath?: string | null;
   diffPath: string | null;
   diffStaged: boolean;
   diffText: string;
   diffLoading: boolean;
   hasChanges?: boolean;
   allowHunks?: boolean;
+  diffViewMode?: DiffViewMode;
+  onDiffViewMode?: (mode: DiffViewMode) => void;
   onApplyHunk?: (
     patch: string,
     reverse: boolean,
@@ -109,14 +132,21 @@ interface Props {
   onUpdateBusy: (busy: boolean) => void;
   onNotice: (text: string | null) => void;
   onError: (text: string | null) => void;
-  onOpenAuth: () => void;
+  onOpenAuth: (provider: "github" | "gitee") => void;
+  /** When false, Release pane actions are blocked (Settings → 权限). */
+  releaseAllowed?: boolean;
+  /** When false, Wiki pane actions are blocked (Settings → 权限). */
+  wikiAllowed?: boolean;
+  onFeatureDenied?: (feature: "release" | "wiki") => void;
   onConfigureReleaseRepo?: () => void;
   updateProgress: { percent: number; label: string } | null;
+  wikiProgress?: { percent: number; label: string } | null;
   locale?: string;
 }
 
 export function ExtraPane(props: Props) {
   const [commitSearch, setCommitSearch] = useState("");
+  const [hoverLane, setHoverLane] = useState<number | null>(null);
   const loc = props.locale || "zh-CN";
 
   const filteredCommits = useMemo(() => {
@@ -141,12 +171,16 @@ export function ExtraPane(props: Props) {
     // Only build the graph while History is open — avoids work on every refresh.
     if (props.pane !== "history") return [];
     if (props.showCommitGraph === false) {
-      return filteredCommits.map((commit) => ({
-        commit,
-        lane: 0,
-        through: [0],
-        width: 1,
-      }));
+      return filteredCommits.map(
+        (commit): GraphRow => ({
+          commit,
+          lane: 0,
+          through: [0],
+          edges: [{ lane: 0 }],
+          width: 1,
+          isTip: false,
+        }),
+      );
     }
     return layoutCommitGraph(filteredCommits);
   }, [filteredCommits, props.showCommitGraph, props.pane]);
@@ -156,12 +190,14 @@ export function ExtraPane(props: Props) {
       <div className="tabs">
         {(
           [
+            ["overview", "pane.overview"],
             ["diff", "pane.diff"],
             ["history", "pane.history"],
             ["stash", "pane.stash"],
             ["tags", "pane.tags"],
             ["terminal", "pane.terminal"],
             ["releases", "pane.releases"],
+            ["wiki", "pane.wiki"],
           ] as const
         ).map(([id, key]) => (
           <button
@@ -174,6 +210,24 @@ export function ExtraPane(props: Props) {
           </button>
         ))}
       </div>
+      {props.pane === "overview" && (
+        <OverviewPane
+          status={props.overviewStatus ?? null}
+          commits={props.commits}
+          branches={props.overviewBranches ?? []}
+          repoPath={props.overviewRepoPath ?? null}
+          locale={loc}
+          githubOwner={props.overviewGithubOwner ?? ""}
+          githubRepo={props.overviewGithubRepo ?? ""}
+          giteeOwner={props.overviewGiteeOwner ?? ""}
+          giteeRepo={props.overviewGiteeRepo ?? ""}
+          githubLoggedIn={props.githubLoggedIn}
+          giteeLoggedIn={props.giteeLoggedIn}
+          platform={props.overviewPlatform ?? "local"}
+          onPlatform={(p) => props.onOverviewPlatform?.(p)}
+          onOpenAuth={props.onOpenAuth}
+        />
+      )}
       {props.pane === "diff" &&
         (props.conflictLoading || props.conflictContent != null ? (
           props.conflictLoading || props.conflictContent == null ? (
@@ -230,6 +284,8 @@ export function ExtraPane(props: Props) {
               hasChanges={props.hasChanges}
               busy={props.busy}
               allowHunks={props.allowHunks}
+              viewMode={props.diffViewMode}
+              onViewMode={props.onDiffViewMode}
               onApplyHunk={props.onApplyHunk}
               onDiscardHunk={props.onDiscardHunk}
               onBlame={props.onBlame}
@@ -386,13 +442,19 @@ export function ExtraPane(props: Props) {
               )}
               {graphRows.map((row) => {
                 const badges = parseRefBadges(row.commit.refs);
-                const colW = 12;
-                const width = Math.max(row.width, 1) * colW + 8;
+                const colW = 14;
+                const width = Math.max(row.width, 1) * colW + 10;
                 const selected = props.selectedHash === row.commit.hash;
+                const laneHot = hoverLane !== null && row.lane === hoverLane;
+                const h = 28;
                 return (
                   <li
                     key={row.commit.hash}
-                    className={`commit-row${selected ? " is-selected" : ""}`}
+                    className={`commit-row${selected ? " is-selected" : ""}${
+                      laneHot ? " is-lane-hot" : ""
+                    }${row.isTip ? " is-tip" : ""}`}
+                    onMouseEnter={() => setHoverLane(row.lane)}
+                    onMouseLeave={() => setHoverLane(null)}
                   >
                     <button
                       type="button"
@@ -402,35 +464,70 @@ export function ExtraPane(props: Props) {
                       {props.showCommitGraph !== false && (
                         <span
                           className="graph-cell"
-                          style={{ width }}
+                          style={{ width, height: h }}
                           aria-hidden
                         >
-                          {Array.from({ length: row.width }, (_, i) => {
-                            const active = row.through.includes(i);
-                            const isNode = i === row.lane;
-                            return (
-                              <span
-                                key={i}
-                                className={[
-                                  "graph-lane",
-                                  active ? "is-active" : "",
-                                  isNode ? "is-node" : "",
-                                ]
-                                  .filter(Boolean)
-                                  .join(" ")}
-                                style={{
-                                  left: i * colW + 4,
-                                  ["--lane-color" as string]: laneColor(i),
-                                }}
-                              />
-                            );
-                          })}
+                          <svg
+                            className="graph-svg"
+                            width={width}
+                            height={h}
+                            viewBox={`0 0 ${width} ${h}`}
+                          >
+                            {row.through.map((i) => {
+                              const x = i * colW + 7;
+                              const hot =
+                                hoverLane !== null && hoverLane === i;
+                              return (
+                                <line
+                                  key={`v-${i}`}
+                                  className={`graph-rail${hot ? " is-hot" : ""}`}
+                                  x1={x}
+                                  y1={0}
+                                  x2={x}
+                                  y2={h}
+                                  stroke={laneColor(i)}
+                                  strokeWidth={hot ? 2.4 : 1.6}
+                                />
+                              );
+                            })}
+                            {row.edges
+                              .filter((e) => e.mergeTo != null)
+                              .map((e, idx) => {
+                                const x1 = e.lane * colW + 7;
+                                const x2 = (e.mergeTo as number) * colW + 7;
+                                const y = h / 2;
+                                return (
+                                  <path
+                                    key={`m-${idx}`}
+                                    className="graph-merge"
+                                    d={`M ${x1} ${y} C ${x1} ${y + 8}, ${x2} ${y + 8}, ${x2} ${h}`}
+                                    stroke={laneColor(e.mergeTo as number)}
+                                    strokeWidth={1.6}
+                                    fill="none"
+                                  />
+                                );
+                              })}
+                            <circle
+                              className={`graph-node${
+                                row.isTip ? " is-tip" : ""
+                              }${selected ? " is-selected" : ""}`}
+                              cx={row.lane * colW + 7}
+                              cy={h / 2}
+                              r={row.isTip ? 4.5 : 3.5}
+                              fill={laneColor(row.lane)}
+                            />
+                          </svg>
                         </span>
                       )}
                       <span className="commit-body">
                         <span className="commit-top">
                           <span className="hash commit-hash">
                             {row.commit.shortHash}
+                            {row.isTip ? (
+                              <span className="commit-tip-mark" title="分支尖端">
+                                ●
+                              </span>
+                            ) : null}
                           </span>
                           {badges.length > 0 && (
                             <span className="ref-badges">
@@ -720,8 +817,32 @@ export function ExtraPane(props: Props) {
           onNotice={props.onNotice}
           onError={props.onError}
           onOpenAuth={props.onOpenAuth}
+          featureAllowed={props.releaseAllowed !== false}
+          onFeatureDenied={() => props.onFeatureDenied?.("release")}
           onConfigureRepo={props.onConfigureReleaseRepo}
           progress={props.updateProgress}
+          locale={loc}
+        />
+      )}
+      {props.pane === "wiki" && (
+        <WikiManager
+          platform={props.releasePlatform}
+          onPlatform={props.onReleasePlatform}
+          owner={props.releaseOwner}
+          repo={props.releaseRepo}
+          giteeOwner={props.releaseGiteeOwner}
+          giteeRepo={props.releaseGiteeRepo}
+          githubLoggedIn={props.githubLoggedIn}
+          giteeLoggedIn={props.giteeLoggedIn}
+          busy={props.busy || props.updateBusy}
+          onBusy={props.onUpdateBusy}
+          onNotice={props.onNotice}
+          onError={props.onError}
+          onOpenAuth={props.onOpenAuth}
+          featureAllowed={props.wikiAllowed !== false}
+          onFeatureDenied={() => props.onFeatureDenied?.("wiki")}
+          onConfigureRepo={props.onConfigureReleaseRepo}
+          progress={props.wikiProgress ?? null}
           locale={loc}
         />
       )}

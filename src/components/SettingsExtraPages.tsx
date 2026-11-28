@@ -450,6 +450,7 @@ export function SettingsResetPage({
               updatePrefs({
                 ...DEFAULT_PREFS,
                 enabledLocales: [...DEFAULT_PREFS.enabledLocales],
+                permissions: { ...DEFAULT_PREFS.permissions },
               });
               setNotice("已重置设置");
             })();

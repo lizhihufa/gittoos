@@ -9,9 +9,53 @@
 
 ---
 
-选一个项目文件夹，在图形界面里完成日常 Git 操作。基于 Tauri 2 + React + TypeScript，通过本机 `git` 命令读写仓库。安装器显示名称为 **青枝**（可自选安装路径；安装时会先卸载已有版本）。
+选一个项目文件夹，在图形界面里完成日常 Git 操作。基于 Tauri 2 + React + TypeScript，通过本机 `git` 命令读写仓库。
 
 完整操作说明见根目录 [使用说明书.md](./使用说明书.md)；应用内也可点「说明书」。设置 → **关于** 可查看作者邮箱并反馈问题。
+
+## 安装
+
+### Windows
+
+1. 下载安装包：`qingzhi_<版本>_x64-setup.exe`（例如 `qingzhi_1.6.5_x64-setup.exe`）
+2. 双击运行；可自选安装路径。若已安装旧版会先卸载再安装。
+3. 安装包已内嵌 WebView2。若仍提示缺少运行时，首次启动会尝试自动安装；也可手动安装：https://go.microsoft.com/fwlink/p/?LinkId=2124703
+
+安装前请先退出正在运行的青枝。窗口标题仍显示「青枝」。
+
+### Linux（Debian / Ubuntu，推荐 apt）
+
+Linux 安装包为英文名 **`qingzhi`**（`.deb`），例如：
+
+`qingzhi_1.6.3_amd64.deb`
+
+**推荐用 apt 安装**（会自动安装 WebKitGTK 等依赖，一般不必再手动装环境）：
+
+```bash
+# 进入 .deb 所在目录后执行
+sudo apt update
+sudo apt install ./qingzhi_1.6.3_amd64.deb
+```
+
+将文件名换成你下载的实际版本即可。
+
+安装后可从应用菜单启动，或在终端运行：
+
+```bash
+qingzhi
+```
+
+卸载：
+
+```bash
+sudo apt remove qingzhi
+```
+
+**说明：**
+
+- 建议系统：Ubuntu 22.04+ / Debian 12+（需提供 `libwebkit2gtk-4.1-0`）
+- 请用 `apt install ./xxx.deb`，不要只用 `dpkg -i`（后者不会自动装依赖；若已误用，再执行 `sudo apt -f install` 补全）
+- 需本机已安装 Git（`sudo apt install git`）
 
 ## 技术栈
 
@@ -19,9 +63,9 @@
 |---|---|
 | 桌面壳 | Tauri 2（Rust） |
 | 界面 | React + TypeScript + Tailwind CSS |
-| Git | 本机 `git.exe`（Git for Windows） |
+| Git | 本机 `git`（Windows 为 Git for Windows） |
 
-## 主要功能（v1.6.1）
+## 主要功能（v1.6.3）
 
 - 打开 / 初始化 / 克隆（可选分支、浅克隆）；多仓库标签页；最近打开
 - 未暂存 / 已暂存、按块/按行暂存与放弃、加入 .gitignore、内置冲突编辑器、冲突继续/变基跳过/放弃
@@ -37,35 +81,38 @@
 
 ## 开发
 
-需要：Node.js、Rust（stable）、Git for Windows、Visual Studio Build Tools（含 C++ 工作负载）、WebView2。
-
-安装包已内嵌 WebView2。若其他电脑仍提示缺少运行时，首次启动会尝试自动安装；也可手动安装：https://go.microsoft.com/fwlink/p/?LinkId=2124703
+需要：Node.js、Rust（stable）、Git；Windows 另需 Visual Studio Build Tools（C++）与 WebView2。Linux 构建另需 `libwebkit2gtk-4.1-dev` 等（见 Tauri 官方前置依赖）。
 
 ```bash
 npm install
-npm run tauri dev
+npm run tauri:dev
 ```
 
-打包安装程序（Windows NSIS）：
+### 打包
 
-推荐双击根目录 **`启动打包工具.bat`**（识别当前版本、拟定下一版、进度条一键打包）。也可：
+推荐双击根目录 **`启动打包工具.bat`**（改版本、一键打 Windows + Linux、清理缓存）。也可：
 
 ```bash
 npm run packager
-# 或
-npm run build:installer
+# 或分别：
+npm run tauri:build:win
+npm run tauri:build:linux   # 需在 Linux / WSL 环境
 ```
 
-生成文件大约在：
+产物位置：
 
-`src-tauri/target/release/bundle/nsis/青枝_1.3.0_x64-setup.exe`
+| 平台 | 路径示例 |
+|------|----------|
+| Windows | `src-tauri/target/release/bundle/nsis/qingzhi_<版本>_x64-setup.exe` |
+| Linux | `src-tauri/target/release/bundle/deb/qingzhi_<版本>_amd64.deb` |
 
 ### 升级安装
 
-- 保持 `identifier`（`com.qingzhi.app`）不变；展示名称为 **青枝**（`productName`），可执行文件仍为 `qingzhi.exe`。
+- 保持 `identifier`（`com.qingzhi.app`）不变。
+- 安装包文件名均为英文 **qingzhi**；窗口标题仍为 **青枝**；可执行文件为 `qingzhi` / `qingzhi.exe`。
 - **每次发新包先改版本号**（打包工具会同步改 `package.json`、`tauri.conf.json`、`Cargo.toml`）。
-- 安装时可自选路径；若检测到旧版（含早期英文名 `qingzhi`），会先自动卸载再安装；已禁止用旧包降级覆盖新版。
-- 安装前请先退出正在运行的青枝。
+- Windows：安装时可自选路径；检测到旧版会先卸载再装；已禁止用旧包降级覆盖新版。
+- Linux：用 `sudo apt install ./qingzhi_<新版本>_amd64.deb` 覆盖升级。
 
 ## 目录
 

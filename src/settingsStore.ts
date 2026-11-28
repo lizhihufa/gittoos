@@ -1,3 +1,11 @@
+import {
+  DEFAULT_FEATURE_PERMISSIONS,
+  parseFeaturePermissions,
+  type FeaturePermissions,
+} from "./permissions";
+
+export type { FeaturePermissions };
+
 const CLONE_KEY = "gittool.cloneUrl";
 const PREFS_KEY = "gittool.prefs";
 const TABS_KEY = "gittool.openRepos";
@@ -64,6 +72,8 @@ export interface AppPrefs {
   fontSize: FontSizeId;
   rememberRecent: boolean;
   showCommitGraph: boolean;
+  /** Diff pane layout. */
+  diffViewMode: "unified" | "split";
   useRepoCache: boolean;
   wallpaperPath: string;
   wallpaperKind: WallpaperKind;
@@ -78,6 +88,12 @@ export interface AppPrefs {
   /** Manual Gitee owner/repo for Release pane; empty = detect from remotes. */
   releaseGiteeRepoOverride: string;
   mirrorSyncMethod: "app" | "actions";
+  /**
+   * Mirror sync direction for「镜像同步」.
+   * github-to-gitee: push GitHub, then sync Gitee
+   * gitee-to-github: push Gitee, then sync GitHub
+   */
+  mirrorDirection: "github-to-gitee" | "gitee-to-github";
   locale: string;
   /** Enabled locale codes chosen from the built-in catalog. */
   enabledLocales: string[];
@@ -86,6 +102,8 @@ export interface AppPrefs {
   hostsText: string;
   /** When true, Hosts are managed automatically (resolve + write). */
   hostsAuto: boolean;
+  /** Feature permission switches (enforced in UI + backend). */
+  permissions: FeaturePermissions;
 }
 
 export const DEFAULT_PREFS: AppPrefs = {
@@ -96,6 +114,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   fontSize: "normal",
   rememberRecent: true,
   showCommitGraph: true,
+  diffViewMode: "unified",
   useRepoCache: true,
   wallpaperPath: "",
   wallpaperKind: "none",
@@ -107,12 +126,14 @@ export const DEFAULT_PREFS: AppPrefs = {
   releaseRepoOverride: "",
   releaseGiteeRepoOverride: "",
   mirrorSyncMethod: "app",
+  mirrorDirection: "github-to-gitee",
   locale: "zh-CN",
   enabledLocales: ["zh-CN", "en"],
   githubMirrorId: "off",
   githubMirrorCustom: "",
   hostsText: "",
   hostsAuto: false,
+  permissions: { ...DEFAULT_FEATURE_PERMISSIONS },
 };
 
 function clampPercent(value: unknown, fallback: number): number {
@@ -196,6 +217,7 @@ export function loadPrefs(): AppPrefs {
       fontSize: parsed.fontSize === "large" ? "large" : "normal",
       rememberRecent: parsed.rememberRecent !== false,
       showCommitGraph: parsed.showCommitGraph !== false,
+      diffViewMode: parsed.diffViewMode === "split" ? "split" : "unified",
       useRepoCache: parsed.useRepoCache !== false,
       wallpaperPath:
         typeof parsed.wallpaperPath === "string" ? parsed.wallpaperPath : "",
@@ -227,6 +249,10 @@ export function loadPrefs(): AppPrefs {
           : "",
       mirrorSyncMethod:
         parsed.mirrorSyncMethod === "actions" ? "actions" : "app",
+      mirrorDirection:
+        parsed.mirrorDirection === "gitee-to-github"
+          ? "gitee-to-github"
+          : "github-to-gitee",
       locale,
       enabledLocales: parseEnabledLocales(
         parsed.enabledLocales ?? parsed.customLocales,
@@ -242,11 +268,13 @@ export function loadPrefs(): AppPrefs {
           : "",
       hostsText: typeof parsed.hostsText === "string" ? parsed.hostsText : "",
       hostsAuto: parsed.hostsAuto === true,
+      permissions: parseFeaturePermissions(parsed.permissions),
     };
   } catch {
     return {
       ...DEFAULT_PREFS,
       enabledLocales: [...DEFAULT_PREFS.enabledLocales],
+      permissions: { ...DEFAULT_FEATURE_PERMISSIONS },
     };
   }
 }

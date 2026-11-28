@@ -1,7 +1,7 @@
 {
   "name": "qingzhi",
   "private": true,
-  "version": "1.6.3",
+  "version": "1.6.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:win": "tauri build --bundles nsis",
-    "tauri:build:linux": "tauri build --bundles deb,appimage --config tauri.linux.conf.json",
+    "tauri:build:linux": "tauri build --bundles deb",
+    "tauri:build:all": "npm run tauri:build:win && npm run tauri:build:linux",
     "build:installer": "tauri build --bundles nsis",
     "packager": "node packager/server.mjs"
   },

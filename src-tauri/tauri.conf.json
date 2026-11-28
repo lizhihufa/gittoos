@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "青枝",
+  "productName": "qingzhi",
   "mainBinaryName": "qingzhi",
-  "version": "1.6.3",
+  "version": "1.6.9",
   "identifier": "com.qingzhi.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -53,8 +53,7 @@
     "active": true,
     "targets": [
       "nsis",
-      "deb",
-      "appimage"
+      "deb"
     ],
     "publisher": "理智护发",
     "shortDescription": "青枝 — 本地 Git 桌面工具",
@@ -95,9 +94,6 @@
           "libwebkit2gtk-4.1-0",
           "libgtk-3-0"
         ]
-      },
-      "appimage": {
-        "bundleMediaFramework": false
       }
     }
   }

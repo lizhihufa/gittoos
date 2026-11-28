@@ -18,12 +18,13 @@ pub use auth::{
     SshStatus, SshTestResult,
 };
 pub use runner::{
-    ensure_git, git_info, local_proxy, run_shell, set_app_handle, with_git_quiet, GitBinary,
+    emit_terminal, ensure_git, git_info, local_proxy, run_git, run_git_timeout, run_shell,
+    set_app_handle, with_git_quiet, GitBinary,
 };
 pub use status::{repo_status, repo_status_light_nonblocking};
 pub use types::*;
 
-use runner::{run_git, run_git_timeout, run_git_with_env};
+use runner::run_git_with_env;
 use std::path::Path;
 
 pub fn is_repository(git: &GitBinary, repo: &Path) -> Result<bool, GitError> {

@@ -164,7 +164,7 @@ function estimateProgress(line, prev) {
   if (/Built application|Patching|Target: x64|Bundling/i.test(text)) {
     next = Math.max(next, 84);
   }
-  if (/Running makensis|produce .*setup\.exe|debian|appimage|AppImage|\.deb/i.test(text)) {
+  if (/Running makensis|produce .*setup\.exe|debian|\.deb|qingzhi_/i.test(text)) {
     next = Math.max(next, 90);
   }
   if (/Finished \d+ bundle/i.test(text)) {
@@ -194,7 +194,13 @@ function findArtifacts(version, target) {
     const nsis = listBundleFiles(path.join(bundleRoot, "nsis"), (f) =>
       f.toLowerCase().endsWith("-setup.exe"),
     );
-    const preferred = nsis.find((f) => f.name.includes(version));
+    const preferred =
+      nsis.find(
+        (f) =>
+          f.name.toLowerCase().includes("qingzhi") && f.name.includes(version),
+      ) ||
+      nsis.find((f) => f.name.toLowerCase().includes("qingzhi")) ||
+      nsis.find((f) => f.name.includes(version));
     if (preferred) items.push({ ...preferred, kind: "windows-nsis" });
     else if (nsis[0]) items.push({ ...nsis[0], kind: "windows-nsis" });
   }
@@ -203,16 +209,11 @@ function findArtifacts(version, target) {
     const deb = listBundleFiles(path.join(bundleRoot, "deb"), (f) =>
       f.toLowerCase().endsWith(".deb"),
     );
-    const appimage = listBundleFiles(path.join(bundleRoot, "appimage"), (f) =>
-      f.toLowerCase().endsWith(".appimage"),
-    );
-    const pick = (list, kind) => {
-      const preferred = list.find((f) => f.name.includes(version));
-      if (preferred) items.push({ ...preferred, kind });
-      else if (list[0]) items.push({ ...list[0], kind });
-    };
-    pick(deb, "linux-deb");
-    pick(appimage, "linux-appimage");
+    const preferred = deb.find((f) => f.name.toLowerCase().includes("qingzhi"));
+    const byVersion = deb.find((f) => f.name.includes(version));
+    if (preferred) items.push({ ...preferred, kind: "linux-deb" });
+    else if (byVersion) items.push({ ...byVersion, kind: "linux-deb" });
+    else if (deb[0]) items.push({ ...deb[0], kind: "linux-deb" });
   }
 
   return items;
@@ -223,10 +224,6 @@ function toWslPath(winPath) {
   const m = resolved.match(/^([A-Za-z]):\\(.*)$/);
   if (!m) return resolved.replace(/\\/g, "/");
   return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, "/")}`;
-}
-
-function shellQuote(s) {
-  return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
 function normalizeTarget(raw) {
@@ -335,14 +332,27 @@ function startClean() {
   });
 }
 
-function spawnLogged(command, opts, onLine) {
+function spawnLogged(step, opts, onLine) {
   return new Promise((resolve) => {
-    const child = spawn(command, {
-      ...opts,
-      shell: true,
-      windowsHide: true,
-      env: { ...process.env, FORCE_COLOR: "0", ...(opts.env || {}) },
-    });
+    const env = { ...process.env, FORCE_COLOR: "0", ...(opts.env || {}) };
+    /** @type {import("node:child_process").ChildProcessWithoutNullStreams} */
+    let child;
+    if (step.argv) {
+      // 避免 Windows cmd 二次解析引号（中文路径 / WSL 必走这条）
+      child = spawn(step.argv[0], step.argv.slice(1), {
+        cwd: opts.cwd || ROOT,
+        env,
+        shell: false,
+        windowsHide: true,
+      });
+    } else {
+      child = spawn(step.command, {
+        cwd: opts.cwd || ROOT,
+        env,
+        shell: true,
+        windowsHide: true,
+      });
+    }
     buildProc = child;
 
     const onChunk = (buf) => {
@@ -369,26 +379,72 @@ function spawnLogged(command, opts, onLine) {
   });
 }
 
-function winBuildCommand() {
-  return "npm run tauri:build:win";
+function winBuildStep() {
+  return {
+    name: "Windows",
+    command: "npm run tauri:build:win",
+    display: "npm run tauri:build:win",
+  };
 }
 
-function linuxBuildCommand() {
+function linuxBuildStep() {
+  // 写成脚本再交给 WSL，避开 cmd/bash 多层引号（中文目录名会炸）
+  const scriptWin = path.join(ROOT, "packager", "_linux-build.sh");
   const wslRoot = toWslPath(ROOT);
-  // 使用干净 Linux PATH，避免继承 Windows 的 node/npm。
-  const script = [
-    "set -e",
-    'export PATH="$HOME/.cargo/bin:$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node 2>/dev/null | tail -1)/bin:/usr/local/bin:/usr/bin:/bin"',
+  const scriptBody = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    // 只保留 Linux 工具链，避免继承到 Windows 的残缺 npm
+    'export PATH="$HOME/.local/node/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"',
     '[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"',
-    '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"',
-    `cd ${shellQuote(wslRoot)}`,
-    "command -v node >/dev/null",
-    "command -v cargo >/dev/null",
-    "command -v rustc >/dev/null",
-    "npm run tauri:build:linux",
-  ].join("; ");
+    // 若没有 Linux 版 node，自动下载官方二进制到 ~/.local/node
+    "if ! command -v node >/dev/null 2>&1; then",
+    '  echo "# 正在为 WSL 安装 Node.js …"',
+    '  NODE_VER="v22.14.0"',
+    '  PREFIX="$HOME/.local/node"',
+    '  mkdir -p "$HOME/.local" /tmp',
+    '  curl -fsSL "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz" -o /tmp/node-qingzhi.tar.xz',
+    '  rm -rf "$PREFIX"',
+    '  tar -xJf /tmp/node-qingzhi.tar.xz -C "$HOME/.local"',
+    '  mv "$HOME/.local/node-${NODE_VER}-linux-x64" "$PREFIX"',
+    '  rm -f /tmp/node-qingzhi.tar.xz',
+    '  export PATH="$PREFIX/bin:$PATH"',
+    "fi",
+    `cd ${JSON.stringify(wslRoot)}`,
+    'echo "# cwd=$(pwd)"',
+    'command -v node >/dev/null || { echo "WSL 未找到 node"; exit 127; }',
+    'command -v cargo >/dev/null || { echo "WSL 未找到 cargo，请先安装 Rust (rustup)"; exit 127; }',
+    'command -v rustc >/dev/null || { echo "WSL 未找到 rustc"; exit 127; }',
+    'pkg-config --exists webkit2gtk-4.1 || { echo "WSL 缺少 libwebkit2gtk-4.1-dev。请在 Ubuntu 执行："; echo "  sudo apt update && sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf build-essential"; exit 127; }',
+    "node -v",
+    "npm -v",
+    "rustc -V",
+    // Windows 装的 node_modules 没有 Linux 原生绑定，构建前补上
+    "CLI_VER=$(node -p \"require('./node_modules/@tauri-apps/cli/package.json').version\")",
+    'if [ ! -d node_modules/@tauri-apps/cli-linux-x64-gnu ]; then',
+    '  echo "# 安装 @tauri-apps/cli-linux-x64-gnu@$CLI_VER …"',
+    '  npm install --no-save --no-fund --no-audit "@tauri-apps/cli-linux-x64-gnu@$CLI_VER"',
+    "fi",
+    // 优先 cargo-tauri；Linux 会自动合并 tauri.linux.conf.json，无需再传 --config
+    'if command -v cargo-tauri >/dev/null 2>&1; then',
+    '  echo "# 使用 cargo tauri build …"',
+    "  npm run build",
+    "  (cd src-tauri && cargo tauri build --bundles deb)",
+    "else",
+    '  echo "# 使用 npm run tauri:build:linux …"',
+    "  npm run tauri:build:linux",
+    "fi",
+    "",
+  ].join("\n");
+  fs.writeFileSync(scriptWin, scriptBody, "utf8");
 
-  return `wsl -d ${WSL_DISTRO} -e bash -lc ${shellQuote(script)}`;
+  const scriptWsl = toWslPath(scriptWin);
+  return {
+    name: "Linux (WSL)",
+    // --cd 用 Windows 路径；脚本路径用 /mnt/...，整条用 argv，不经 cmd 解析
+    argv: ["wsl.exe", "-d", WSL_DISTRO, "--cd", ROOT, "-e", "bash", scriptWsl],
+    display: `wsl -d ${WSL_DISTRO} -- bash ${scriptWsl}`,
+  };
 }
 
 async function startBuild(target) {
@@ -415,17 +471,19 @@ async function startBuild(target) {
 
   const steps = [];
   if (platform === "win" || platform === "both") {
-    steps.push({ name: "Windows", command: winBuildCommand() });
+    steps.push(winBuildStep());
   }
   if (platform === "linux" || platform === "both") {
-    steps.push({ name: "Linux (WSL)", command: linuxBuildCommand() });
+    steps.push(linuxBuildStep());
   }
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const base = Math.floor((i / steps.length) * 100);
     progress = Math.max(progress, base + 2);
-    broadcast("log", { text: `\n$ ${step.command}\n# —— ${step.name} ——\n` });
+    broadcast("log", {
+      text: `\n$ ${step.display || step.command}\n# —— ${step.name} ——\n`,
+    });
     broadcast("status", {
       running: true,
       kind: "build",
@@ -434,7 +492,7 @@ async function startBuild(target) {
       message: `正在打包 ${step.name}…`,
     });
 
-    const result = await spawnLogged(step.command, { cwd: ROOT }, (line) => {
+    const result = await spawnLogged(step, { cwd: ROOT }, (line) => {
       progress = Math.max(
         progress,
         base + Math.floor(estimateProgress(line, 0) / steps.length),
@@ -539,7 +597,7 @@ const server = http.createServer(async (req, res) => {
       if (body.version) {
         writeVersions(String(body.version).trim());
       }
-      const target = normalizeTarget(body.target || "win");
+      const target = normalizeTarget(body.target || "both");
       void startBuild(target);
       sendJson(res, 200, { ok: true, current: currentVersion(), target });
     } catch (e) {

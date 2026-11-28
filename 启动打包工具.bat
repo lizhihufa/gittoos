@@ -5,9 +5,9 @@ title 青枝打包工具
 
 echo ========================================
 echo   青枝打包工具
-echo   - Windows / Linux 打包
-echo   - 清理构建缓存
-echo   - 版本号同步
+echo   - 一键打包 Windows + Linux
+echo   - 也可单独打 Windows 或 Linux
+echo   - 清理构建缓存 / 版本号同步
 echo ========================================
 echo.
 
@@ -30,11 +30,15 @@ if not exist "node_modules\" (
 )
 
 echo 正在启动网页端打包工具…
-echo 浏览器打开后可：
-echo   1^) 改版本并打包 Windows（NSIS）
-echo   2^) 经 WSL 打包 Linux（deb / AppImage）
-echo   3^) 清理 src-tauri\target 与 dist 缓存
 echo.
+echo 浏览器打开后：
+echo   - 主按钮：一键打包 Windows + Linux
+echo       Windows → src-tauri\target\release\bundle\nsis\
+echo       Linux   → src-tauri\target\release\bundle\deb\qingzhi_*.deb
+echo   - 也可点「仅 Windows」或「仅 Linux」
+echo   - 清理缓存会删掉 target 与 dist
+echo.
+echo Linux 依赖 WSL（Ubuntu）内已装 Rust / Node / webkit。
 echo 关闭本窗口即停止打包服务。
 echo.
 

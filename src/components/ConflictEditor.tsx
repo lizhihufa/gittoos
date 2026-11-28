@@ -79,6 +79,11 @@ export function ConflictEditor({
   }
 
   let conflictIndex = -1;
+  const done = parsed.conflictCount - remaining;
+  const progressPct =
+    parsed.conflictCount > 0
+      ? Math.round((done / parsed.conflictCount) * 100)
+      : 100;
 
   return (
     <div className="panel conflict-editor">
@@ -119,6 +124,28 @@ export function ConflictEditor({
           </button>
         </span>
       </div>
+      <div className="conflict-progress" aria-label="冲突处理进度">
+        <div className="conflict-progress-meta">
+          <span>已处理 {done}/{parsed.conflictCount}</span>
+          <span className="muted">{progressPct}%</span>
+        </div>
+        <div className="conflict-progress-track">
+          <i style={{ width: `${progressPct}%` }} />
+        </div>
+        <div className="conflict-minimap" aria-hidden>
+          {conflicts.map((_, i) => (
+            <span
+              key={i}
+              className={
+                resolutions[i] !== null
+                  ? "conflict-minimap-dot is-done"
+                  : "conflict-minimap-dot"
+              }
+              title={`冲突 #${i + 1}`}
+            />
+          ))}
+        </div>
+      </div>
       <div className="conflict-editor-body">
         {parsed.segments.map((seg, segIdx) => {
           if (seg.kind === "text") {
@@ -133,6 +160,15 @@ export function ConflictEditor({
           const idx = conflictIndex;
           const resolved = resolutions[idx];
           const draft = manual[idx] ?? resolved ?? seg.ours;
+          const oursLines = seg.ours ? seg.ours.split("\n").length : 0;
+          const theirsLines = seg.theirs ? seg.theirs.split("\n").length : 0;
+          const baseLines =
+            seg.base !== null
+              ? seg.base
+                ? seg.base.split("\n").length
+                : 0
+              : null;
+          const lineMax = Math.max(1, oursLines, theirsLines, baseLines ?? 0);
           return (
             <div
               key={`c-${segIdx}`}
@@ -171,18 +207,37 @@ export function ConflictEditor({
                   </button>
                 </span>
               </div>
+              <div className="conflict-size-bars" aria-hidden>
+                <div className="conflict-size-row is-ours" title={`当前 ${oursLines} 行`}>
+                  <span>当前</span>
+                  <i style={{ width: `${(oursLines / lineMax) * 100}%` }} />
+                  <em>{oursLines}</em>
+                </div>
+                {baseLines !== null ? (
+                  <div className="conflict-size-row is-base" title={`祖先 ${baseLines} 行`}>
+                    <span>祖先</span>
+                    <i style={{ width: `${(baseLines / lineMax) * 100}%` }} />
+                    <em>{baseLines}</em>
+                  </div>
+                ) : null}
+                <div className="conflict-size-row is-theirs" title={`传入 ${theirsLines} 行`}>
+                  <span>传入</span>
+                  <i style={{ width: `${(theirsLines / lineMax) * 100}%` }} />
+                  <em>{theirsLines}</em>
+                </div>
+              </div>
               <div className="conflict-cols">
-                <div className="conflict-col">
+                <div className="conflict-col is-ours">
                   <div className="muted small">当前 · {seg.oursLabel}</div>
                   <pre>{seg.ours || "（空）"}</pre>
                 </div>
                 {seg.base !== null && (
-                  <div className="conflict-col">
+                  <div className="conflict-col is-base">
                     <div className="muted small">共同祖先</div>
                     <pre>{seg.base || "（空）"}</pre>
                   </div>
                 )}
-                <div className="conflict-col">
+                <div className="conflict-col is-theirs">
                   <div className="muted small">传入 · {seg.theirsLabel}</div>
                   <pre>{seg.theirs || "（空）"}</pre>
                 </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
@@ -23,7 +23,9 @@ type Props = {
   onBusy: (busy: boolean) => void;
   onNotice: (text: string | null) => void;
   onError: (text: string | null) => void;
-  onOpenAuth: () => void;
+  onOpenAuth: (provider: "github" | "gitee") => void;
+  featureAllowed?: boolean;
+  onFeatureDenied?: () => void;
   onConfigureRepo?: () => void;
   progress: { percent: number; label: string } | null;
   locale?: string;
@@ -81,6 +83,29 @@ export function ReleaseManager(props: Props) {
   const repo = isGitee ? props.giteeRepo : props.repo;
   const loggedIn = isGitee ? props.giteeLoggedIn : props.githubLoggedIn;
   const hostLabel = isGitee ? "Gitee" : "GitHub";
+  const featureAllowed = props.featureAllowed !== false;
+
+  const releaseChart = useMemo(() => {
+    const rows = items.slice(0, 8).map((rel) => {
+      const bytes = rel.assets.reduce((sum, a) => sum + (a.size || 0), 0);
+      return {
+        id: rel.id,
+        tag: rel.tagName,
+        title: releaseTitleOf(rel) || rel.tagName,
+        bytes,
+        assetCount: rel.assets.length,
+      };
+    });
+    const maxBytes = Math.max(1, ...rows.map((r) => r.bytes));
+    const maxAssets = Math.max(1, ...rows.map((r) => r.assetCount));
+    return { rows, maxBytes, maxAssets };
+  }, [items]);
+
+  function requireFeature(): boolean {
+    if (featureAllowed) return true;
+    props.onFeatureDenied?.();
+    return false;
+  }
   const { onError } = props;
 
   useEffect(() => {
@@ -118,25 +143,51 @@ export function ReleaseManager(props: Props) {
     }
   }, [items, tag, props.defaultTag, titleTouched, title]);
 
-  const refresh = useCallback(async () => {
-    if (!owner.trim() || !repo.trim()) {
-      setItems([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    onError(null);
-    try {
-      const list = isGitee
-        ? await api.listGiteeReleases(owner, repo, 20)
-        : await api.listGithubReleases(owner, repo, 20);
-      setItems(list);
-    } catch (e) {
-      onError(failureLine(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [owner, repo, isGitee, onError]);
+  const refresh = useCallback(
+    async (opts?: { promptLogin?: boolean }) => {
+      if (!owner.trim() || !repo.trim()) {
+        setItems([]);
+        setLoading(false);
+        return;
+      }
+      if (!featureAllowed) {
+        setItems([]);
+        setLoading(false);
+        if (opts?.promptLogin) props.onFeatureDenied?.();
+        return;
+      }
+      if (!loggedIn) {
+        setItems([]);
+        setLoading(false);
+        if (opts?.promptLogin) {
+          props.onOpenAuth(isGitee ? "gitee" : "github");
+        }
+        return;
+      }
+      setLoading(true);
+      onError(null);
+      try {
+        const list = isGitee
+          ? await api.listGiteeReleases(owner, repo, 20)
+          : await api.listGithubReleases(owner, repo, 20);
+        setItems(list);
+      } catch (e) {
+        onError(failureLine(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [
+      owner,
+      repo,
+      isGitee,
+      loggedIn,
+      featureAllowed,
+      onError,
+      props.onOpenAuth,
+      props.onFeatureDenied,
+    ],
+  );
 
   useEffect(() => {
     void refresh();
@@ -169,9 +220,9 @@ export function ReleaseManager(props: Props) {
       props.onError(i18n(loc, "release.needFile"));
       return;
     }
+    if (!requireFeature()) return;
     if (!loggedIn) {
-      props.onError(i18n(loc, isGitee ? "release.needGitee" : "release.needGithub"));
-      props.onOpenAuth();
+      props.onOpenAuth(isGitee ? "gitee" : "github");
       return;
     }
 
@@ -225,8 +276,9 @@ export function ReleaseManager(props: Props) {
   }
 
   async function removeAsset(release: ReleaseItem, assetId: number, name: string) {
+    if (!requireFeature()) return;
     if (!loggedIn) {
-      props.onOpenAuth();
+      props.onOpenAuth(isGitee ? "gitee" : "github");
       return;
     }
     const ok = await confirmAction(
@@ -255,8 +307,9 @@ export function ReleaseManager(props: Props) {
   }
 
   async function removeRelease(release: ReleaseItem) {
+    if (!requireFeature()) return;
     if (!loggedIn) {
-      props.onOpenAuth();
+      props.onOpenAuth(isGitee ? "gitee" : "github");
       return;
     }
     const ok = await confirmAction(
@@ -352,7 +405,7 @@ export function ReleaseManager(props: Props) {
             type="button"
             className="pane-btn pane-btn--ghost"
             disabled={props.busy || loading || !hasTarget}
-            onClick={() => void refresh()}
+            onClick={() => void refresh({ promptLogin: true })}
           >
             {loading ? i18n(loc, "release.refreshing") : i18n(loc, "release.refresh")}
           </button>
@@ -410,6 +463,42 @@ export function ReleaseManager(props: Props) {
           </div>
         </div>
       )}
+
+      {releaseChart.rows.length > 0 ? (
+        <div className="release-chart">
+          <h5>{i18n(loc, "release.chartTitle")}</h5>
+          <ul className="release-chart-list">
+            {releaseChart.rows.map((row) => (
+              <li key={row.id}>
+                <div className="release-chart-meta">
+                  <strong title={row.title}>{row.tag}</strong>
+                  <span className="muted small">
+                    {row.assetCount} ·{" "}
+                    {row.bytes < 1024 * 1024
+                      ? `${(row.bytes / 1024).toFixed(0)} KB`
+                      : `${(row.bytes / (1024 * 1024)).toFixed(1)} MB`}
+                  </span>
+                </div>
+                <div className="release-chart-track" title="资产总大小">
+                  <i
+                    style={{
+                      width: `${(row.bytes / releaseChart.maxBytes) * 100}%`,
+                    }}
+                  />
+                </div>
+                <div className="release-chart-track is-count" title="资产数量">
+                  <i
+                    style={{
+                      width: `${(row.assetCount / releaseChart.maxAssets) * 100}%`,
+                    }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="muted small">{i18n(loc, "release.chartHint")}</p>
+        </div>
+      ) : null}
 
       <ul className="record-list">
         {items.length === 0 && !loading && (

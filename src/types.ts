@@ -112,6 +112,46 @@ export interface RepoSnapshot {
 
 export type AuthProvider = "github" | "gitee";
 
+export interface PlatformContributor {
+  login: string;
+  contributions: number;
+}
+
+export interface PlatformLanguageShare {
+  name: string;
+  bytes: number;
+  percent: number;
+}
+
+export interface PlatformWorkflowRun {
+  name: string;
+  status: string;
+  conclusion: string;
+  createdAt: string;
+  htmlUrl: string;
+}
+
+export interface PlatformRepoStats {
+  platform: string;
+  owner: string;
+  repo: string;
+  fullName: string;
+  description: string;
+  stars: number;
+  forks: number;
+  watchers: number;
+  openIssues: number;
+  openPrs: number;
+  defaultBranch: string;
+  language: string;
+  privateRepo: boolean;
+  htmlUrl: string;
+  pushedAt: string;
+  languages: PlatformLanguageShare[];
+  contributors: PlatformContributor[];
+  workflowRuns: PlatformWorkflowRun[];
+}
+
 export interface AccountSummary {
   id: string;
   login: string;
@@ -230,6 +270,26 @@ export interface ReleaseItem {
   htmlUrl: string;
   publishedAt: string;
   assets: ReleaseAssetInfo[];
+}
+
+export type WikiPlatform = "github" | "gitee";
+
+export interface WikiStatus {
+  platform: string;
+  owner: string;
+  repo: string;
+  localPath: string;
+  cloned: boolean;
+  dirty: boolean;
+  pageCount: number;
+  webUrl: string;
+  hasToken: boolean;
+}
+
+export interface WikiPageInfo {
+  name: string;
+  slug: string;
+  path: string;
 }
 
 export interface ActionsMirrorSetup {

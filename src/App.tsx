@@ -16,6 +16,7 @@ import { confirmAction, withConfirm } from "./confirm";
 import { ChangeList } from "./components/ChangeList";
 import { SidebarSection } from "./components/SidebarSection";
 import { ExtraPane, type Pane } from "./components/ExtraPane";
+import type { OverviewPlatform } from "./components/OverviewPane";
 import {
   IdentityRemotePane,
   type IdentityRemoteDraft,
@@ -68,6 +69,11 @@ import {
 } from "./hooks/useAuthBootstrap";
 import { useRepoActions } from "./hooks/useRepoActions";
 import {
+  FEATURE_PERM_KEYS,
+  featurePermLabel,
+  type FeaturePermKey,
+} from "./permissions";
+import {
   applyPrefsToDocument,
   clearAllLocalAppData,
   DEFAULT_PREFS,
@@ -87,6 +93,8 @@ type SettingsPage =
   | "identity"
   | "appearance"
   | "behavior"
+  | "permissions"
+  | "platformPerms"
   | "language"
   | "network"
   | "reset"
@@ -292,6 +300,10 @@ export default function App() {
     percent: number;
     label: string;
   } | null>(null);
+  const [wikiProgress, setWikiProgress] = useState<{
+    percent: number;
+    label: string;
+  } | null>(null);
   const [dismissedUpdateTag, setDismissedUpdateTag] = useState<string | null>(null);
   const [boot, setBoot] = useState<BootState | null>(null);
   const [entering, setEntering] = useState(false);
@@ -433,6 +445,21 @@ export default function App() {
       "actions-mirror-progress",
       (event) => {
         setMirrorProgress({
+          percent: Math.max(0, Math.min(100, event.payload.percent)),
+          label: event.payload.label,
+        });
+      },
+    );
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<{ percent: number; label: string }>(
+      "wiki-progress",
+      (event) => {
+        setWikiProgress({
           percent: Math.max(0, Math.min(100, event.payload.percent)),
           label: event.payload.label,
         });
@@ -638,10 +665,10 @@ export default function App() {
       const background = opts?.background === true;
       if (!background) {
         busyRef.current = true;
-        setBusy(true);
+    setBusy(true);
       }
-      setError(null);
-      try {
+    setError(null);
+    try {
         const core = await api.getRepoCore(path);
         if (repoPathRef.current === path || !background) {
           applyCore(core);
@@ -658,7 +685,7 @@ export default function App() {
             setTags(extras.tags);
             saveRepoCache(path, core, extras);
           }
-        } catch (e) {
+    } catch (e) {
           if (repoPathRef.current === path) {
             saveRepoCache(path, core);
             if (!background) setError(failureLine(e));
@@ -666,9 +693,9 @@ export default function App() {
         }
       } catch (e) {
         if (!background) {
-          setError(failureLine(e));
+      setError(failureLine(e));
           busyRef.current = false;
-          setBusy(false);
+      setBusy(false);
         }
         throw e;
       }
@@ -752,6 +779,8 @@ export default function App() {
 
   const [releasePlatform, setReleasePlatform] =
     useState<ReleasePlatform>("github");
+  const [overviewPlatform, setOverviewPlatform] =
+    useState<OverviewPlatform>("local");
   const [mirrorInstalls, setMirrorInstalls] = useState<MirrorInstallRecord[]>(
     () => loadMirrorInstalls(),
   );
@@ -985,13 +1014,19 @@ export default function App() {
         if (pendingPublishRef.current) {
           const name = pendingPublishRef.current;
           pendingPublishRef.current = null;
-          setPublishDraft({
-            name,
-            toGithub: Boolean(accounts?.github.loggedIn),
-            toGitee: Boolean(accounts?.gitee.loggedIn),
-            privateRepo: false,
-          });
-          setPublishDialog({ path, name });
+          const ghOk = Boolean(accounts?.github.loggedIn);
+          const geOk = Boolean(accounts?.gitee.loggedIn);
+          if (!ghOk && !geOk) {
+            promptPlatformLogin("github", "创建远程仓库");
+          } else {
+            setPublishDraft({
+              name,
+              toGithub: ghOk,
+              toGitee: geOk,
+              privateRepo: false,
+            });
+            setPublishDialog({ path, name });
+          }
         }
       } catch (e) {
         pendingPublishRef.current = null;
@@ -1095,11 +1130,30 @@ export default function App() {
 
   const updatePrefs = useCallback((patch: Partial<AppPrefs>) => {
     setPrefs((prev) => {
-      const next = { ...prev, ...patch };
+      const next = {
+        ...prev,
+        ...patch,
+        permissions: patch.permissions
+          ? { ...prev.permissions, ...patch.permissions }
+          : prev.permissions,
+      };
       savePrefs(next);
       applyPrefsToDocument(next);
+      if (patch.permissions) {
+        void api.saveFeaturePermissions(next.permissions).catch(() => {
+          /* backend sync best-effort */
+        });
+      }
       return next;
     });
+  }, []);
+
+  useEffect(() => {
+    void api.saveFeaturePermissions(prefs.permissions).catch(() => {
+      /* ignore until backend ready */
+    });
+    // Sync once on mount so Rust gates match localStorage prefs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshWallpaperEngine = useCallback(async () => {
@@ -1234,10 +1288,18 @@ export default function App() {
     if (cloneUrlEffective !== url) {
       setNotice(`正在经镜像克隆…\n${cloneUrlEffective}`);
     }
+    const cloneStarted = performance.now();
     try {
       const dest = await api.cloneRepo(cloneUrlEffective, selectedPath, {
         branch,
         depth,
+      });
+      const { recordTiming } = await import("./viz/networkTiming");
+      recordTiming({
+        kind: "clone",
+        ms: Math.round(performance.now() - cloneStarted),
+        at: Date.now(),
+        label: "克隆",
       });
       setNotice("克隆完成");
       setShowSettings(false);
@@ -1249,12 +1311,30 @@ export default function App() {
     }
   }, [cloneDialog, openFolder, prefs]);
 
+  function remoteNameForPlatform(
+    platform: "github" | "gitee",
+  ): string | null {
+    const named = remotes.find((r) => r.name === platform);
+    if (named) return named.name;
+    const byUrl = remotes.find((r) =>
+      platform === "github"
+        ? /github\.com/i.test(r.url)
+        : /gitee\.com/i.test(r.url),
+    );
+    return byUrl?.name ?? null;
+  }
+
   async function runMirrorPush() {
-    if (!repoPath || !mirrorTarget) return;
+    if (!repoPath || !mirrorTarget || !mirrorSource) return;
+    if (!ensureFeature("mirror")) return;
+    if (!ensureFeature("push")) return;
     if (!ensureLoggedInForMirror()) return;
     const useActions = prefs.mirrorSyncMethod === "actions";
+    const sourceRemote =
+      remoteNameForPlatform(mirrorSource) ??
+      (primaryHost === mirrorSource ? defaultRemoteName : mirrorSource);
     // GitHub → Gitee：只推 GitHub，由 forward workflow 同步
-    if (useActions && mirrorTarget === "gitee" && primaryHost === "github") {
+    if (useActions && mirrorDirection === "github-to-gitee") {
       void runAction(async () => {
         const status = await api.getActionsMirrorStatus(repoPath);
         if (!status.workflowExists) {
@@ -1262,13 +1342,20 @@ export default function App() {
             "尚未安装 Actions 工作流。请到设置 → 行为，点「一键安装双向 Actions 镜像」。",
           );
         }
-        const text = await api.push(repoPath, false, null);
+        const text = await api.push(
+          repoPath,
+          false,
+          null,
+          sourceRemote && sourceRemote !== defaultRemoteName
+            ? sourceRemote
+            : null,
+        );
         return `${text}\n——\n已推送到 GitHub；Gitee 将由 Actions 自动同步。`;
       }, "正在推送（Actions 镜像）…");
       return;
     }
     // Gitee → GitHub：先推 Gitee，再触发 reverse workflow 从 Gitee 拉回 GitHub
-    if (useActions && mirrorTarget === "github") {
+    if (useActions && mirrorDirection === "gitee-to-github") {
       void runAction(async () => {
         const status = await api.getActionsMirrorStatus(repoPath);
         if (!status.reverseWorkflowExists) {
@@ -1276,17 +1363,29 @@ export default function App() {
             "尚未安装反向镜像工作流。请到设置 → 行为，点「一键安装双向 Actions 镜像」。",
           );
         }
-        const pushText = await api.push(repoPath, false, null, "gitee");
+        const giteeRemote = remoteNameForPlatform("gitee") ?? "gitee";
+        const pushText = await api.push(repoPath, false, null, giteeRemote);
         const triggerText = await api.triggerReverseActionsMirror(repoPath);
         return `${pushText}\n——\n${triggerText}`;
       }, "正在同步推送并触发 Actions…");
       return;
     }
+    // 应用内：按设置方向先推源平台，再同步到目标平台（后端会确保目标 remote）
     void runAction(
-      () => api.push(repoPath, false, mirrorTarget),
-      mirrorTarget === "gitee"
-        ? "正在同步推送 Gitee…"
-        : "正在同步推送 GitHub…",
+      () =>
+        api.push(
+          repoPath,
+          false,
+          mirrorTarget,
+          sourceRemote && sourceRemote !== defaultRemoteName
+            ? sourceRemote
+            : primaryHost === mirrorSource
+              ? null
+              : mirrorSource,
+        ),
+      mirrorDirection === "github-to-gitee"
+        ? "正在镜像同步：GitHub → Gitee…"
+        : "正在镜像同步：Gitee → GitHub…",
     );
   }
 
@@ -1390,6 +1489,29 @@ export default function App() {
     openSettings("auth");
   }
 
+  /** Toast-only login gate: never auto-open settings or browser OAuth. */
+  function promptPlatformLogin(
+    provider: AuthProvider,
+    action?: string,
+  ): void {
+    const label = provider === "github" ? "GitHub" : "Gitee";
+    setError(action ? `${action}前请先` : `使用 ${label} 前请先`);
+    setAuthHint(provider);
+  }
+
+  function requirePlatformLogin(
+    provider: AuthProvider,
+    action?: string,
+  ): boolean {
+    const loggedIn =
+      provider === "github"
+        ? Boolean(accounts?.github.loggedIn)
+        : Boolean(accounts?.gitee.loggedIn);
+    if (loggedIn) return true;
+    promptPlatformLogin(provider, action);
+    return false;
+  }
+
   /** Block push until the matching GitHub/Gitee account is logged in. */
   function ensureLoggedInForPush(
     remoteName: string | null | undefined,
@@ -1402,39 +1524,48 @@ export default function App() {
     const url = remotes.find((r) => r.name === name)?.url ?? "";
     const provider = authProviderFromRemote(name, url);
     if (!provider) return true;
-    const loggedIn =
-      provider === "github"
-        ? Boolean(accounts?.github.loggedIn)
-        : Boolean(accounts?.gitee.loggedIn);
-    if (loggedIn) return true;
-    const label = provider === "github" ? "GitHub" : "Gitee";
-    setError(`推送到 ${label} 前请先`);
-    setAuthHint(provider);
-    return false;
+    return requirePlatformLogin(provider, `推送到 ${provider === "github" ? "GitHub" : "Gitee"}`);
   }
 
   function ensureLoggedInForMirror(): boolean {
-    if (!mirrorTarget) return true;
-    // Actions GitHub→Gitee only pushes GitHub first.
+    if (!mirrorTarget || !mirrorSource) return true;
+    // Actions GitHub→Gitee：先推 GitHub
     if (
       prefs.mirrorSyncMethod === "actions" &&
-      mirrorTarget === "gitee" &&
-      primaryHost === "github"
+      mirrorDirection === "github-to-gitee"
     ) {
-      if (accounts?.github.loggedIn) return true;
-      setError("镜像同步前请先");
-      setAuthHint("github");
+      return requirePlatformLogin("github", "镜像同步（GitHub → Gitee）");
+    }
+    // Actions Gitee→GitHub：推 Gitee + 触发 GitHub workflow
+    if (
+      prefs.mirrorSyncMethod === "actions" &&
+      mirrorDirection === "gitee-to-github"
+    ) {
+      if (!requirePlatformLogin("gitee", "镜像同步（Gitee → GitHub）")) {
+        return false;
+      }
+      return requirePlatformLogin("github", "触发 Actions 反向镜像");
+    }
+    // 应用内同步：源与目标都需要登录
+    if (!requirePlatformLogin(
+      mirrorSource,
+      `镜像同步（${mirrorSource === "github" ? "GitHub" : "Gitee"}）`,
+    )) {
       return false;
     }
-    const need = mirrorTarget;
-    const loggedIn =
-      need === "github"
-        ? Boolean(accounts?.github.loggedIn)
-        : Boolean(accounts?.gitee.loggedIn);
-    if (loggedIn) return true;
-    const label = need === "github" ? "GitHub" : "Gitee";
-    setError(`镜像同步到 ${label} 前请先`);
-    setAuthHint(need);
+    return requirePlatformLogin(
+      mirrorTarget,
+      `镜像同步到 ${mirrorTarget === "github" ? "GitHub" : "Gitee"}`,
+    );
+  }
+
+  /** App feature permission gate (Settings → 权限). */
+  function ensureFeature(key: FeaturePermKey): boolean {
+    if (prefs.permissions[key]) return true;
+    const loc = prefs.locale || "zh-CN";
+    const { title } = featurePermLabel(key, loc);
+    setError(`${i18n(loc, "perm.denied")}：${title}`);
+    setAuthHint(null);
     return false;
   }
 
@@ -1751,24 +1882,23 @@ export default function App() {
     if (url.includes("gitee.com")) return "gitee";
     return null;
   }, [remotes]);
+  const mirrorDirection = prefs.mirrorDirection;
+  const mirrorSource =
+    mirrorDirection === "github-to-gitee"
+      ? ("github" as const)
+      : ("gitee" as const);
   const mirrorTarget =
-    primaryHost === "github"
+    mirrorDirection === "github-to-gitee"
       ? ("gitee" as const)
-      : primaryHost === "gitee"
-        ? ("github" as const)
-        : null;
+      : ("github" as const);
   const mirrorMenuLabel =
-    mirrorTarget === "gitee"
-      ? "镜像同步到 Gitee"
-      : mirrorTarget === "github"
-        ? "镜像同步到 GitHub"
-        : null;
+    mirrorDirection === "github-to-gitee"
+      ? "镜像同步：GitHub → Gitee"
+      : "镜像同步：Gitee → GitHub";
   const mirrorButtonLabel =
-    mirrorTarget === "gitee"
-      ? "镜像同步（Gitee）"
-      : mirrorTarget === "github"
-        ? "镜像同步（GitHub）"
-        : null;
+    mirrorDirection === "github-to-gitee"
+      ? "镜像同步（→Gitee）"
+      : "镜像同步（→GitHub）";
   const defaultRemoteName =
     remotes.find((r) => r.name === "origin")?.name ?? remotes[0]?.name ?? null;
   const activePushRemote = pushRemote ?? defaultRemoteName;
@@ -1825,10 +1955,6 @@ export default function App() {
       };
     });
   }, [remoteBranches, remotes]);
-
-  useEffect(() => {
-    if (!mirrorTarget && pushMode === "mirror") setPushMode("direct");
-  }, [mirrorTarget, pushMode]);
 
   useEffect(() => {
     if (!status) return;
@@ -1922,6 +2048,7 @@ export default function App() {
         if (pushMode === "mirror" && mirrorTarget) {
           void runMirrorPush();
         } else {
+          if (!ensureFeature("push")) return;
           if (!ensureLoggedInForPush(activePushRemote)) return;
           void runAction(
             () => api.push(repoPath, false, null, activePushRemote),
@@ -2682,7 +2809,17 @@ export default function App() {
                 const name = publishDraft.name.trim();
                 const toGithub = publishDraft.toGithub && ghOk;
                 const toGitee = publishDraft.toGitee && geOk;
-                if (!toGithub && !toGitee) return;
+                if (!ensureFeature("publishRemote")) return;
+                if (!toGithub && !toGitee) {
+                  if (!ghOk && !geOk) {
+                    promptPlatformLogin("github", "创建远程仓库");
+                  }
+                  return;
+                }
+                if (toGithub && !requirePlatformLogin("github", "创建 GitHub 仓库"))
+                  return;
+                if (toGitee && !requirePlatformLogin("gitee", "创建 Gitee 仓库"))
+                  return;
                 setPublishDialog(null);
                 void runAction(
                   () =>
@@ -2749,7 +2886,9 @@ export default function App() {
                   type="button"
                   className="danger sync-choice"
                   disabled={busy}
-                  onClick={() =>
+                  onClick={() => {
+                    if (!ensureFeature("push") || !ensureFeature("forcePush"))
+                      return;
                     withConfirm(
                       "将用本地提交覆盖远程，远程多出来的提交会丢失。确定继续？",
                       () => {
@@ -2760,8 +2899,8 @@ export default function App() {
                           "正在强制推送…",
                         );
                       },
-                    )
-                  }
+                    );
+                  }}
                 >
                   <strong>只用本地，覆盖远程</strong>
                   <span className="muted small">强制推送，远程旧内容会被替换</span>
@@ -2788,7 +2927,9 @@ export default function App() {
                   type="button"
                   className="danger sync-choice"
                   disabled={busy}
-                  onClick={() =>
+                  onClick={() => {
+                    if (!ensureFeature("push") || !ensureFeature("forcePush"))
+                      return;
                     withConfirm(
                       "将用本地提交覆盖远程，远程多出来的提交会丢失。确定继续？",
                       () => {
@@ -2799,8 +2940,8 @@ export default function App() {
                           "正在强制推送…",
                         );
                       },
-                    )
-                  }
+                    );
+                  }}
                 >
                   <strong>强制推送，覆盖远程</strong>
                   <span className="muted small">仅在确定不需要远程提交时使用</span>
@@ -2872,17 +3013,17 @@ export default function App() {
             disabled={busy}
             onClick={() =>
               void (async () => {
-                setBusy(true);
-                setError(null);
+    setBusy(true);
+    setError(null);
                 try {
                   const next = await api.authSshGenerate();
                   setSshStatus(next);
                   setNotice("已生成 ed25519 密钥，请复制公钥添加到平台");
-                } catch (e) {
-                  setError(failureLine(e));
+    } catch (e) {
+      setError(failureLine(e));
                 } finally {
-                  setBusy(false);
-                }
+      setBusy(false);
+    }
               })()
             }
           >
@@ -3663,7 +3804,7 @@ export default function App() {
           <div className="we-picker-head">
             <div>
               <h3>Wallpaper Engine</h3>
-              <p className="muted small">
+            <p className="muted small">
                 {slot === "terminal"
                   ? "选择壁纸用作终端背景"
                   : loadWpMode === "dynamic"
@@ -3761,6 +3902,16 @@ export default function App() {
       { id: "identity", title: i18n(loc, "nav.identity"), desc: i18n(loc, "nav.identity.desc") },
       { id: "appearance", title: i18n(loc, "nav.appearance"), desc: i18n(loc, "nav.appearance.desc") },
       { id: "behavior", title: i18n(loc, "nav.behavior"), desc: i18n(loc, "nav.behavior.desc") },
+      {
+        id: "permissions",
+        title: i18n(loc, "nav.permissions"),
+        desc: i18n(loc, "nav.permissions.desc"),
+      },
+      {
+        id: "platformPerms",
+        title: i18n(loc, "nav.platformPerms"),
+        desc: i18n(loc, "nav.platformPerms.desc"),
+      },
       { id: "language", title: i18n(loc, "nav.language"), desc: i18n(loc, "nav.language.desc") },
       { id: "network", title: i18n(loc, "nav.network"), desc: i18n(loc, "nav.network.desc") },
       { id: "reset", title: i18n(loc, "nav.reset"), desc: i18n(loc, "nav.reset.desc") },
@@ -3863,7 +4014,7 @@ export default function App() {
                     </div>
                     {prefs.theme === "custom" && (
                       <div className="theme-custom-row">
-                        <label className="settings-field">
+          <label className="settings-field">
                           <span>明暗</span>
                           <select
                             value={prefs.customScheme}
@@ -3880,24 +4031,24 @@ export default function App() {
                         </label>
                         <label className="settings-field">
                           <span>强调色</span>
-                          <input
+            <input
                             type="color"
                             value={prefs.customAccent}
-                            onChange={(e) =>
+              onChange={(e) =>
                               updatePrefs({ customAccent: e.target.value })
-                            }
-                          />
-                        </label>
-                        <label className="settings-field">
+              }
+            />
+          </label>
+          <label className="settings-field">
                           <span>背景色</span>
-                          <input
+            <input
                             type="color"
                             value={prefs.customBg}
-                            onChange={(e) =>
+              onChange={(e) =>
                               updatePrefs({ customBg: e.target.value })
-                            }
-                          />
-                        </label>
+              }
+            />
+          </label>
                       </div>
                     )}
                     <label className="settings-field" style={{ marginTop: "0.75rem" }}>
@@ -4066,7 +4217,7 @@ export default function App() {
                           <em>加载页蒙层</em>
                           <strong>{prefs.wallpaperLoadScrim}%</strong>
                         </span>
-                        <input
+                <input
                           type="range"
                           min={0}
                           max={90}
@@ -4081,7 +4232,7 @@ export default function App() {
                         <span className="muted small">
                           数值越大，欢迎页/加载页壁纸越淡
                         </span>
-                      </label>
+              </label>
                     </div>
                     <div className="wallpaper-sliders">
                       <label className="wallpaper-slider-row">
@@ -4188,9 +4339,9 @@ export default function App() {
                       >
                         本地图片
                       </button>
-                      <button
-                        type="button"
-                        disabled={
+              <button
+                type="button"
+                disabled={
                           busy || prefs.terminalWallpaperKind === "none"
                         }
                         onClick={() => {
@@ -4313,10 +4464,67 @@ export default function App() {
                   </div>
 
                   <div className="settings-card mirror-method-card">
-                    <h4>同步推送方式</h4>
+                    <h4>镜像同步</h4>
                     <p className="muted small">
-                      「推送到 Gitee / GitHub」时，可选本机再推一次，或用 GitHub
-                      Actions 双向镜像（无需去网页配置 Secrets）。
+                      选择同步方向与方式。推送菜单中的「镜像同步」会按此处设置执行。
+                    </p>
+                    <p className="muted small" style={{ marginTop: "0.65rem" }}>
+                      同步方向
+                    </p>
+                    <div
+                      className="pref-cards"
+                      role="radiogroup"
+                      aria-label="镜像同步方向"
+                    >
+                      <label
+                        className={`pref-card${
+                          prefs.mirrorDirection === "github-to-gitee"
+                            ? " is-on"
+                            : ""
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="mirrorDirection"
+                          checked={prefs.mirrorDirection === "github-to-gitee"}
+                          onChange={() =>
+                            updatePrefs({
+                              mirrorDirection: "github-to-gitee",
+                            })
+                          }
+                        />
+                        <span className="pref-card-text">
+                          <strong>GitHub → Gitee</strong>
+                          <span>以 GitHub 为源，同步到 Gitee</span>
+                        </span>
+                        <span className="pref-switch" aria-hidden />
+                      </label>
+                      <label
+                        className={`pref-card${
+                          prefs.mirrorDirection === "gitee-to-github"
+                            ? " is-on"
+                            : ""
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="mirrorDirection"
+                          checked={prefs.mirrorDirection === "gitee-to-github"}
+                          onChange={() =>
+                            updatePrefs({
+                              mirrorDirection: "gitee-to-github",
+                            })
+                          }
+                        />
+                        <span className="pref-card-text">
+                          <strong>Gitee → GitHub</strong>
+                          <span>以 Gitee 为源，同步到 GitHub</span>
+                        </span>
+                        <span className="pref-switch" aria-hidden />
+                      </label>
+                    </div>
+                    <p className="muted small" style={{ marginTop: "0.75rem" }}>
+                      同步方式
                     </p>
                     <div className="pref-cards" role="radiogroup" aria-label="同步推送方式">
                       <label
@@ -4334,7 +4542,7 @@ export default function App() {
                         />
                         <span className="pref-card-text">
                           <strong>应用内同步推送</strong>
-                          <span>先推默认远程，再由青枝推到另一平台</span>
+                          <span>本机先推源平台，再推到目标平台</span>
                         </span>
                         <span className="pref-switch" aria-hidden />
                       </label>
@@ -4352,9 +4560,10 @@ export default function App() {
                           }
                         />
                         <span className="pref-card-text">
-                          <strong>GitHub Actions 双向镜像</strong>
+                          <strong>GitHub Actions 镜像</strong>
                           <span>
-                            GitHub↔Gitee：推送后由 Actions 自动同步（一键安装）
+                            按上方方向：正向自动同步，或推 Gitee 后触发反向
+                            Actions（需先一键安装）
                           </span>
                         </span>
                         <span className="pref-switch" aria-hidden />
@@ -4368,8 +4577,23 @@ export default function App() {
                         title="写入双向 workflow、自动配置 Secrets，并尽量提交推送到 GitHub"
                         onClick={() => {
                           if (!repoPath) return;
+                          if (!ensureFeature("mirror")) return;
+                          if (
+                            !requirePlatformLogin(
+                              "github",
+                              "安装 GitHub Actions 镜像",
+                            )
+                          )
+                            return;
+                          if (
+                            !requirePlatformLogin(
+                              "gitee",
+                              "安装 GitHub Actions 镜像",
+                            )
+                          )
+                            return;
                           setMirrorProgress({ percent: 2, label: "准备安装…" });
-                          void runAction(async () => {
+                  void runAction(async () => {
                             try {
                               const result = await api.setupActionsMirror(
                                 repoPath,
@@ -4418,7 +4642,7 @@ export default function App() {
                         }}
                       >
                         一键安装双向 Actions 镜像
-                      </button>
+              </button>
                       <button
                         type="button"
                         disabled={
@@ -4681,6 +4905,19 @@ export default function App() {
                                           Boolean(repoPath) &&
                                           (!item.repoPath ||
                                             item.repoPath === repoPath);
+                                        if (
+                                          canRemoveFiles &&
+                                          !ensureFeature("mirror")
+                                        )
+                                          return;
+                                        if (
+                                          canRemoveFiles &&
+                                          !requirePlatformLogin(
+                                            "github",
+                                            "删除 Actions 镜像",
+                                          )
+                                        )
+                                          return;
                                         setMirrorListBusy(true);
                                         setMirrorProgress({
                                           percent: 5,
@@ -4738,18 +4975,18 @@ export default function App() {
                       Release 页可切换 GitHub / Gitee。留空则从远程自动识别。青枝「检查更新」仍固定为{" "}
                       {UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}。
                     </p>
-                    <label className="settings-field">
+          <label className="settings-field">
                       <span>GitHub（owner/repo）</span>
-                      <input
+            <input
                         value={prefs.releaseRepoOverride}
                         onChange={(e) =>
                           updatePrefs({ releaseRepoOverride: e.target.value })
                         }
                         placeholder="例如 lizhihufa/huaweiyunapp，留空=自动"
                         spellCheck={false}
-                      />
-                    </label>
-                    <p className="muted small">
+            />
+          </label>
+          <p className="muted small">
                       GitHub 当前：
                       {releaseTarget.owner
                         ? `${formatGithubOwnerRepo(
@@ -4764,7 +5001,7 @@ export default function App() {
                     </p>
                     <label className="settings-field" style={{ marginTop: "0.55rem" }}>
                       <span>Gitee（owner/repo）</span>
-                      <input
+            <input
                         value={prefs.releaseGiteeRepoOverride}
                         onChange={(e) =>
                           updatePrefs({
@@ -4773,8 +5010,8 @@ export default function App() {
                         }
                         placeholder="例如 lizhihufa/huaweiyunapp，留空=自动"
                         spellCheck={false}
-                      />
-                    </label>
+            />
+          </label>
                     <p className="muted small">
                       Gitee 当前：
                       {releaseGiteeTarget.owner
@@ -4788,6 +5025,103 @@ export default function App() {
                           }）`
                         : "未识别"}
                     </p>
+                  </div>
+                </section>
+              )}
+
+              {settingsPage === "permissions" && (
+                <section className="settings-section">
+                  <div className="settings-pane-intro">
+                    <h4>{i18n(loc, "perm.title")}</h4>
+                    <p className="muted small">{i18n(loc, "perm.hint")}</p>
+                  </div>
+                  <div
+                    className="pref-cards"
+                    role="group"
+                    aria-label={i18n(loc, "perm.title")}
+                  >
+                    {FEATURE_PERM_KEYS.map((key) => {
+                      const { title, desc } = featurePermLabel(key, loc);
+                      const on = prefs.permissions[key];
+                      return (
+                        <label
+                          key={key}
+                          className={`pref-card${on ? " is-on" : ""}`}
+                        >
+            <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={(e) =>
+                              updatePrefs({
+                                permissions: {
+                                  ...prefs.permissions,
+                                  [key]: e.target.checked,
+                                },
+                              })
+                            }
+                          />
+                          <span className="pref-card-text">
+                            <strong>{title}</strong>
+                            <span>{desc}</span>
+                          </span>
+                          <span className="pref-switch" aria-hidden />
+          </label>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {settingsPage === "platformPerms" && (
+                <section className="settings-section">
+                  <div className="settings-pane-intro">
+                    <h4>{i18n(loc, "perm.platformSection")}</h4>
+                    <p className="muted small">{i18n(loc, "perm.platformHint")}</p>
+                  </div>
+
+                  <div className="settings-card perm-platform-block">
+                    <strong>{i18n(loc, "perm.gh.title")}</strong>
+                    <div className="perm-platform-links" style={{ marginTop: "0.55rem" }}>
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--soft pane-btn--sm"
+                        onClick={() =>
+                          void openUrl("https://github.com/settings/tokens")
+                        }
+                      >
+                        {i18n(loc, "perm.gh.openTokens")}
+            </button>
+          </div>
+                    <ol className="perm-platform-steps">
+                      <li>{i18n(loc, "perm.gh.step1")}</li>
+                      <li>{i18n(loc, "perm.gh.step2")}</li>
+                      <li>{i18n(loc, "perm.gh.step3")}</li>
+                    </ol>
+        </div>
+
+                  <div
+                    className="settings-card perm-platform-block"
+                    style={{ marginTop: "0.85rem" }}
+                  >
+                    <strong>{i18n(loc, "perm.ge.title")}</strong>
+                    <div className="perm-platform-links" style={{ marginTop: "0.55rem" }}>
+                      <button
+                        type="button"
+                        className="pane-btn pane-btn--soft pane-btn--sm"
+                        onClick={() =>
+                          void openUrl(
+                            "https://gitee.com/profile/personal_access_tokens",
+                          )
+                        }
+                      >
+                        {i18n(loc, "perm.ge.openTokens")}
+                      </button>
+                    </div>
+                    <ol className="perm-platform-steps">
+                      <li>{i18n(loc, "perm.ge.step1")}</li>
+                      <li>{i18n(loc, "perm.ge.step2")}</li>
+                      <li>{i18n(loc, "perm.ge.step3")}</li>
+                    </ol>
                   </div>
                 </section>
               )}
@@ -4831,10 +5165,12 @@ export default function App() {
                     const next = {
                       ...DEFAULT_PREFS,
                       enabledLocales: [...DEFAULT_PREFS.enabledLocales],
+                      permissions: { ...DEFAULT_PREFS.permissions },
                     };
                     savePrefs(next);
                     setPrefs(next);
                     applyPrefsToDocument(next);
+                    void api.saveFeaturePermissions(next.permissions).catch(() => {});
                   }}
                 />
               )}
@@ -4898,7 +5234,7 @@ export default function App() {
                         <span className="auth-tab-badge is-warn">已失效</span>
                       ) : null}
             </button>
-                  </div>
+          </div>
                   {renderProviderAuth(authTab)}
                 </section>
               )}
@@ -4935,7 +5271,7 @@ export default function App() {
                 />
               )}
 
-            </div>
+        </div>
           </div>
         </div>
         {renderWallpaperEnginePicker()}
@@ -5042,18 +5378,18 @@ export default function App() {
               onClick={() => void cloneRepo()}
               title="克隆到空文件夹"
             >
-              克隆
-            </button>
+            克隆
+          </button>
 
             <div
               className={`tool-split${pullMenuOpen ? " is-open" : ""}${
                 behind > 0 ? " is-emphasis" : ""
               }`}
             >
-              <button
-                type="button"
+          <button
+            type="button"
                 className="tool-split-main"
-                disabled={busy}
+            disabled={busy}
                 title={
                   pullMode === "rebase"
                     ? "变基拉取（Ctrl+Shift+L）"
@@ -5074,11 +5410,11 @@ export default function App() {
                     : pullMode === "rebase"
                       ? "变基拉取"
                       : "拉取"}
-              </button>
-              <button
-                type="button"
+          </button>
+          <button
+            type="button"
                 className="tool-split-caret"
-                disabled={busy}
+            disabled={busy}
                 title="拉取 / 获取选项"
                 aria-expanded={pullMenuOpen}
                 onMouseDown={(event) => event.stopPropagation()}
@@ -5089,18 +5425,18 @@ export default function App() {
                 }}
               >
                 ▾
-              </button>
+          </button>
               {pullMenuOpen && (
                 <div
                   className="push-menu"
                   role="menu"
                   onMouseDown={(event) => event.stopPropagation()}
                 >
-                  <button
-                    type="button"
+          <button
+            type="button"
                     role="menuitem"
                     className={pullMode === "merge" ? "is-active" : undefined}
-                    disabled={busy}
+            disabled={busy}
                     onClick={() => {
                       setPullMode("merge");
                       setPullMenuOpen(false);
@@ -5112,7 +5448,7 @@ export default function App() {
                   >
                     <strong>拉取（合并）</strong>
                     <span>下载并合并进当前分支</span>
-                  </button>
+          </button>
                   <button
                     type="button"
                     role="menuitem"
@@ -5199,17 +5535,21 @@ export default function App() {
                 title={
                   pushMode === "mirror" && mirrorButtonLabel
                     ? prefs.mirrorSyncMethod === "actions" &&
-                      mirrorTarget === "gitee"
+                      mirrorDirection === "github-to-gitee"
                       ? `${mirrorButtonLabel}：推送 GitHub，由 Actions 同步 Gitee（Ctrl+Shift+P）`
-                      : `${mirrorButtonLabel}：本机先推默认远程再同步（Ctrl+Shift+P）`
+                      : prefs.mirrorSyncMethod === "actions" &&
+                          mirrorDirection === "gitee-to-github"
+                        ? `${mirrorButtonLabel}：推送 Gitee，再触发 Actions 同步 GitHub（Ctrl+Shift+P）`
+                        : `${mirrorButtonLabel}：按设置方向本机依次推送（Ctrl+Shift+P）`
                     : "推送到远程（Ctrl+Shift+P）"
                 }
                 onClick={() => {
                   setPushMenuOpen(false);
-                  if (pushMode === "mirror" && mirrorTarget) {
+                  if (pushMode === "mirror") {
                     void runMirrorPush();
                     return;
                   }
+                  if (!ensureFeature("push")) return;
                   if (!ensureLoggedInForPush(activePushRemote)) return;
                   void runAction(
                     () => api.push(repoPath, false, null, activePushRemote),
@@ -5274,6 +5614,7 @@ export default function App() {
                           setPushMode("direct");
                           setPushRemote(isDefault ? null : r.name);
                           setPushMenuOpen(false);
+                          if (!ensureFeature("push")) return;
                           if (!ensureLoggedInForPush(r.name)) return;
                           void runAction(
                             () =>
@@ -5296,7 +5637,7 @@ export default function App() {
                       </button>
                     );
                   })}
-                  {mirrorMenuLabel && mirrorTarget && (
+                  {mirrorMenuLabel && (
                     <button
                       type="button"
                       role="menuitem"
@@ -5313,12 +5654,14 @@ export default function App() {
                       <strong>{mirrorMenuLabel}</strong>
                       <span>
                         {prefs.mirrorSyncMethod === "actions" &&
-                        mirrorTarget === "gitee"
+                        mirrorDirection === "github-to-gitee"
                           ? "先推 GitHub，由 Actions 自动同步到 Gitee"
                           : prefs.mirrorSyncMethod === "actions" &&
-                              mirrorTarget === "github"
+                              mirrorDirection === "gitee-to-github"
                             ? "先推 Gitee，再触发 Actions 同步 GitHub"
-                            : "本机依次推送到两个平台"}
+                            : mirrorDirection === "github-to-gitee"
+                              ? "本机：GitHub → Gitee（设置可改方向）"
+                              : "本机：Gitee → GitHub（设置可改方向）"}
                       </span>
                     </button>
                   )}
@@ -5463,13 +5806,20 @@ export default function App() {
             type="button"
             className="linkish"
             onClick={() => {
+              if (!ensureFeature("publishRemote")) return;
+              const ghOk = Boolean(accounts?.github.loggedIn);
+              const geOk = Boolean(accounts?.gitee.loggedIn);
+              if (!ghOk && !geOk) {
+                promptPlatformLogin("github", "创建远程仓库");
+                return;
+              }
               const name =
                 repoPath?.split(/[/\\]/).filter(Boolean).pop()?.trim() ||
                 "repo";
               setPublishDraft({
                 name,
-                toGithub: Boolean(accounts?.github.loggedIn),
-                toGitee: Boolean(accounts?.gitee.loggedIn),
+                toGithub: ghOk,
+                toGitee: geOk,
                 privateRepo: false,
               });
               setPublishDialog({ path: repoPath!, name });
@@ -5706,7 +6056,7 @@ export default function App() {
                     />
                     <span className="branch-name-block">
                       <span className="branch-name">{b.name}</span>
-                      {b.upstream ? (
+                    {b.upstream ? (
                         <span className="muted small branch-upstream">
                           →{" "}
                           {(() => {
@@ -5722,7 +6072,7 @@ export default function App() {
                             return `${platform} · ${b.upstream}`;
                           })()}
                         </span>
-                      ) : null}
+                    ) : null}
                     </span>
                   </button>
                   <span className="row-actions branch-row-actions">
@@ -5766,7 +6116,7 @@ export default function App() {
                         {b.upstream ? "上游" : "设上游"}
                       </button>
                     )}
-                    {!b.isCurrent && (
+                  {!b.isCurrent && (
                       <button
                         type="button"
                         className="danger"
@@ -5809,32 +6159,32 @@ export default function App() {
                       >
                         删除
                       </button>
-                    )}
+                  )}
                   </span>
                 </li>
               ))}
             </ul>
             <div className="branch-tools">
               <div className="branch-tool-row">
-                <input
-                  value={newBranch}
-                  onChange={(e) => setNewBranch(e.target.value)}
-                  placeholder="新分支名"
+              <input
+                value={newBranch}
+                onChange={(e) => setNewBranch(e.target.value)}
+                placeholder="新分支名"
                   aria-label="新分支名"
-                />
-                <button
-                  type="button"
+              />
+              <button
+                type="button"
                   className="primary"
-                  disabled={busy || !newBranch.trim()}
-                  onClick={() =>
-                    runAction(async () => {
-                      await api.branchCreate(repoPath, newBranch.trim());
-                      setNewBranch("");
-                    })
-                  }
-                >
-                  新建
-                </button>
+                disabled={busy || !newBranch.trim()}
+                onClick={() =>
+                  runAction(async () => {
+                    await api.branchCreate(repoPath, newBranch.trim());
+                    setNewBranch("");
+                  })
+                }
+              >
+                新建
+              </button>
                 <button
                   type="button"
                   className="danger"
@@ -5871,39 +6221,39 @@ export default function App() {
                   }}
                 >
                   清理
-                </button>
-              </div>
+              </button>
+            </div>
               <div className="branch-tool-row">
-                <select
-                  value={mergeTarget}
-                  onChange={(e) => setMergeTarget(e.target.value)}
-                  disabled={busy}
+              <select
+                value={mergeTarget}
+                onChange={(e) => setMergeTarget(e.target.value)}
+                disabled={busy}
                   aria-label="合并分支"
-                >
+              >
                   <option value="">合并到当前…</option>
-                  {branches
-                    .filter((b) => !b.isCurrent)
-                    .map((b) => (
-                      <option key={b.name} value={b.name}>
-                        {b.name}
-                      </option>
-                    ))}
-                </select>
-                <button
-                  type="button"
-                  disabled={busy || !mergeTarget}
+                {branches
+                  .filter((b) => !b.isCurrent)
+                  .map((b) => (
+                    <option key={b.name} value={b.name}>
+                      {b.name}
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                disabled={busy || !mergeTarget}
                   onClick={() =>
                     withConfirm(`把「${mergeTarget}」合并进当前分支？`, () => {
-                      void runAction(
-                        () => api.branchMerge(repoPath, mergeTarget),
-                        "正在合并…",
-                      );
+                    void runAction(
+                      () => api.branchMerge(repoPath, mergeTarget),
+                      "正在合并…",
+                    );
                     })
                   }
-                >
-                  合并
-                </button>
-              </div>
+              >
+                合并
+              </button>
+            </div>
               <div className="branch-tool-row">
                 <select
                   value={rebaseTarget}
@@ -5963,7 +6313,7 @@ export default function App() {
                 >
                   交互
                 </button>
-              </div>
+          </div>
             </div>
           </SidebarSection>
 
@@ -6164,6 +6514,15 @@ export default function App() {
         <ExtraPane
           pane={pane}
           onPane={setPane}
+          overviewStatus={status}
+          overviewBranches={branches}
+          overviewPlatform={overviewPlatform}
+          onOverviewPlatform={setOverviewPlatform}
+          overviewGithubOwner={releaseTarget.owner}
+          overviewGithubRepo={releaseTarget.repo}
+          overviewGiteeOwner={releaseGiteeTarget.owner}
+          overviewGiteeRepo={releaseGiteeTarget.repo}
+          overviewRepoPath={repoPath}
           diffPath={selected?.path ?? null}
           diffStaged={selected?.staged ?? false}
           diffText={diff}
@@ -6269,6 +6628,8 @@ export default function App() {
             setShowReflog(false);
           }}
           showCommitGraph={prefs.showCommitGraph}
+          diffViewMode={prefs.diffViewMode}
+          onDiffViewMode={(mode) => updatePrefs({ diffViewMode: mode })}
           commits={fileHistoryCommits ?? commits}
           historyScope={fileHistoryPath}
           onClearHistoryScope={() => {
@@ -6365,10 +6726,12 @@ export default function App() {
             }, "正在比较…");
           }}
           compareResult={compareResult}
-          onPushTag={(name) =>
-            void runAction(() => api.tagPush(repoPath, name), "正在推送标签…")
-          }
+          onPushTag={(name) => {
+            if (!ensureFeature("push")) return;
+            void runAction(() => api.tagPush(repoPath, name), "正在推送标签…");
+          }}
           onPushAllTags={() => {
+            if (!ensureFeature("push")) return;
             withConfirm("把全部本地标签推送到远程？", () => {
               void runAction(() => api.tagPushAll(repoPath), "正在推送全部标签…");
             });
@@ -6379,6 +6742,7 @@ export default function App() {
             });
           }}
           onDeleteRemoteTag={(name) => {
+            if (!ensureFeature("push")) return;
             withConfirm(
               `删除远程标签「${name}」？\n会从 GitHub/Gitee 上移除该标签，本地标签仍保留。`,
               () => {
@@ -6405,12 +6769,24 @@ export default function App() {
           releaseDefaultTag=""
           githubLoggedIn={Boolean(accounts?.github.loggedIn)}
           updateBusy={updateBusy}
-          onUpdateBusy={setUpdateBusy}
+          onUpdateBusy={(busy) => {
+            setUpdateBusy(busy);
+            if (!busy) setWikiProgress(null);
+          }}
+          wikiProgress={wikiProgress}
           onNotice={setNotice}
           onError={setError}
-          onOpenAuth={() =>
-            openSettingsAuth(releasePlatform === "gitee" ? "gitee" : "github")
+          onOpenAuth={(provider) =>
+            promptPlatformLogin(
+              provider,
+              provider === "gitee" ? "使用 Gitee" : "使用 GitHub",
+            )
           }
+          releaseAllowed={prefs.permissions.release}
+          wikiAllowed={prefs.permissions.wiki}
+          onFeatureDenied={(feature) => {
+            void ensureFeature(feature);
+          }}
           onConfigureReleaseRepo={() => openSettings("behavior")}
           updateProgress={updateProgress}
           onRunCommand={(line) => {

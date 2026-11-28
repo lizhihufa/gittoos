@@ -2793,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "qingzhi"
-version = "1.6.3"
+version = "1.6.9"
 dependencies = [
  "base64 0.22.1",
  "crypto_box",

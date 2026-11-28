@@ -15,6 +15,16 @@ import {
   type SyncConflictKind,
 } from "../statusMessage";
 import type { CommitInfo, RepoCore, StashInfo, TagInfo } from "../types";
+import { recordTiming, type TimingKind } from "../viz/networkTiming";
+
+function timingKindFromLabel(label?: string): TimingKind | null {
+  if (!label) return null;
+  if (/推送/.test(label)) return "push";
+  if (/拉取|同步/.test(label)) return "pull";
+  if (/获取|fetch/i.test(label)) return "fetch";
+  if (/克隆/.test(label)) return "clone";
+  return null;
+}
 
 const ACTION_WATCHDOG_MS = 90_000;
 
@@ -81,6 +91,7 @@ export function useRepoActions(opts: {
       if (!repoPath || busyRef.current) return false;
       const path = repoPath;
       const network = isNetworkLabel(label);
+      const startedAt = performance.now();
       busyRef.current = true;
       setBusy(true);
       setError(null);
@@ -133,6 +144,15 @@ export function useRepoActions(opts: {
         if (timedOut) {
           void refresh(path, { background: true }).catch(() => {});
           return false;
+        }
+        const kind = timingKindFromLabel(label);
+        if (kind) {
+          recordTiming({
+            kind,
+            ms: Math.round(performance.now() - startedAt),
+            at: Date.now(),
+            label,
+          });
         }
         setSyncDialog(null);
         {

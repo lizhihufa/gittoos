@@ -230,7 +230,7 @@
   <body>
     <main>
       <h1>青枝打包工具</h1>
-      <p class="sub">改版本 → 选平台 → 打包；也可清理构建缓存</p>
+      <p class="sub">改版本后一键打包 Windows + Linux；也可单独打某一端或清理缓存</p>
 
       <section class="card">
         <div class="row" style="justify-content: space-between; margin-bottom: 0.75rem">
@@ -269,15 +269,17 @@
             <input id="nextVersion" placeholder="例如 1.6.3" />
           </label>
         </div>
+        <div class="row" style="margin-bottom: 0.55rem">
+          <button type="button" class="primary" id="build">一键打包 Windows + Linux</button>
+        </div>
         <div class="row" style="margin-bottom: 0.35rem">
-          <span style="font-weight: 600">打包平台</span>
-          <button type="button" class="target active" data-target="win" id="tWin">Windows</button>
-          <button type="button" class="target" data-target="linux" id="tLinux">Linux</button>
-          <button type="button" class="target" data-target="both" id="tBoth">两者都打</button>
-          <button type="button" class="primary" id="build">开始打包</button>
+          <span style="font-weight: 600">或单独打包</span>
+          <button type="button" class="target" data-target="win" id="tWin">仅 Windows</button>
+          <button type="button" class="target" data-target="linux" id="tLinux">仅 Linux</button>
+          <button type="button" class="target active" data-target="both" id="tBoth">Windows + Linux</button>
         </div>
         <p class="hint" id="targetHint">
-          Windows：本机生成 NSIS 安装包。Linux：通过 WSL（Ubuntu）生成 deb / AppImage，需已安装 Rust、Node 与 webkit 依赖。
+          默认一键：先本机打 Windows（NSIS），再经 WSL Ubuntu 打 Linux（qingzhi_*.deb）。Linux 需 WSL 内已装 Rust、Node、libwebkit2gtk 等。
         </p>
         <div class="progress-wrap">
           <div class="progress-head">
@@ -285,7 +287,7 @@
             <span id="progressPct">0%</span>
           </div>
           <div class="bar"><i id="bar"></i></div>
-          <p class="msg" id="message">选择平台后点击「开始打包」。</p>
+          <p class="msg" id="message">确认版本后点「一键打包 Windows + Linux」。</p>
           <div class="installer" id="installer">
             <div class="installer-row">
               <strong>产物</strong>
@@ -322,13 +324,19 @@
       let lastInstaller = null;
       let lastArtifacts = [];
       let building = false;
-      let selectedTarget = "win";
+      let selectedTarget = "both";
 
       const HINTS = {
-        win: "Windows：本机生成 NSIS 安装包（含离线 WebView2）。",
+        win: "仅 Windows：本机生成 NSIS 安装包（含离线 WebView2）。",
         linux:
-          "Linux：经 WSL Ubuntu 生成 deb / AppImage。需 WSL 内已装 Rust、Node，以及 libwebkit2gtk 等依赖。",
-        both: "先打 Windows，再经 WSL 打 Linux。Linux 失败不影响已生成的 Windows 包（若 Windows 步已成功）。",
+          "仅 Linux：经 WSL Ubuntu 生成 qingzhi_*.deb（apt 安装）。需 WSL 内已装 Rust、Node，以及 libwebkit2gtk 等依赖。",
+        both: "一键：先打 Windows（NSIS），再经 WSL 打 Linux（qingzhi_*.deb，可用 apt 安装）。若 Linux 失败，已生成的 Windows 包仍保留。",
+      };
+
+      const BUILD_LABEL = {
+        win: "仅 Windows",
+        linux: "仅 Linux",
+        both: "Windows + Linux",
       };
 
       function renderDisk(disk) {
@@ -356,13 +364,16 @@
         document.querySelectorAll("[data-target]").forEach((btn) => {
           btn.classList.toggle("active", btn.getAttribute("data-target") === target);
         });
-        els.targetHint.textContent = HINTS[target] || HINTS.win;
+        els.targetHint.textContent = HINTS[target] || HINTS.both;
+        els.build.textContent =
+          target === "both"
+            ? "一键打包 Windows + Linux"
+            : `开始打包（${BUILD_LABEL[target] || target}）`;
       }
 
       function kindLabel(kind) {
         if (kind === "windows-nsis") return "Windows 安装包";
-        if (kind === "linux-deb") return "Linux deb";
-        if (kind === "linux-appimage") return "Linux AppImage";
+        if (kind === "linux-deb") return "Linux deb (qingzhi)";
         return kind || "产物";
       }
 
@@ -424,7 +435,9 @@
         els.installer.classList.remove("show");
         setBusy(true);
         setProgress(2, "启动中");
-        setMessage(`正在写入版本并启动 ${selectedTarget} 打包…`);
+        setMessage(
+          `正在写入版本并启动 ${BUILD_LABEL[selectedTarget] || selectedTarget} 打包…`,
+        );
         const res = await fetch("/api/build", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -476,7 +489,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             path: lastInstaller?.path || lastArtifacts[0]?.path || "",
-            kind: selectedTarget === "linux" ? "linux" : "win",
+            kind:
+              selectedTarget === "linux" || selectedTarget === "both"
+                ? "linux"
+                : "win",
           }),
         });
       };
@@ -512,7 +528,7 @@
         }
       });
 
-      setTarget("win");
+      setTarget("both");
       void loadVersion();
     </script>
   </body>
